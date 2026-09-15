@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { FIXTURES_BY_ID, MONSTER_FIXTURES } from "../src/lib/sim/fixtures";
-import { runCombat, summarise } from "../src/lib/sim/engine/loop";
-import { monteCarlo } from "../src/lib/sim/engine/montecarlo";
-import { parseCombatant, type Combatant } from "../src/lib/sim/schema";
+import { FIXTURES_BY_ID, MONSTER_FIXTURES } from "../lib/sim/fixtures";
+import { runCombat, summarise } from "../lib/sim/engine/loop";
+import { monteCarlo } from "../lib/sim/engine/montecarlo";
+import { parseCombatant, type Combatant } from "../lib/sim/schema";
 
 type Automation = Combatant["actions"][number]["automation"];
 

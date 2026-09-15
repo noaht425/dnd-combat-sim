@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { runBattle } from "../src/lib/sim/battle";
-import { gridFromDef, makeGrid, setTerrain } from "../src/lib/sim/battle/grid";
-import { standardParty } from "../src/lib/sim/engine/scenario";
+import { runBattle } from "../lib/sim/battle";
+import { gridFromDef, makeGrid, setTerrain } from "../lib/sim/battle/grid";
+import { standardParty } from "../lib/sim/engine/scenario";
 
 describe("battle mode — full grid fight", () => {
   it("runs a party vs a boss and returns a result + a frame stream", () => {

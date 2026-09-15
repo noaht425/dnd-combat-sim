@@ -7,9 +7,9 @@ import {
   spellSlots,
   type AutomationNode,
   type Combatant,
-} from "../src/lib/sim/schema";
-import { ALL_FIXTURES, FIXTURES_BY_ID } from "../src/lib/sim/fixtures";
-import { averageOfDice, validateAll, validateCombatant } from "../src/lib/sim/validate";
+} from "../lib/sim/schema";
+import { ALL_FIXTURES, FIXTURES_BY_ID } from "../lib/sim/fixtures";
+import { averageOfDice, validateAll, validateCombatant } from "../lib/sim/validate";
 
 // A deliberately small monster that still exercises the tree: recharge AoE with
 // a save-for-half branch, a passive aura trait, a phase-trigger branch, and a

@@ -4,9 +4,9 @@
 // `(round, unitId, seq)`, and the fight replays from seed with that answer.
 
 import { describe, expect, it } from "vitest";
-import { runBattle } from "../src/lib/sim/battle";
-import type { BattleDecision } from "../src/lib/sim/battle/control";
-import type { ReactionChoice } from "../src/lib/sim/battle/state";
+import { runBattle } from "../lib/sim/battle";
+import type { BattleDecision } from "../lib/sim/battle/control";
+import type { ReactionChoice } from "../lib/sim/battle/state";
 
 const party = () => [
   { template: "assassin-rogue", name: "Sly", level: 9 },
@@ -184,7 +184,7 @@ function playCasters(seed: number, controlled: string, take: boolean) {
 
 describe("battle reactions — Absorb Elements & Hellish Rebuke", () => {
   it("a full caster carries Absorb Elements; a warlock carries Hellish Rebuke", async () => {
-    const { CASTER_BUILDERS } = await import("../src/lib/sim/spells/casterTemplates");
+    const { CASTER_BUILDERS } = await import("../lib/sim/spells/casterTemplates");
     const wiz = CASTER_BUILDERS["blaster-wizard"](9);
     const lock = CASTER_BUILDERS["warlock"](9);
     expect(wiz.reactions.map((r) => r.id)).toContain("absorb-elements");

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { SPELLS, SPELLS_BY_ID } from "../src/lib/sim/spells/catalog";
-import { slotResources, slotRow, maxSlotLevel, mysticArcanumLevels, pactSlotLevel } from "../src/lib/sim/spells/slots";
-import { preparedCount, cantripsKnown, autoPrepare } from "../src/lib/sim/spells/prepare";
-import { spellActions } from "../src/lib/sim/spells/cast";
-import { makeCaster } from "../src/lib/sim/spells/caster";
-import { makeTemplate } from "../src/lib/sim/engine/templates";
-import { parseCombatant } from "../src/lib/sim/schema";
-import { validateCombatant } from "../src/lib/sim/validate";
-import { runScenario, runScenarioOnce, standardParty } from "../src/lib/sim/engine/scenario";
+import { SPELLS, SPELLS_BY_ID } from "../lib/sim/spells/catalog";
+import { slotResources, slotRow, maxSlotLevel, mysticArcanumLevels, pactSlotLevel } from "../lib/sim/spells/slots";
+import { preparedCount, cantripsKnown, autoPrepare } from "../lib/sim/spells/prepare";
+import { spellActions } from "../lib/sim/spells/cast";
+import { makeCaster } from "../lib/sim/spells/caster";
+import { makeTemplate } from "../lib/sim/engine/templates";
+import { parseCombatant } from "../lib/sim/schema";
+import { validateCombatant } from "../lib/sim/validate";
+import { runScenario, runScenarioOnce, standardParty } from "../lib/sim/engine/scenario";
 
 describe("spell system", () => {
   it("the catalog spans levels 0-9 and every spell has valid metadata", () => {

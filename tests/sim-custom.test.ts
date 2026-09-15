@@ -13,9 +13,9 @@ import {
   applyRace,
   applyFeats,
   applyItems,
-} from "../src/lib/sim/ui";
-import { runScenarioOnce, runScenario, standardParty, buildParty } from "../src/lib/sim/engine/scenario";
-import { parseCombatant, type Combatant } from "../src/lib/sim/schema";
+} from "../lib/sim/ui";
+import { runScenarioOnce, runScenario, standardParty, buildParty } from "../lib/sim/engine/scenario";
+import { parseCombatant, type Combatant } from "../lib/sim/schema";
 
 const brute = (id: string): Combatant =>
   parseCombatant({
@@ -769,7 +769,7 @@ The bonus increases to +2.`;
 
 describe("per-PC spell picker", () => {
   it("replaces a caster's spell list with the chosen ids", async () => {
-    const { buildParty } = await import("../src/lib/sim/engine/scenario");
+    const { buildParty } = await import("../lib/sim/engine/scenario");
     const pc = buildParty([
       { template: "blaster-wizard", name: "Cy", level: 9, spells: ["fire-bolt", "fireball", "shield", "counterspell"] },
     ])[0];
@@ -784,7 +784,7 @@ describe("per-PC spell picker", () => {
   });
 
   it("stamps caster metadata so an imported PC can be re-spelled", async () => {
-    const { CASTER_BUILDERS } = await import("../src/lib/sim/spells/casterTemplates");
+    const { CASTER_BUILDERS } = await import("../lib/sim/spells/casterTemplates");
     const w = CASTER_BUILDERS["blaster-wizard"](9);
     expect(w.spellClass).toBe("wizard");
     expect(w.casterKind).toBe("full");
@@ -792,7 +792,7 @@ describe("per-PC spell picker", () => {
   });
 
   it("ignores spell picks on a non-caster", async () => {
-    const { buildParty } = await import("../src/lib/sim/engine/scenario");
+    const { buildParty } = await import("../lib/sim/engine/scenario");
     const a = buildParty([{ template: "gwm-fighter", name: "Bt", level: 9 }])[0];
     const b = buildParty([{ template: "gwm-fighter", name: "Bt", level: 9, spells: ["fireball"] }])[0];
     expect(b.actions.map((x) => x.id)).toEqual(a.actions.map((x) => x.id));
@@ -801,8 +801,8 @@ describe("per-PC spell picker", () => {
 
 describe("more races + flight", () => {
   it("Fairy: fly speed + Faerie Fire from level 3", async () => {
-    const { applyRace } = await import("../src/lib/sim/engine/pc-extras");
-    const { makeTemplate } = await import("../src/lib/sim/engine/templates");
+    const { applyRace } = await import("../lib/sim/engine/pc-extras");
+    const { makeTemplate } = await import("../lib/sim/engine/templates");
     const lo = applyRace(makeTemplate("blaster-wizard", 2), "Fairy", 2);
     expect(lo.c.speeds?.fly).toBe(lo.c.speeds?.walk);
     expect(lo.c.actions.some((a) => a.id === "racial-faerie-fire")).toBe(false);
@@ -811,8 +811,8 @@ describe("more races + flight", () => {
   });
 
   it("Genasi: subrace resistances + Fire Genasi's Produce Flame / Burning Hands", async () => {
-    const { applyRace } = await import("../src/lib/sim/engine/pc-extras");
-    const { makeTemplate } = await import("../src/lib/sim/engine/templates");
+    const { applyRace } = await import("../lib/sim/engine/pc-extras");
+    const { makeTemplate } = await import("../lib/sim/engine/templates");
     const t = () => makeTemplate("gwm-fighter", 6);
     expect(applyRace(t(), "Fire Genasi", 6).c.resistances).toContain("fire");
     expect(applyRace(t(), "Water Genasi", 6).c.resistances).toContain("acid");
@@ -822,8 +822,8 @@ describe("more races + flight", () => {
   });
 
   it("Tiefling gets Hellish Rebuke as a racial reaction from level 3", async () => {
-    const { applyRace } = await import("../src/lib/sim/engine/pc-extras");
-    const { makeTemplate } = await import("../src/lib/sim/engine/templates");
+    const { applyRace } = await import("../lib/sim/engine/pc-extras");
+    const { makeTemplate } = await import("../lib/sim/engine/templates");
     const r = applyRace(makeTemplate("gwm-fighter", 5), "Tiefling", 5).c;
     const hr = r.reactions.find((x) => x.id === "racial-hellish-rebuke");
     expect(hr).toBeDefined();
@@ -831,8 +831,8 @@ describe("more races + flight", () => {
   });
 
   it("a flyer ignores difficult terrain in Battle mode", async () => {
-    const { runBattle } = await import("../src/lib/sim/battle");
-    const { gridFromDef } = await import("../src/lib/sim/battle/grid");
+    const { runBattle } = await import("../lib/sim/battle");
+    const { gridFromDef } = await import("../lib/sim/battle/grid");
     // a 20-wide corridor of difficult terrain between the sides
     const w = 20, h = 6;
     let tiles = "";
@@ -860,9 +860,9 @@ describe("more races + flight", () => {
 
 describe("spell picker — class resolution", () => {
   it("resolves cleric / artificer from a templateId even without stamped caster metadata", async () => {
-    const { pcSpellClass } = await import("../src/lib/sim/ui");
-    const { applyPickedSpells } = await import("../src/lib/sim/spells/pick");
-    const { makeTemplate } = await import("../src/lib/sim/engine/templates");
+    const { pcSpellClass } = await import("../lib/sim/ui");
+    const { applyPickedSpells } = await import("../lib/sim/spells/pick");
+    const { makeTemplate } = await import("../lib/sim/engine/templates");
     // a PC restored from a setup saved before makeCaster stamped spellClass:
     // templateId = the class key, no spellClass/casterKind/spellAbility
     const staleCleric = { ...makeTemplate("life-cleric", 8), templateId: "cleric" };
@@ -884,7 +884,7 @@ describe("spell picker — class resolution", () => {
 
 describe("weapon selector", () => {
   it("rebuilds the base attack routine around the chosen weapon", async () => {
-    const { buildParty } = await import("../src/lib/sim/engine/scenario");
+    const { buildParty } = await import("../lib/sim/engine/scenario");
     const swings = (c: { actions: { id: string; automation: unknown[] }[] }) => {
       const atk = c.actions.find((a) => a.id === "attack")!;
       const eff = (atk.automation[0] as { effects: { type: string; bonus: number; onHit: { type: string; amount: string; damageType: string }[] }[] }).effects;

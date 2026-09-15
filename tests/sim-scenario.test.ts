@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { validateCombatant } from "../src/lib/sim/validate";
-import { TEMPLATE_IDS, makeTemplate } from "../src/lib/sim/engine/templates";
-import { buildParty, runScenario, runScenarioOnce, standardParty } from "../src/lib/sim/engine/scenario";
-import { monteCarlo } from "../src/lib/sim/engine/montecarlo";
-import { MINIONS } from "../src/lib/sim/engine/minions";
+import { validateCombatant } from "../lib/sim/validate";
+import { TEMPLATE_IDS, makeTemplate } from "../lib/sim/engine/templates";
+import { buildParty, runScenario, runScenarioOnce, standardParty } from "../lib/sim/engine/scenario";
+import { monteCarlo } from "../lib/sim/engine/montecarlo";
+import { MINIONS } from "../lib/sim/engine/minions";
 
 describe("Phase 3 — PC templates & scenarios", () => {
   it("every template builds a schema-valid PC at every key level", () => {

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { FIXTURES_BY_ID } from "../src/lib/sim/fixtures";
-import { runCombat, summarise } from "../src/lib/sim/engine/loop";
-import { monteCarlo } from "../src/lib/sim/engine/montecarlo";
-import { sweep } from "../src/lib/sim/engine/sweep";
+import { FIXTURES_BY_ID } from "../lib/sim/fixtures";
+import { runCombat, summarise } from "../lib/sim/engine/loop";
+import { monteCarlo } from "../lib/sim/engine/montecarlo";
+import { sweep } from "../lib/sim/engine/sweep";
 import {
   damageReport,
   levelLadder,
@@ -10,11 +10,11 @@ import {
   runScenarioOnce,
   scenarioSweep,
   standardParty,
-} from "../src/lib/sim/engine/scenario";
-import { encounterBudget } from "../src/lib/sim/encounterBudget";
-import { applyLoadout, makeTemplate, TEMPLATE_IDS } from "../src/lib/sim/engine/templates";
-import { parseCombatant } from "../src/lib/sim/schema";
-import { validateCombatant } from "../src/lib/sim/validate";
+} from "../lib/sim/engine/scenario";
+import { encounterBudget } from "../lib/sim/encounterBudget";
+import { applyLoadout, makeTemplate, TEMPLATE_IDS } from "../lib/sim/engine/templates";
+import { parseCombatant } from "../lib/sim/schema";
+import { validateCombatant } from "../lib/sim/validate";
 
 describe("Phase 3 part 3-4 — analysis, tuning, depth", () => {
   it("damage attribution: contributions sum and a first-casualty is recorded on a loss", () => {

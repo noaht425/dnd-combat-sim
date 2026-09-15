@@ -1,8 +1,8 @@
 import { it } from "vitest";
-import { FIXTURES_BY_ID } from "../src/lib/sim/fixtures";
-import { runCombat, summarise } from "../src/lib/sim/engine/loop";
-import { buildParty, standardParty } from "../src/lib/sim/engine/scenario";
-import { TEMPLATE_IDS } from "../src/lib/sim/engine/templates";
+import { FIXTURES_BY_ID } from "../lib/sim/fixtures";
+import { runCombat, summarise } from "../lib/sim/engine/loop";
+import { buildParty, standardParty } from "../lib/sim/engine/scenario";
+import { TEMPLATE_IDS } from "../lib/sim/engine/templates";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EDIT THESE, then run:  npm run narrate

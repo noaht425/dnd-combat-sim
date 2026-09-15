@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { ALL_FIXTURES, FIXTURES_BY_ID, MONSTER_FIXTURES } from "../src/lib/sim/fixtures";
-import { assess, formatAssessment } from "../src/lib/sim/calculator";
-import { genericParty } from "../src/lib/sim/party";
-import { parseCombatant, type Combatant } from "../src/lib/sim/schema";
+import { ALL_FIXTURES, FIXTURES_BY_ID, MONSTER_FIXTURES } from "../lib/sim/fixtures";
+import { assess, formatAssessment } from "../lib/sim/calculator";
+import { genericParty } from "../lib/sim/party";
+import { parseCombatant, type Combatant } from "../lib/sim/schema";
 
 // A synthetic block that carries the two special defensive rules the bundled
 // SRD monsters don't (flat damage reduction + undying return), so the

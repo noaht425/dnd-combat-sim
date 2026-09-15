@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { runBattle } from "../src/lib/sim/battle";
-import type { BattleDecision } from "../src/lib/sim/battle/control";
-import { standardParty } from "../src/lib/sim/engine/scenario";
+import { runBattle } from "../lib/sim/battle";
+import type { BattleDecision } from "../lib/sim/battle/control";
+import { standardParty } from "../lib/sim/engine/scenario";
 
 const party = () => standardParty(14);
 

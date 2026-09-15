@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import { assessAll, fullReport, summaryTable, assessVsParty } from "../src/lib/sim/report";
-import { FIXTURES_BY_ID } from "../src/lib/sim/fixtures";
+import { assessAll, fullReport, summaryTable, assessVsParty } from "../lib/sim/report";
+import { FIXTURES_BY_ID } from "../lib/sim/fixtures";
 
 // Run `npx vitest run tests/sim-report.test.ts` to see the Phase 1 read on
 // every bundled stat block. Not an assertion-heavy test — it exists to print

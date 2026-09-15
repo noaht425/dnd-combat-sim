@@ -7,9 +7,9 @@ import {
   makeGrid,
   setTerrain,
   type BattleMapDef,
-} from "../src/lib/sim/battle/grid";
-import { battleRoster, autoPlace, runBattle } from "../src/lib/sim/battle";
-import { standardParty } from "../src/lib/sim/engine/scenario";
+} from "../lib/sim/battle/grid";
+import { battleRoster, autoPlace, runBattle } from "../lib/sim/battle";
+import { standardParty } from "../lib/sim/engine/scenario";
 
 describe("map def serialisation", () => {
   it("tiles round-trip through the glyph string", () => {
@@ -85,7 +85,7 @@ describe("autoPlace", () => {
 
 describe("runBattleFromSetup honours setup.battleMap", () => {
   it("a walled-off map still resolves and uses the given dimensions", async () => {
-    const { runBattleFromSetup } = await import("../src/lib/sim/ui");
+    const { runBattleFromSetup } = await import("../lib/sim/ui");
     const g = makeGrid(24, 18, "floor");
     for (let y = 0; y < 14; y++) setTerrain(g, 12, y, "wall");
     const setup = {
