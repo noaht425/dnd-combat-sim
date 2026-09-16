@@ -21,12 +21,30 @@ const MOVE_VERBS = /\b(move|approach|advance|charge|go|walk|run|flee|retreat|wit
 const RETREAT_VERBS = /\b(retreat|withdraw|back away|fall back|flee|disengage)\b/;
 const DASH_WORDS = /\bdash\b/;
 
+// Scoring the action name against the WHOLE clause badly dilutes it once a
+// target phrase is tacked on — "attack the goblin" vs "attack" and
+// "cast fireball at the ogre" vs "Fireball" both used to score too low to
+// match. Instead score every contiguous word n-gram of the clause (up to 4
+// words — action names run 1-3 words) against each action and take the best
+// hit anywhere in the clause; the target phrase is resolved separately via
+// extractTargetPhrase / the trailing remainder.
 function findBestAction(text: string, pool: AwaitAction[]): { action: AwaitAction; score: number } | undefined {
   if (!pool.length) return undefined;
-  const scored = pool
-    .map((a) => ({ a, s: Math.max(similarity(text, a.name), similarity(text, a.id.replace(/-/g, " "))) }))
-    .sort((x, y) => y.s - x.s);
-  return scored[0].s >= 0.5 ? { action: scored[0].a, score: scored[0].s } : undefined;
+  const words = normalize(text).split(" ").filter(Boolean);
+  const windows: string[] = [];
+  for (let start = 0; start < words.length; start++) {
+    for (let len = 1; len <= Math.min(4, words.length - start); len++) {
+      windows.push(words.slice(start, start + len).join(" "));
+    }
+  }
+  let best: { action: AwaitAction; score: number } | undefined;
+  for (const a of pool) {
+    const targets = [a.name, a.id.replace(/-/g, " ")];
+    let s = 0;
+    for (const w of windows) for (const t of targets) s = Math.max(s, similarity(w, t));
+    if (!best || s > best.score) best = { action: a, score: s };
+  }
+  return best && best.score >= 0.5 ? best : undefined;
 }
 
 /** best reachable anchor cell (from `awaiting.reachable`) minimizing/maximizing

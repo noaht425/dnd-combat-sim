@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { advance } from "@/lib/combat/orchestrator";
 import type { FightSession } from "@/lib/combat/session";
 
 interface ChatLine {
@@ -10,6 +11,7 @@ interface ChatLine {
 }
 
 const STORAGE_KEY = "dnd-combat-sim.session.v1";
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
 let idCounter = 0;
 const nextId = () => idCounter++;
@@ -20,21 +22,26 @@ export default function Home() {
     { id: nextId(), role: "system", text: "Build a party — try \"draconic sorcerer level 12\" — then set enemies with \"enemies: an adult red dragon\"." },
   ]);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // one-time hydration from localStorage — can't run during SSR (no
     // `window`) or as a lazy useState initializer (server/client would
-    // then disagree and React would flag a hydration mismatch), so this is
-    // the one legitimate case for a bare setState-in-effect here.
+    // then disagree and React would flag a hydration mismatch).
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (raw) setSession(JSON.parse(raw));
     } catch {
       // ignore — a fresh session is a fine fallback
+    }
+    // register the offline service worker — everything the app needs runs
+    // client-side already, so once this has cached, the fight sim keeps
+    // working with no network at all.
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register(`${BASE_PATH}/sw.js`).catch(() => {
+        // offline support is a bonus, not a requirement — the app still works without it
+      });
     }
   }, []);
 
@@ -42,34 +49,22 @@ export default function Home() {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [lines]);
 
-  async function send(message: string) {
-    if (!message.trim() || busy) return;
-    setBusy(true);
+  function send(message: string) {
+    if (!message.trim()) return;
     setLines((prev) => [...prev, { id: nextId(), role: "user", text: message }]);
     setInput("");
     try {
-      const res = await fetch("/api/battle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session, message }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setLines((prev) => [...prev, { id: nextId(), role: "system", text: `Error: ${data.error ?? "unknown"}` }]);
-        return;
-      }
-      setSession(data.session);
+      const result = advance(session, message);
+      setSession(result.session);
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data.session));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(result.session));
       } catch {
         // best-effort — the explicit Save button is the real save/resume path
       }
-      const text: string = (data.lines as string[]).join("\n");
+      const text = result.lines.join("\n");
       if (text) setLines((prev) => [...prev, { id: nextId(), role: "system", text }]);
-    } catch {
-      setLines((prev) => [...prev, { id: nextId(), role: "system", text: "Couldn't reach the server — try again." }]);
-    } finally {
-      setBusy(false);
+    } catch (e) {
+      setLines((prev) => [...prev, { id: nextId(), role: "system", text: `Something broke resolving that: ${e instanceof Error ? e.message : "unknown error"}` }]);
     }
   }
 
@@ -132,7 +127,6 @@ export default function Home() {
             {l.text}
           </div>
         ))}
-        {busy && <div className="self-start text-xs text-zinc-400 px-3.5">…</div>}
       </div>
 
       <form
@@ -153,7 +147,7 @@ export default function Home() {
           }}
           className="flex-1 rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
         />
-        <button type="submit" disabled={busy || !input.trim()} className="rounded-full bg-indigo-600 text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40">
+        <button type="submit" disabled={!input.trim()} className="rounded-full bg-indigo-600 text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40">
           Send
         </button>
       </form>
