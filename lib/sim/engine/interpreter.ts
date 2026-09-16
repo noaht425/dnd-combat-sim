@@ -529,10 +529,12 @@ export function runAction(
   const parts: string[] = [];
   for (const u of state.units.values()) {
     const delta = (before.get(u.id) ?? 0) - (u.hp + u.tempHp);
-    // an ally *losing* HP during my action is reaction / aura collateral (a
-    // triggered breath, a damaging aura) — that reaction logs its own line, so
-    // don't double-count it here. Ally healing still shows.
-    if (u.side === source.side && u.id !== source.id && delta > 0) continue;
+    // a same-side unit *losing* HP during my action — including me — is
+    // reaction / aura collateral (Riposte striking back, a damaging aura):
+    // that reaction logs its own line, so don't double-count it here. No
+    // action currently deals intentional self-damage, so excluding the
+    // source too costs nothing. Healing still shows either way.
+    if (u.side === source.side && delta > 0) continue;
     const newConds = [...u.conditions.keys()].filter((c) => !condsBefore.get(u.id)?.has(c));
     const newFx = u.effects.map((e) => e.name).filter((n) => !fxBefore.get(u.id)?.has(n));
     const bits: string[] = [];

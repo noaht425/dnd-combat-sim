@@ -103,6 +103,10 @@ export interface UnitSnap {
   conditions: string[];
   concentrating: boolean;
   isActor: boolean;
+  /** ki, spell slots, rage, action surge, ... — tracked internally the whole
+   *  fight (gates which actions are even offered) but otherwise invisible to
+   *  the player; surfaced here so "resources"/"ki left" can answer it. */
+  resources?: Record<string, { cur: number; max: number }>;
 }
 
 export interface BattleFrame {
@@ -176,6 +180,14 @@ export function deriveZones(state: BattleState): void {
   }
 }
 
+function buildResourceSnap(u: CombatantState): Record<string, { cur: number; max: number }> | undefined {
+  const defs = Object.entries(u.ref.resources ?? {}).filter(([k, d]) => !k.startsWith("__") && d.max !== "unbounded" && d.max > 0);
+  if (!defs.length) return undefined;
+  const out: Record<string, { cur: number; max: number }> = {};
+  for (const [k, d] of defs) out[k] = { cur: u.resources.get(k) ?? 0, max: d.max as number };
+  return out;
+}
+
 export function snapshotUnits(state: BattleState, actorId?: string): UnitSnap[] {
   const out: UnitSnap[] = [];
   for (const u of state.units.values()) {
@@ -197,6 +209,7 @@ export function snapshotUnits(state: BattleState, actorId?: string): UnitSnap[] 
       conditions: [...u.conditions.keys()],
       concentrating: !!u.concentratingOn,
       isActor: u.id === actorId,
+      resources: buildResourceSnap(u),
     });
   }
   return out;

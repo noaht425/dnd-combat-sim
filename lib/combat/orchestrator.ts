@@ -20,13 +20,29 @@ import { bestMatch } from "./fuzzy";
 
 const INFO_ALL = /^(actions?|options?|spells?|weapons?|abilities|what can i do|show actions|list actions|my options)\??$/i;
 const INFO_ONE = /^(?:describe|what does|what is|explain|details?(?: on| for)?|look at|examine)\s+(.+?)\??$/i;
+const INFO_RESOURCES = /^(resources?|my resources|resources left|ki|ki left|slots?|spell slots?|slots left|rage|rage left|superiority( dice)?|action surge)\??$/i;
+
+/** "slot2" -> "2nd-level slots", "action_surge" -> "Action Surge", etc. —
+ *  resource ids are catalog keys, not display text (same issue as effect
+ *  names in narrate.ts's humanize()). */
+function resourceLabel(key: string): string {
+  const slot = key.match(/^slot(\d)$/);
+  if (slot) {
+    const n = Number(slot[1]);
+    return `${n}${n === 1 ? "st" : n === 2 ? "nd" : n === 3 ? "rd" : "th"}-level slots`;
+  }
+  if (key === "pactSlot") return "Pact slots";
+  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 /** "actions" / "spells" -> every current option with a plain-English line;
- *  "describe fireball" / "what does X do" -> just that one. Read-only — it
- *  doesn't consume a turn or touch decisions. Returns undefined when the
- *  message isn't an info query, so the caller falls through to normal
- *  turn-command parsing. */
-function answerInfoQuery(message: string, setup: BattleSetup, awaiting: AwaitingInput): string[] | undefined {
+ *  "describe fireball" / "what does X do" -> just that one; "resources" /
+ *  "ki left" -> remaining ki / spell slots / rage / etc. (tracked the whole
+ *  fight but otherwise invisible — spec §4's targeting-info parity for your
+ *  own resource pool). Read-only — it doesn't consume a turn or touch
+ *  decisions. Returns undefined when the message isn't an info query, so the
+ *  caller falls through to normal turn-command parsing. */
+function answerInfoQuery(message: string, setup: BattleSetup, awaiting: AwaitingInput, unitSnap: UnitSnap | undefined): string[] | undefined {
   const trimmed = message.trim();
   const pool = [...awaiting.actions, ...awaiting.bonusActions];
   const combatant = findCombatant(setup, awaiting.unitId);
@@ -38,6 +54,12 @@ function answerInfoQuery(message: string, setup: BattleSetup, awaiting: Awaiting
       const full = combatant.actions.find((x) => x.id === a.id);
       return full ? `${a.name}: ${describeAction(full, combatant.actions)}` : a.name;
     });
+  }
+
+  if (INFO_RESOURCES.test(trimmed)) {
+    const entries = Object.entries(unitSnap?.resources ?? {});
+    if (!entries.length) return [`${awaiting.unitName} doesn't track any limited resources.`];
+    return [entries.map(([k, r]) => `${resourceLabel(k)}: ${r.cur}/${r.max}`).join(", ")];
   }
 
   const one = trimmed.match(INFO_ONE);
@@ -320,13 +342,14 @@ function handleFightMessage(s: FightingSession, message: string): AdvanceResult 
   }
 
   if (outcomeBefore.awaiting) {
+    const awaiting = outcomeBefore.awaiting;
     if (/^undo$/i.test(message.trim())) {
       const decisions = (s.setup.decisions ?? []).slice(0, -1);
       return continueFight({ ...s, setup: { ...s.setup, decisions } });
     }
-    const info = answerInfoQuery(message, s.setup, outcomeBefore.awaiting);
+    const info = answerInfoQuery(message, s.setup, awaiting, lastSnap?.find((u) => u.id === awaiting.unitId));
     if (info) return attachLive(s, info, outcomeBefore);
-    const r = interpretTurnCommand(message, outcomeBefore.awaiting, lastSnap);
+    const r = interpretTurnCommand(message, awaiting, lastSnap);
     if (r.kind === "clarify") return attachLive(s, [r.question], outcomeBefore);
     if (r.kind === "reaction-mismatch") return attachLive(s, ["(no reaction is pending right now)"], outcomeBefore);
     const decisions = [...(s.setup.decisions ?? []), r.decision];
