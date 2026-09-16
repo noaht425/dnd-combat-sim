@@ -3,7 +3,7 @@
 // runBattle(setup) (cheap, pure, deterministic) rather than keeping a mutable
 // server-side fight object — the client just carries the session JSON.
 
-import { runBattle, battleRoster, type AwaitingInput, type AwaitingReaction, type BattleOutcome, type BattleSetup } from "../sim/battle";
+import { runBattle, battleRoster, type AwaitingInput, type AwaitingReaction, type BattleGrid, type BattleOutcome, type BattleSetup, type RosterInit } from "../sim/battle";
 import { standardParty } from "../sim/engine/scenario";
 import { parsePartyMember, parseEnemies, buildSummaryLine, type PartyMemberParse } from "./setupParser";
 import { classAliasFor } from "./classTemplates";
@@ -67,6 +67,10 @@ export interface AdvanceResult {
    *  whenever there's been at least one frame, including mid-reaction
    *  (unlike liveUnits, which needs an open turn to have positions to merge) */
   roster?: UnitSnap[];
+  /** the map (dimensions + terrain glyphs) — static for the whole fight, for a board view */
+  grid?: BattleGrid;
+  /** initiative order (rolled once) — for the board view's turn-order line */
+  initiative?: RosterInit[];
 }
 
 /** Attaches the current turn/reaction/board state to a response so the UI can
@@ -81,6 +85,8 @@ function attachLive(session: FightSession, lines: string[], outcome?: BattleOutc
     awaitingReaction: outcome.awaitingReaction,
     liveUnits: outcome.awaiting ? liveUnits(outcome.awaiting.units, outcome.frames.at(-1)?.units) : undefined,
     roster: outcome.frames.at(-1)?.units,
+    grid: outcome.grid,
+    initiative: outcome.initiative,
   };
 }
 

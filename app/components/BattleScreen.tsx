@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { AwaitingInput, AwaitingReaction } from "@/lib/sim/battle";
+import type { AwaitingInput, AwaitingReaction, BattleGrid, RosterInit } from "@/lib/sim/battle";
 import type { UnitSnap } from "@/lib/sim/battle/state";
+import { TERRAIN_GLYPH, type Terrain } from "@/lib/sim/battle/grid";
 import type { LiveUnit } from "@/lib/combat/targetResolver";
 import type { SpeechInput } from "./useSpeech";
 
@@ -18,6 +19,8 @@ interface Props {
   awaitingReaction?: AwaitingReaction;
   liveUnitsList?: LiveUnit[];
   roster?: UnitSnap[];
+  grid?: BattleGrid;
+  initiative?: RosterInit[];
   done: boolean;
   onCommand: (text: string) => void;
   onReaction: (take: boolean) => void;
@@ -67,6 +70,84 @@ function UnitBadge({ u, tone }: { u: UnitSnap; tone: "azure" | "blood" }) {
   );
 }
 
+// terrain type -> color; floor gets a dim center-dot rather than its raw "."
+// glyph, same convention as the Vault battle map this was adapted from
+const TERRAIN_COLOR: Partial<Record<Terrain, string>> = {
+  wall: "var(--parchment-faint)",
+  difficult: "var(--moss-bright)",
+  hazard: "var(--blood-bright)",
+  cover: "var(--gold-bright)",
+};
+
+function BoardView({ grid, roster, initiative, actorId, expanded, onToggle }: { grid?: BattleGrid; roster?: UnitSnap[]; initiative?: RosterInit[]; actorId?: string; expanded: boolean; onToggle: () => void }) {
+  if (!grid || !roster?.length) return null;
+
+  const unitAt = new Map<string, UnitSnap>();
+  for (const u of roster) {
+    if (!u.alive) continue;
+    for (let dy = 0; dy < u.fp; dy++) for (let dx = 0; dx < u.fp; dx++) unitAt.set(`${u.x + dx},${u.y + dy}`, u);
+  }
+
+  return (
+    <div className="shrink-0 px-4 py-2" style={{ borderBottom: "1px solid var(--line)", background: "var(--ink-2)" }}>
+      <button onClick={onToggle} className="text-[10px] uppercase tracking-wider font-display mb-1.5" style={{ color: "var(--gold-bright)" }}>
+        {expanded ? "▾" : "▸"} Board
+      </button>
+      {expanded && (
+        <div className="overflow-x-auto">
+          {initiative && initiative.length > 0 && (
+            <p className="text-[10px] mb-1 truncate font-mono" style={{ color: "var(--parchment-faint)" }}>
+              {initiative.map((i) => i.name).join(" › ")}
+            </p>
+          )}
+          <div className="inline-flex font-mono leading-none select-none" style={{ fontSize: "11px" }}>
+            <div className="flex flex-col text-right pr-1 tabular-nums shrink-0" style={{ color: "var(--parchment-faint)", opacity: 0.5 }}>
+              {Array.from({ length: grid.height }, (_, y) => (
+                <span key={y} style={{ height: "1.15em", width: "1.6ch" }}>
+                  {y + 1}
+                </span>
+              ))}
+            </div>
+            <div className="grid" style={{ gridTemplateColumns: `repeat(${grid.width}, 1.15em)` }}>
+              {Array.from({ length: grid.height }, (_, y) => (
+                <div key={y} className="contents">
+                  {Array.from({ length: grid.width }, (_, x) => {
+                    const key = `${x},${y}`;
+                    const u = unitAt.get(key);
+                    const t = grid.tiles[y * grid.width + x];
+                    let ch = t === "floor" ? "·" : TERRAIN_GLYPH[t];
+                    let color = TERRAIN_COLOR[t] ?? "var(--parchment-faint)";
+                    let bg: string | undefined;
+                    let strike = false;
+                    if (u) {
+                      ch = u.glyph;
+                      color = u.side === "party" ? "var(--azure-bright)" : "var(--blood-bright)";
+                      if (u.downed) {
+                        color = "var(--parchment-faint)";
+                        strike = true;
+                      }
+                      if (u.id === actorId) bg = "rgba(201, 162, 39, 0.3)";
+                    }
+                    return (
+                      <span
+                        key={x}
+                        className="text-center"
+                        style={{ height: "1.15em", color, background: bg, textDecoration: strike ? "line-through" : undefined }}
+                      >
+                        {ch}
+                      </span>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RosterBar({ roster }: { roster?: UnitSnap[] }) {
   if (!roster?.length) return null;
   const party = roster.filter((u) => u.side === "party");
@@ -93,6 +174,8 @@ export default function BattleScreen({
   awaitingReaction,
   liveUnitsList,
   roster,
+  grid,
+  initiative,
   done,
   onCommand,
   onReaction,
@@ -102,6 +185,7 @@ export default function BattleScreen({
   onToggleSpeak,
 }: Props) {
   const [input, setInput] = useState("");
+  const [showBoard, setShowBoard] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -133,6 +217,7 @@ export default function BattleScreen({
   return (
     <div className="flex flex-col h-full">
       <RosterBar roster={roster} />
+      <BoardView grid={grid} roster={roster} initiative={initiative} actorId={awaiting?.unitId} expanded={showBoard} onToggle={() => setShowBoard((s) => !s)} />
 
       <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-2">
         {lines.map((l) => (

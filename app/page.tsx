@@ -13,7 +13,11 @@ const SPEAK_KEY = "dnd-combat-sim.speak-enabled";
 let idCounter = 0;
 const nextId = () => idCounter++;
 
-type LiveState = Pick<AdvanceResult, "awaiting" | "awaitingReaction" | "liveUnits" | "roster">;
+type LiveState = Pick<AdvanceResult, "awaiting" | "awaitingReaction" | "liveUnits" | "roster" | "grid" | "initiative">;
+
+function pickLive(r: AdvanceResult): LiveState {
+  return { awaiting: r.awaiting, awaitingReaction: r.awaitingReaction, liveUnits: r.liveUnits, roster: r.roster, grid: r.grid, initiative: r.initiative };
+}
 
 export default function Home() {
   const [session, setSession] = useState<FightSession | undefined>(undefined);
@@ -34,10 +38,7 @@ export default function Home() {
         const restored: FightSession = JSON.parse(raw);
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setSession(restored);
-        if (restored.phase !== "setup") {
-          const peeked = peekFight(restored);
-          setLive({ awaiting: peeked.awaiting, awaitingReaction: peeked.awaitingReaction, liveUnits: peeked.liveUnits, roster: peeked.roster });
-        }
+        if (restored.phase !== "setup") setLive(pickLive(peekFight(restored)));
       }
       setSpeakEnabled(localStorage.getItem(SPEAK_KEY) === "1");
     } catch {
@@ -57,7 +58,7 @@ export default function Home() {
 
   function applyResult(result: AdvanceResult, userText?: string) {
     persist(result.session);
-    setLive({ awaiting: result.awaiting, awaitingReaction: result.awaitingReaction, liveUnits: result.liveUnits, roster: result.roster });
+    setLive(pickLive(result));
     if (result.session.phase === "setup") {
       setFeedback(result.lines.join("\n"));
       return;
@@ -116,12 +117,7 @@ export default function Home() {
         const parsed: FightSession = JSON.parse(String(reader.result));
         persist(parsed);
         setLines([{ id: nextId(), role: "system", text: "Loaded saved fight. Say anything to continue." }]);
-        if (parsed.phase !== "setup") {
-          const peeked = peekFight(parsed);
-          setLive({ awaiting: peeked.awaiting, awaitingReaction: peeked.awaitingReaction, liveUnits: peeked.liveUnits, roster: peeked.roster });
-        } else {
-          setLive({});
-        }
+        setLive(parsed.phase !== "setup" ? pickLive(peekFight(parsed)) : {});
       } catch {
         setFeedback("That file didn't look like a saved fight.");
       }
@@ -160,6 +156,8 @@ export default function Home() {
             awaitingReaction={live.awaitingReaction}
             liveUnitsList={live.liveUnits}
             roster={live.roster}
+            grid={live.grid}
+            initiative={live.initiative}
             done={fighting.phase === "done"}
             onCommand={runCommand}
             onReaction={reactTo}
