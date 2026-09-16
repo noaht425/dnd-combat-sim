@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { CLASS_TEMPLATES } from "@/lib/combat/classTemplates";
 import { listMonsters } from "@/lib/combat/monsters";
+import { TERRAIN_PRESETS } from "@/lib/combat/terrain";
 import { removeEnemy, removePartyMember, type SetupDraft } from "@/lib/combat/session";
 import type { SpeechInput } from "./useSpeech";
 
@@ -180,6 +181,28 @@ export default function SetupScreen({ draft, onChangeDraft, onCommand, onStart, 
             Add
           </button>
         </div>
+      </section>
+
+      <section className="panel p-4">
+        <SectionHeader tone="gold">⛰ Terrain</SectionHeader>
+        <select
+          value={draft.terrainId ?? ""}
+          onChange={(e) => onCommand(e.target.value ? `terrain: ${TERRAIN_PRESETS.find((t) => t.id === e.target.value)!.name}` : "terrain: none")}
+          className={`${inputCls} w-full`}
+          style={inputStyle}
+        >
+          <option value="">Plain open room (default)</option>
+          {TERRAIN_PRESETS.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+        {draft.terrainId && (
+          <p className="mt-2 text-xs leading-relaxed" style={{ color: "var(--parchment-dim)" }}>
+            {TERRAIN_PRESETS.find((t) => t.id === draft.terrainId)?.blurb}
+          </p>
+        )}
       </section>
 
       <section className="panel p-4">

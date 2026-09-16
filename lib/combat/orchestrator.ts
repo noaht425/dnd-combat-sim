@@ -3,18 +3,20 @@
 // runBattle(setup) (cheap, pure, deterministic) rather than keeping a mutable
 // server-side fight object — the client just carries the session JSON.
 
-import { runBattle, type AwaitingInput, type AwaitingReaction, type BattleOutcome, type BattleSetup } from "../sim/battle";
+import { runBattle, battleRoster, type AwaitingInput, type AwaitingReaction, type BattleOutcome, type BattleSetup } from "../sim/battle";
 import { standardParty } from "../sim/engine/scenario";
 import { parsePartyMember, parseEnemies, buildSummaryLine, type PartyMemberParse } from "./setupParser";
 import { classAliasFor } from "./classTemplates";
 import { interpretTurnCommand, findBestAction } from "./commandParser";
 import { interpretReaction } from "./reactionParser";
 import { narrateNewFrames, postFightReadout } from "./narrate";
+import { findTerrain, buildTerrainGrid, pickOpeningLine, TERRAIN_PRESETS } from "./terrain";
 import { newSession, partyMemberIds, type FightSession, type SetupDraft, type FightingSession } from "./session";
 import { findCombatant } from "./actionLookup";
 import { describeAction } from "./describeAction";
 import { liveUnits, type LiveUnit } from "./targetResolver";
 import type { UnitSnap } from "../sim/battle/state";
+import { bestMatch } from "./fuzzy";
 
 const INFO_ALL = /^(actions?|options?|spells?|weapons?|abilities|what can i do|show actions|list actions|my options)\??$/i;
 const INFO_ONE = /^(?:describe|what does|what is|explain|details?(?: on| for)?|look at|examine)\s+(.+?)\??$/i;
@@ -94,6 +96,8 @@ function draftSummary(d: SetupDraft): string[] {
 }
 
 function startFight(d: SetupDraft): AdvanceResult {
+  const preset = d.terrainId ? findTerrain(d.terrainId) : undefined;
+  const grid = preset ? buildTerrainGrid(preset, battleRoster({ party: d.party, enemies: d.enemyEntries }).length) : undefined;
   const setup = {
     party: d.party,
     enemies: d.enemyEntries,
@@ -103,12 +107,17 @@ function startFight(d: SetupDraft): AdvanceResult {
     controlled: partyMemberIds(d.party),
     decisions: [],
     reactionChoices: [],
+    grid,
   };
   const outcome = runBattle(setup);
   const session: FightingSession = { phase: outcome.done ? "done" : "fighting", setup, frameCursor: 0 };
   const { lines: narration, nextIndex } = narrateNewFrames(outcome.frames, 0);
   session.frameCursor = nextIndex;
-  const lines = [...narration, ...promptLines(outcome)];
+  // spec §2.8 opening scene — a couple of atmospheric sentences ahead of the
+  // engine's own bare "The battle begins", seeded so a save/resume replay
+  // reads the same way twice
+  const opening = preset ? [pickOpeningLine(preset, d.seed)] : [];
+  const lines = [...opening, ...narration, ...promptLines(outcome)];
   return attachLive(session, lines, outcome);
 }
 
@@ -135,6 +144,28 @@ function handleSetupMessage(d: SetupDraft, message: string): AdvanceResult {
   const low = text.toLowerCase();
 
   if (/^(status|party|who|show)$/i.test(low)) return { session: d, lines: draftSummary(d) };
+
+  if (/^(terrains?|maps?)\??$/i.test(low)) {
+    const current = d.terrainId ? TERRAIN_PRESETS.find((t) => t.id === d.terrainId)?.name : "plain open room (default)";
+    return { session: d, lines: [`Current: ${current}. Options: ${TERRAIN_PRESETS.map((t) => t.name).join(", ")}. Say "terrain: <name>" to set one.`] };
+  }
+  const terrainMatch = text.match(/^(?:terrain|map)\s*:?\s*(.+)$/i);
+  if (terrainMatch) {
+    const q = terrainMatch[1].trim();
+    if (/^(none|default|clear|open room|plain)$/i.test(q)) {
+      const nd: SetupDraft = { ...d, terrainId: undefined };
+      return { session: nd, lines: ["Terrain cleared — back to a plain open room."] };
+    }
+    const found = bestMatch(
+      q,
+      TERRAIN_PRESETS.map((t) => ({ key: t.id.replace(/-/g, " "), label: t.name, value: t })),
+    );
+    if (!found.best || found.bestScore < 0.5) {
+      return { session: d, lines: [`I don't have a terrain called "${q}". Options: ${TERRAIN_PRESETS.map((t) => t.name).join(", ")}.`] };
+    }
+    const nd: SetupDraft = { ...d, terrainId: found.best.value.id };
+    return { session: nd, lines: [`Terrain set: ${found.best.value.name} — ${found.best.value.blurb}.`] };
+  }
 
   if (START_WORDS.test(low)) {
     if (!d.party.length) return { session: d, lines: ["No party members yet — add at least one (e.g. \"draconic sorcerer level 12\")."] };

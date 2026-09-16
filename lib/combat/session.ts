@@ -12,6 +12,8 @@ export interface SetupDraft {
   enemyEntries: string[];
   enemyNames: string[];
   seed: number;
+  /** a TerrainPreset id (terrain.ts) — spec §2.7; a plain open room when unset */
+  terrainId?: string;
 }
 
 export interface FightingSession {
