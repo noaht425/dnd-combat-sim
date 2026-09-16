@@ -260,9 +260,12 @@ export function geoTargetsFor(state: BattleState, u: CombatantState, plan: Battl
     const me = boxOfUnit(state, source);
 
     if (who === "area" || who === "eachEnemy") {
-      if (plan.templateHitIds && plan.templateHitIds.length) {
-        const hit = plan.templateHitIds.map((id) => state.units.get(id)).filter((x): x is CombatantState => !!x && x.alive && x.side !== source.side);
-        if (hit.length) return hit;
+      // as in control.ts's runOne: a defined-but-empty templateHitIds is a
+      // genuine whiff (real geometry was computed, nobody was in it), not
+      // "no template was planned" — only the latter falls back to "everyone
+      // visible."
+      if (plan.templateHitIds !== undefined) {
+        return plan.templateHitIds.map((id) => state.units.get(id)).filter((x): x is CombatantState => !!x && x.alive && x.side !== source.side);
       }
       // fall back: everyone the caster can see (front line)
       return foes.filter((f) => hasLineOfSight(state.grid, me, boxOfUnit(state, f)));

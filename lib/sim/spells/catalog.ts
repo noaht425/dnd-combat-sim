@@ -191,7 +191,7 @@ export const SPELLS: Spell[] = [
   S_("shatter", "Shatter", 2, "evocation", [B, S, W, K], { role: "damage", max: 9, build: saveDmg(2, "con", 3, 8, "thunder", 1) }),
   S_("silence", "Silence", 2, "illusion", [B, C, R], { conc: true, rit: true, role: "control" }),
   S_("spider-climb", "Spider Climb", 2, "transmutation", [S, W, K, A], { conc: true }),
-  S_("spike-growth", "Spike Growth", 2, "transmutation", [D, R], { conc: true, role: "control", build: () => [{ type: "target", who: { who: "eachEnemy" }, effects: [{ type: "applyEffect", name: "spike-growth", durationRounds: 10, mods: { speedZero: false }, tick: [{ type: "damage", amount: "2d4", damageType: "piercing" }] }] }] }),
+  S_("spike-growth", "Spike Growth", 2, "transmutation", [D, R], { conc: true, role: "control", build: () => [{ type: "target", who: { who: "area", shape: "sphere", size: 20 }, effects: [{ type: "applyEffect", name: "spike-growth", durationRounds: 10, mods: { speedZero: false }, tick: [{ type: "damage", amount: "2d4", damageType: "piercing" }] }] }] }),
   S_("spiritual-weapon", "Spiritual Weapon", 2, "evocation", [C], { ct: "bonus", role: "damage", max: 9, build: (c) => [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: c.toHit, onHit: [{ type: "damage", amount: `${1 + Math.floor(Math.max(0, c.slotLevel - 2) / 2)}d8+${c.spellMod}`, damageType: "force" }] }] }] }),
   S_("suggestion", "Suggestion", 2, "enchantment", [B, S, W, K], { conc: true, role: "control", build: saveCond("wis", "charmed", 10, { saveEnds: false }) }),
   S_("warding-bond", "Warding Bond", 2, "abjuration", [C, A], { role: "defense" }),

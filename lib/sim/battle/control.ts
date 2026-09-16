@@ -285,7 +285,12 @@ export function applyDecision(state: BattleState, u: CombatantState, d: BattleDe
         const who = node.who.who;
         if (who === "self" || who === "eachAlly" || who === "lowestHpAlly" || who === "chosenEnemies") return null;
         if (who === "area" || who === "eachEnemy") {
-          if (templateHitIds && templateHitIds.length) {
+          // templateHitIds is only ever set when real geometry was actually
+          // computed (an "area" node with an aoeOrigin) — an EMPTY result
+          // from that is a genuine whiff (nobody was in the template), not
+          // "geometry wasn't attempted." Checking .length here used to treat
+          // the two the same and silently hit every enemy on a clean miss.
+          if (templateHitIds !== undefined) {
             return templateHitIds
               .map((id) => state.units.get(id))
               .filter((x): x is CombatantState => !!x && x.alive && x.side !== source.side);

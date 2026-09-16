@@ -93,12 +93,25 @@ export interface AdvanceResult {
   grid?: BattleGrid;
   /** initiative order (rolled once) — for the board view's turn-order line */
   initiative?: RosterInit[];
+  /** the cells of the AoE just cast this message (cone/line/sphere footprint),
+   *  for a one-shot shape overlay on the board — cleared on the next message
+   *  that doesn't itself cast one. */
+  lastAoeCells?: string[];
+}
+
+/** the most recent AoE's footprint among frames narrated just now (not an
+ *  old one from earlier in the fight) — for the board's shape overlay. */
+function lastTemplateCells(frames: BattleOutcome["frames"], sinceIndex: number): string[] | undefined {
+  for (let i = frames.length - 1; i >= sinceIndex; i--) {
+    if (frames[i].templateCells?.length) return frames[i].templateCells;
+  }
+  return undefined;
 }
 
 /** Attaches the current turn/reaction/board state to a response so the UI can
  *  render buttons instead of parsing what came back as chat text. `outcome`
  *  is omitted for setup-phase responses, where none of this applies. */
-function attachLive(session: FightSession, lines: string[], outcome?: BattleOutcome): AdvanceResult {
+function attachLive(session: FightSession, lines: string[], outcome?: BattleOutcome, lastAoeCells?: string[]): AdvanceResult {
   if (!outcome) return { session, lines };
   return {
     session,
@@ -109,6 +122,7 @@ function attachLive(session: FightSession, lines: string[], outcome?: BattleOutc
     roster: outcome.frames.at(-1)?.units,
     grid: outcome.grid,
     initiative: outcome.initiative,
+    lastAoeCells,
   };
 }
 
@@ -151,7 +165,7 @@ function startFight(d: SetupDraft): AdvanceResult {
   // no other way to hear turn order.
   const initiativeLine = outcome.initiative?.length ? [`Turn order: ${outcome.initiative.map((i) => i.name).join(" > ")}.`] : [];
   const lines = [...opening, ...initiativeLine, ...narration, ...promptLines(outcome)];
-  return attachLive(session, lines, outcome);
+  return attachLive(session, lines, outcome, lastTemplateCells(outcome.frames, 0));
 }
 
 function promptLines(outcome: BattleOutcome): string[] {
@@ -363,9 +377,10 @@ function handleFightMessage(s: FightingSession, message: string): AdvanceResult 
 function continueFight(s: FightingSession, extraNotes: string[] = []): AdvanceResult {
   const outcome = runBattle(s.setup);
   const { lines: narration, nextIndex } = narrateNewFrames(outcome.frames, s.frameCursor);
+  const aoeCells = lastTemplateCells(outcome.frames, s.frameCursor);
   const session: FightingSession = { ...s, frameCursor: nextIndex, phase: outcome.done ? "done" : "fighting" };
   const lines = [...extraNotes, ...narration, ...promptLines(outcome)];
-  return attachLive(session, lines, outcome);
+  return attachLive(session, lines, outcome, aoeCells);
 }
 
 /** Read-only: current awaiting/awaitingReaction/board state without

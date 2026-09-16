@@ -13,10 +13,10 @@ const SPEAK_KEY = "dnd-combat-sim.speak-enabled";
 let idCounter = 0;
 const nextId = () => idCounter++;
 
-type LiveState = Pick<AdvanceResult, "awaiting" | "awaitingReaction" | "liveUnits" | "roster" | "grid" | "initiative">;
+type LiveState = Pick<AdvanceResult, "awaiting" | "awaitingReaction" | "liveUnits" | "roster" | "grid" | "initiative" | "lastAoeCells">;
 
 function pickLive(r: AdvanceResult): LiveState {
-  return { awaiting: r.awaiting, awaitingReaction: r.awaitingReaction, liveUnits: r.liveUnits, roster: r.roster, grid: r.grid, initiative: r.initiative };
+  return { awaiting: r.awaiting, awaitingReaction: r.awaitingReaction, liveUnits: r.liveUnits, roster: r.roster, grid: r.grid, initiative: r.initiative, lastAoeCells: r.lastAoeCells };
 }
 
 export default function Home() {
@@ -158,6 +158,7 @@ export default function Home() {
             roster={live.roster}
             grid={live.grid}
             initiative={live.initiative}
+            lastAoeCells={live.lastAoeCells}
             done={fighting.phase === "done"}
             onCommand={runCommand}
             onReaction={reactTo}

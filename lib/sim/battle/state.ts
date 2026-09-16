@@ -101,6 +101,10 @@ export interface UnitSnap {
   downed: boolean;
   zone: "melee" | "ranged";
   conditions: string[];
+  /** named applyEffect ids currently on the unit (buffs, auras, persistent
+   *  area effects like Spike Growth) — separate from `conditions`, which is
+   *  only the stunned/prone/... vocabulary. */
+  effects: string[];
   concentrating: boolean;
   isActor: boolean;
   /** ki, spell slots, rage, action surge, ... — tracked internally the whole
@@ -207,6 +211,7 @@ export function snapshotUnits(state: BattleState, actorId?: string): UnitSnap[] 
       downed: u.downed,
       zone: u.zone,
       conditions: [...u.conditions.keys()],
+      effects: u.effects.map((e) => e.name),
       concentrating: !!u.concentratingOn,
       isActor: u.id === actorId,
       resources: buildResourceSnap(u),
