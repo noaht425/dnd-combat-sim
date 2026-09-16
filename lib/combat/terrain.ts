@@ -8,7 +8,8 @@
 // rather than a bulleted readout, picked pseudo-randomly per fight (seeded,
 // so a save/resume replay reads the same way twice).
 
-import { makeGrid, type BattleGrid, type HazardSpec, type Terrain } from "../sim/battle/grid";
+import { makeGrid, FT_PER_SQUARE, type BattleGrid, type HazardSpec, type Terrain } from "../sim/battle/grid";
+import type { UnitSnap } from "../sim/battle/state";
 
 export interface TerrainPreset {
   id: string;
@@ -211,4 +212,35 @@ export function buildTerrainGrid(preset: TerrainPreset, unitCount: number): Batt
 export function pickOpeningLine(preset: TerrainPreset, seed: number): string {
   const idx = Math.abs(seed) % preset.openingLines.length;
   return preset.openingLines[idx];
+}
+
+const centroid = (units: { x: number; y: number }[]): { x: number; y: number } => ({
+  x: units.reduce((s, u) => s + u.x, 0) / units.length,
+  y: units.reduce((s, u) => s + u.y, 0) / units.length,
+});
+
+/** "Kobold 3" -> "Kobold" — same convention used to group the roster bar. */
+const baseName = (name: string): string => name.replace(/\s+\d+$/, "");
+
+/** spec §2.8: a sentence on where the two sides actually start relative to
+ *  each other (not just terrain flavor) — the board view shows this, but a
+ *  voice-only player has no other way to know if the fight opens at range or
+ *  already toe-to-toe. Deterministic from the starting positions, not random. */
+export function describeStartingPositions(units: UnitSnap[]): string | undefined {
+  const party = units.filter((u) => u.side === "party");
+  const monsters = units.filter((u) => u.side === "monster");
+  if (!party.length || !monsters.length) return undefined;
+
+  const pc = centroid(party);
+  const mc = centroid(monsters);
+  const feet = Math.round((Math.hypot(pc.x - mc.x, pc.y - mc.y) * FT_PER_SQUARE) / 5) * 5;
+
+  const names = new Set(monsters.map((u) => baseName(u.name)));
+  const label =
+    names.size > 1 ? "the enemy" : monsters.length === 1 ? monsters[0].name : `the ${baseName(monsters[0].name)}s`;
+
+  if (feet <= 10) return `${label} ${monsters.length === 1 ? "is" : "are"} already close — weapons' reach away.`;
+  if (feet <= 40) return `${label} ${monsters.length === 1 ? "is" : "are"} about ${feet} feet off, closing distance.`;
+  if (feet <= 80) return `${label} ${monsters.length === 1 ? "is" : "are"} well across the space, roughly ${feet} feet away.`;
+  return `${label} ${monsters.length === 1 ? "is" : "are"} at the far end of the space, a good ${feet} feet off.`;
 }

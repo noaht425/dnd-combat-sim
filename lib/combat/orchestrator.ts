@@ -10,7 +10,7 @@ import { classAliasFor } from "./classTemplates";
 import { interpretTurnCommand, findBestAction } from "./commandParser";
 import { interpretReaction } from "./reactionParser";
 import { narrateNewFrames, postFightReadout } from "./narrate";
-import { findTerrain, buildTerrainGrid, pickOpeningLine, TERRAIN_PRESETS } from "./terrain";
+import { findTerrain, buildTerrainGrid, pickOpeningLine, describeStartingPositions, TERRAIN_PRESETS } from "./terrain";
 import { newSession, partyMemberIds, type FightSession, type SetupDraft, type FightingSession } from "./session";
 import { findCombatant } from "./actionLookup";
 import { describeAction } from "./describeAction";
@@ -159,12 +159,17 @@ function startFight(d: SetupDraft): AdvanceResult {
   // engine's own bare "The battle begins", seeded so a save/resume replay
   // reads the same way twice
   const opening = preset ? [pickOpeningLine(preset, d.seed)] : [];
+  // where the two sides actually start relative to each other — the board
+  // shows this, but a voice-only player has no other way to know if the
+  // fight opens at range or already toe-to-toe
+  const startUnits = outcome.frames[0]?.units;
+  const positionLine = startUnits ? [describeStartingPositions(startUnits)].filter((x): x is string => !!x) : [];
   // spec §2.1 step 2: announce the initiative order. The engine logs this
   // itself, but only into CombatState.log (a debug channel this app's
   // narration never reads) — say it here instead, since voice-only play has
   // no other way to hear turn order.
   const initiativeLine = outcome.initiative?.length ? [`Turn order: ${outcome.initiative.map((i) => i.name).join(" > ")}.`] : [];
-  const lines = [...opening, ...initiativeLine, ...narration, ...promptLines(outcome)];
+  const lines = [...opening, ...positionLine, ...initiativeLine, ...narration, ...promptLines(outcome)];
   return attachLive(session, lines, outcome, lastTemplateCells(outcome.frames, 0));
 }
 
