@@ -152,10 +152,10 @@ export function interpretTurnCommand(
   let bonusActionId: string | undefined;
   let bonusTargetId: string | undefined;
 
-  const resolvePool = (clause: string, pool: AwaitAction[]): { action: AwaitAction; targetPhrase?: string } | undefined => {
+  const resolvePool = (clause: string, pool: AwaitAction[]): { action: AwaitAction; targetPhrase?: string; score: number } | undefined => {
     const found = findBestAction(clause, pool);
     if (!found) return undefined;
-    return { action: found.action, targetPhrase: extractTargetPhrase(clause, found.action.name) };
+    return { action: found.action, targetPhrase: extractTargetPhrase(clause, found.action.name), score: found.score };
   };
 
   // Resolve a target for `action` given the clause's target phrase (possibly
@@ -192,26 +192,36 @@ export function interpretTurnCommand(
   };
 
   for (const clause of actionClauses) {
-    if (!actionId) {
-      const main = resolvePool(clause, awaiting.actions);
-      if (main) {
-        actionId = main.action.id;
-        const r = resolveActionTarget(main.action, main.targetPhrase);
-        if ("clarify" in r) return { kind: "clarify", question: r.clarify };
-        targetId = r.targetId;
-        aoeOrigin = r.aoeOrigin;
-        continue;
-      }
+    // Check both pools and take whichever scores higher — matching main first
+    // unconditionally let a borderline false-positive main match ("back" vs
+    // the Weapon action's "attack" id, similarity 0.5) beat an unambiguous
+    // bonus-action match ("misty step back" vs "Misty Step", similarity 0.67)
+    // just because main happened to be checked first.
+    const main = !actionId ? resolvePool(clause, awaiting.actions) : undefined;
+    const bonus = !bonusActionId ? resolvePool(clause, awaiting.bonusActions) : undefined;
+    if (main && (!bonus || main.score >= bonus.score)) {
+      actionId = main.action.id;
+      const r = resolveActionTarget(main.action, main.targetPhrase);
+      if ("clarify" in r) return { kind: "clarify", question: r.clarify };
+      targetId = r.targetId;
+      aoeOrigin = r.aoeOrigin;
+      continue;
     }
-    if (!bonusActionId) {
-      const bonus = resolvePool(clause, awaiting.bonusActions);
-      if (bonus) {
-        bonusActionId = bonus.action.id;
+    if (bonus) {
+      bonusActionId = bonus.action.id;
+      // a bonus action named with no target of its own ("... then Action
+      // Surge") isn't a fresh targeting decision — it's another swing this
+      // same turn, so it defaults to whoever the main action just hit
+      // rather than re-asking "on who?" for an attack the player didn't
+      // separately aim.
+      if (!bonus.targetPhrase && !bonus.action.friendly && !bonus.action.aoe && targetId) {
+        bonusTargetId = targetId;
+      } else {
         const r = resolveActionTarget(bonus.action, bonus.targetPhrase);
         if ("clarify" in r) return { kind: "clarify", question: r.clarify };
         bonusTargetId = r.targetId;
-        continue;
       }
+      continue;
     }
     // this clause didn't read as the main action, a bonus action, or a move
     // — most often a second "and X" target on a single-target action, which

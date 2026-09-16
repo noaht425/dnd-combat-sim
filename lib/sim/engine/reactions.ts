@@ -83,11 +83,11 @@ function consume(u: CombatantState, r: Action): void {
 }
 
 /** run a fire-and-forget reaction's automation with the reaction re-entry guard set */
-function fire(state: CombatState, u: CombatantState, r: Action): void {
+function fire(state: CombatState, u: CombatantState, r: Action, forceTarget?: CombatantState): void {
   consume(u, r);
   state.inReaction = true;
   try {
-    runAction(state, u, r, { asReaction: true });
+    runAction(state, u, r, { asReaction: true, forceScope: forceTarget ? [forceTarget] : undefined });
   } finally {
     state.inReaction = false;
   }
@@ -220,7 +220,7 @@ export function reactToAttackResolved(
       "Hold reaction",
     );
     if (!ok) return;
-    fire(state, t, r);
+    fire(state, t, r, p.attacker);
     return;
   }
 }
