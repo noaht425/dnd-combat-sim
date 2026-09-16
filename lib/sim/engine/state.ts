@@ -202,6 +202,12 @@ export function say(state: CombatState, text: string, actorId?: string): void {
   if (state.verbose) state.log.push({ round: state.round, actorId, text });
 }
 
+/** condition/effect ids are catalog slugs ("spike-growth", "marked-for-reckoning") —
+ *  turn them into narration-friendly text instead of printing the raw slug. */
+export function humanize(slug: string): string {
+  return slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 /** {id -> hp} snapshot, for diffing what an action did */
 export function hpSnapshot(state: CombatState): Map<string, number> {
   const m = new Map<string, number>();

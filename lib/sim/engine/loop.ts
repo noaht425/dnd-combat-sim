@@ -14,6 +14,7 @@ import {
   CombatTuning,
   CombatantState,
   hpBar,
+  humanize,
   initCombatant,
   isIncapacitated,
   isMinion,
@@ -169,7 +170,7 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
       if (state.ended) break;
 
       if (isIncapacitated(u)) {
-        say(state, `${u.name} loses its turn (${[...u.conditions.keys()].join(", ") || "incapacitated"})`, u.id);
+        say(state, `${u.name} loses its turn (${[...u.conditions.keys()].map(humanize).join(", ") || "incapacitated"})`, u.id);
       } else {
         // refresh legendary budget on the monster's own turn
         if (u.side === "monster") u.legendaryBudget = u.legendaryMax;

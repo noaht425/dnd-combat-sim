@@ -83,6 +83,10 @@ export interface AwaitAction {
   /** targets an ally / self rather than an enemy (heals, buffs) */
   friendly: boolean;
   aoe?: { shape: string; sizeFt: number };
+  /** hits every ally/enemy automatically (Bless, a pack's shared buff, ...) —
+   *  there's no single unit to pick, so any target phrase the player gives
+   *  should be ignored rather than forced through single-target resolution */
+  autoTargets?: boolean;
 }
 
 export interface AwaitUnit {
@@ -145,8 +149,15 @@ export function computeAwaiting(state: BattleState, u: CombatantState): Awaiting
     const touchesEnemy = JSON.stringify(a.automation).match(
       /"who":"(aiChoice|nearestEnemy|lowestHpEnemy|squishiestEnemy|marked|eachEnemy|area|chosenEnemies)"/,
     );
+    const automationText = JSON.stringify(a.automation);
+    // eachAlly/eachEnemy always resolve to the whole side (see interpreter.ts's
+    // selectTargets) — no single targetId is ever consulted for them. Only flag
+    // autoTargets when that's the *entire* story: chosenEnemies/area still need
+    // the player to pick/aim.
+    const autoTargets =
+      /"who":"(eachAlly|eachEnemy)"/.test(automationText) && !/"who":"(chosenEnemies|area)"/.test(automationText);
     const weaponRoutine = a.id === "attack" || a.id === "multiattack" || /multiattack|attack/i.test(a.name);
-    return { id: a.id, name: a.name, needsMelee: weaponRoutine && !u.ref.ai.keepDistance && !aoe, friendly: !touchesEnemy, aoe };
+    return { id: a.id, name: a.name, needsMelee: weaponRoutine && !u.ref.ai.keepDistance && !aoe, friendly: !touchesEnemy, aoe, autoTargets };
   };
   const actions: AwaitAction[] = [];
   const bonusActions: AwaitAction[] = [];

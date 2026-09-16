@@ -127,7 +127,7 @@ describe("battle mode — full grid fight", () => {
       const out = runBattle({ party: standardParty(16), enemies: ["owlbear"], seed });
       for (const f of out.frames) {
         if (/\((all miss|misses)\)/.test(f.text ?? "")) sawMiss = true;
-        if (/Bless -> .*bless/.test(f.text ?? "")) sawBuff = true;
+        if (/Bless -> .*Bless/.test(f.text ?? "")) sawBuff = true;
         // "(no effect)" should not appear for a plain weapon multiattack any more
         expect(f.text ?? "").not.toMatch(/Multiattack.*\(no effect\)/);
       }

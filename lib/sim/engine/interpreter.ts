@@ -12,6 +12,7 @@ import {
   breakConcentration,
   hasCondition,
   hpSnapshot,
+  humanize,
   initCombatant,
   isIncapacitated,
   livingAllies,
@@ -539,8 +540,8 @@ export function runAction(
     if (delta > 0) bits.push(`-${delta} (${Math.max(0, u.hp)}/${u.maxHp})`);
     else if (delta < 0) bits.push(`+${-delta} (${u.hp}/${u.maxHp})`);
     if (u.downed && (before.get(u.id) ?? 1) > 0) bits.push("DOWN");
-    if (newConds.length) bits.push(newConds.join(","));
-    if (newFx.length) bits.push(newFx.join(","));
+    if (newConds.length) bits.push(newConds.map(humanize).join(","));
+    if (newFx.length) bits.push(newFx.map(humanize).join(","));
     if (bits.length) parts.push(`${u.name} ${bits.join(" ")}`);
   }
   const verb = opts.asLegendary ? "(legendary) " : opts.asReaction ? "(reaction) " : "";

@@ -123,7 +123,12 @@ function startFight(d: SetupDraft): AdvanceResult {
   // engine's own bare "The battle begins", seeded so a save/resume replay
   // reads the same way twice
   const opening = preset ? [pickOpeningLine(preset, d.seed)] : [];
-  const lines = [...opening, ...narration, ...promptLines(outcome)];
+  // spec §2.1 step 2: announce the initiative order. The engine logs this
+  // itself, but only into CombatState.log (a debug channel this app's
+  // narration never reads) — say it here instead, since voice-only play has
+  // no other way to hear turn order.
+  const initiativeLine = outcome.initiative?.length ? [`Turn order: ${outcome.initiative.map((i) => i.name).join(" > ")}.`] : [];
+  const lines = [...opening, ...initiativeLine, ...narration, ...promptLines(outcome)];
   return attachLive(session, lines, outcome);
 }
 

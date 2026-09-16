@@ -168,6 +168,10 @@ export function interpretTurnCommand(
     action: AwaitAction,
     phrase: string | undefined,
   ): { targetId?: string; aoeOrigin?: { x: number; y: number } } | { clarify: string } => {
+    // Bless-style effects hit every ally/enemy automatically — there's no
+    // single unit to resolve a phrase against, so a named target (or several,
+    // comma-separated) is a no-op rather than an ambiguity to clarify.
+    if (action.autoTargets) return {};
     const side = action.friendly ? "party" : "monster";
     const enemyCount = units.filter((u) => u.side === "monster").length;
     if (phrase) {
