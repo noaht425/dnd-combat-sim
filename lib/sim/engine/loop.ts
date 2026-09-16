@@ -44,6 +44,11 @@ export interface CombatResult {
   firstPartyDownRound?: number;
   firstPartyDownName?: string;
   log: string[];
+  /** every save attempt / attack roll this fight — for a post-fight
+   *  "your low Wisdom kept getting you locked down" / "you whiffed most of
+   *  your swings" style readout (see CombatState's doc comments). */
+  saveLog: CombatState["saveLog"];
+  attackLog: CombatState["attackLog"];
 }
 
 export interface RunOptions {
@@ -361,6 +366,8 @@ export function summarise(state: CombatState, keepLog = false): CombatResult {
     firstPartyDownRound: state.firstPartyDownRound,
     firstPartyDownName: state.firstPartyDownId ? state.units.get(state.firstPartyDownId)?.name : undefined,
     log: keepLog ? state.log.map((l) => `R${l.round}: ${l.text}`) : [],
+    saveLog: state.saveLog,
+    attackLog: state.attackLog,
   };
 }
 

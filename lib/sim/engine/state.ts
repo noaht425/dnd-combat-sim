@@ -122,6 +122,15 @@ export interface CombatState {
   /** round the first party member dropped to 0, and who */
   firstPartyDownRound?: number;
   firstPartyDownId?: string;
+  /** every save attempt this fight, ability + outcome — for a post-fight
+   *  "your low Wisdom kept getting you locked down" style readout. Lazily
+   *  initialized by rollSave() so existing state-construction call sites
+   *  don't all need updating. */
+  saveLog?: { round: number; unitId: string; ability: import("../schema").Ability; passed: boolean }[];
+  /** every attack roll this fight, attacker/target + outcome — for a
+   *  "you whiffed most of your swings" / "your low AC got hit constantly"
+   *  readout. Same lazy-init pattern as saveLog. */
+  attackLog?: { round: number; attackerId: string; targetId: string; hit: boolean }[];
 }
 
 /** the question `state.askReaction` is handed at a reaction decision point */

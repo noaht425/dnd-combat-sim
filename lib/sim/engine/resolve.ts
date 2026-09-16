@@ -79,7 +79,24 @@ export interface AttackResult {
   nat: number;
 }
 
+/** thin wrapper so every attack roll (whichever internal path it resolves
+ *  through) lands in state.attackLog for the post-fight whiff/AC readout,
+ *  without threading logging through every early return below. */
 export function rollAttack(
+  state: CombatState,
+  attacker: CombatantState,
+  target: CombatantState,
+  toHit: number,
+  intrinsicAdv: AdvMode | undefined,
+  critRange = 20,
+  extraTargetAc = 0,
+): AttackResult {
+  const result = rollAttackImpl(state, attacker, target, toHit, intrinsicAdv, critRange, extraTargetAc);
+  (state.attackLog ??= []).push({ round: state.round, attackerId: attacker.id, targetId: target.id, hit: result.hit });
+  return result;
+}
+
+function rollAttackImpl(
   state: CombatState,
   attacker: CombatantState,
   target: CombatantState,
@@ -174,7 +191,22 @@ export interface SaveResult {
 
 export type SaveStakes = "damage" | "control" | "lock";
 
+/** thin wrapper — see rollAttack's for why: logs to state.saveLog regardless
+ *  of which internal path (auto-fail, endurance override, legendary
+ *  resistance) the roll resolves through. */
 export function rollSave(
+  state: CombatState,
+  target: CombatantState,
+  ability: Ability,
+  dc: number,
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes } = {},
+): SaveResult {
+  const result = rollSaveImpl(state, target, ability, dc, opts);
+  (state.saveLog ??= []).push({ round: state.round, unitId: target.id, ability, passed: result.passed });
+  return result;
+}
+
+function rollSaveImpl(
   state: CombatState,
   target: CombatantState,
   ability: Ability,
