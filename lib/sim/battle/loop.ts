@@ -322,10 +322,22 @@ export function runBattleLoop(state: BattleState): void {
         continue;
       }
       startTurnEconomy(u);
+      // startOfTurn() runs DoT/persistent-effect ticks (Spike Growth, Burning,
+      // molten ground, ...) and hazardTick() runs terrain hazards — both apply
+      // real damage to `state` but neither one records a frame, so without this
+      // diff the damage is invisible to the player (HP just quietly drops).
+      const tickHpBefore = u.hp + u.tempHp;
+      const tickWasDowned = u.downed;
       startOfTurn(state, u);
       if (state.ended) break;
       deriveZones(state);
       hazardTick(state, u);
+      const tickDelta = tickHpBefore - (u.hp + u.tempHp);
+      if (tickDelta !== 0) {
+        const bits = [tickDelta > 0 ? `-${tickDelta} (${Math.max(0, u.hp)}/${u.maxHp})` : `+${-tickDelta} (${u.hp}/${u.maxHp})`];
+        if (u.downed && !tickWasDowned) bits.push("DOWN");
+        recordFrame(state, { kind: "action", actorId: u.id, text: `${u.name} ${bits.join(" ")}` });
+      }
       if (!u.alive) {
         recordFrame(state, { kind: "turn", actorId: u.id });
         checkEnd(state);

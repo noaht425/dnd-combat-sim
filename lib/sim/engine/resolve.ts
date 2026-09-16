@@ -137,6 +137,7 @@ function rollAttackImpl(
   for (const e of attacker.effects) {
     if (e.mods?.attackAdvantage === "adv") adv = combineAdv(adv, "adv");
     if (e.mods?.attackAdvantage === "dis") adv = combineAdv(adv, "dis");
+    if (e.mods?.attackBonusAll) toHit += e.mods.attackBonusAll;
   }
   // Ambush / Assassinate — advantage on round 1 vs foes that haven't acted
   const assassinating = !!attacker.assassinateUntilRound && state.round <= attacker.assassinateUntilRound;

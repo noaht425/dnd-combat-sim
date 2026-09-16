@@ -91,6 +91,7 @@ export type TargetSpec = z.infer<typeof targetSpecSchema>;
 export const effectModsSchema = z.object({
   acBonus: z.number().int().optional(),
   saveBonusAll: z.number().int().optional(),        // e.g. Aura of Protection
+  attackBonusAll: z.number().int().optional(),      // flat bonus to every attack roll (e.g. Bless)
   attackAdvantage: advModeSchema.optional(),        // advantage/disadvantage on the affected creature's attacks
   attacksAgainstItAdvantage: advModeSchema.optional(),
   damageTakenMultiplier: z.number().optional(),     // 0.5 = resistance-like, 2 = vulnerability, 1 = none

@@ -76,7 +76,7 @@ export const SPELLS: Spell[] = [
   S_("alarm", "Alarm", 1, "abjuration", [R, W, A], { rit: true }),
   S_("animal-friendship", "Animal Friendship", 1, "enchantment", [B, D, R]),
   S_("bane", "Bane", 1, "enchantment", [B, C], { conc: true, role: "control", build: saveCond("cha", "marked-for-reckoning", 10, { who: { who: "chosenEnemies", upTo: 3 }, saveEnds: false }) }),
-  S_("bless", "Bless", 1, "enchantment", [C, P], { conc: true, role: "buff", build: effect("bless", { saveBonusAll: 2 }, { who: "eachAlly" }) }),
+  S_("bless", "Bless", 1, "enchantment", [C, P], { conc: true, role: "buff", build: effect("bless", { saveBonusAll: 2, attackBonusAll: 2 }, { who: "eachAlly" }) }),
   S_("burning-hands", "Burning Hands", 1, "evocation", [S, W], { role: "damage", max: 9, build: saveDmg(1, "dex", 3, 6, "fire", 1, { who: "area", shape: "cone", size: 15 }) }),
   S_("charm-person", "Charm Person", 1, "enchantment", [B, D, S, W, K], { role: "control", max: 5, build: saveCond("wis", "charmed", 10, { saveEnds: true }) }),
   S_("color-spray", "Color Spray", 1, "illusion", [S, W], { role: "control", build: saveCond("con", "blinded", 1, { who: { who: "chosenEnemies", upTo: 3 } }) }),

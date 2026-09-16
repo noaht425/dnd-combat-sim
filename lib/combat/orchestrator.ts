@@ -143,8 +143,9 @@ function promptLines(outcome: BattleOutcome): string[] {
   }
   if (outcome.awaiting) {
     const a = outcome.awaiting;
-    const actionNames = [...a.actions, ...a.bonusActions].map((x) => x.name).join(", ");
-    return [`${a.unitName}'s turn (round ${a.round}). Actions: ${actionNames || "none"}. (say "actions" for what they do, or "describe <name>" for one)`];
+    // don't recite the full action/spell list every turn — say "actions" any
+    // time to hear it (answerInfoQuery), or "describe <name>" for just one.
+    return [`${a.unitName}'s turn (round ${a.round}).`];
   }
   if (outcome.done) return [postFightReadout(outcome.result)];
   return [];
