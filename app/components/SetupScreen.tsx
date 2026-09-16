@@ -174,9 +174,18 @@ export default function SetupScreen({ draft, onChangeDraft, onCommand, onStart, 
             value={freeText}
             onChange={(e) => setFreeText(e.target.value)}
             placeholder='"draconic sorcerer level 12 vs an adult red dragon"'
+            onKeyDown={(e) => {
+              // explicit Enter handling — some mobile/embedded keyboards
+              // don't trigger a form's native implicit submission on Enter
+              if (e.key === "Enter" && freeText.trim()) {
+                e.preventDefault();
+                onCommand(freeText);
+                setFreeText("");
+              }
+            }}
             className="flex-1 rounded-full border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-50"
           />
-          <MicButton speech={speech} onText={(t) => onCommand(t)} />
+          <MicButton speech={speech} onText={(t) => setFreeText(t)} />
           <button type="submit" className="rounded-full bg-zinc-800 dark:bg-zinc-700 text-white text-sm font-medium px-4 py-2.5">
             Send
           </button>

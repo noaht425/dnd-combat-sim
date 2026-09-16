@@ -170,7 +170,7 @@ export default function BattleScreen({ lines, awaiting, awaitingReaction, liveUn
           {speech.supported && (
             <button
               type="button"
-              onClick={() => speech.listen((text) => send(text))}
+              onClick={() => speech.listen((text) => { setInput(text); inputRef.current?.focus(); })}
               aria-label="Speak your move"
               className={`shrink-0 rounded-full w-9 h-9 flex items-center justify-center text-sm ${speech.listening ? "bg-red-500 text-white animate-pulse" : "bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-200"}`}
             >

@@ -25,6 +25,45 @@ function editDistance(a: string, b: string, cap = 6): number {
   return dp[a.length];
 }
 
+/** A rough "sounds like" key — collapses the common English spelling
+ *  ambiguities (hard C/K/Q, PH/F, QU, silent letters, doubled letters) to one
+ *  canonical form, then keeps the consonant skeleton. Plain edit-distance on
+ *  spelling doesn't help when speech-to-text mishears an unfamiliar D&D word
+ *  for a similar-SOUNDING common one ("Kobold" -> "Cobalt") — the letters
+ *  differ a lot, but the phonetic key is close. Not a real Metaphone
+ *  implementation, just the handful of rules that matter most for this.
+ */
+function phoneticKey(s: string): string {
+  let w = s.toUpperCase().replace(/[^A-Z]/g, "");
+  if (!w) return "";
+  w = w
+    .replace(/PH/g, "F")
+    .replace(/[KG]N/g, "N")
+    .replace(/WR/g, "R")
+    .replace(/CK/g, "K")
+    .replace(/QU/g, "KW")
+    .replace(/X/g, "KS")
+    .replace(/C(?=[EIY])/g, "S") // soft C ("cent") -> S
+    .replace(/C/g, "K") // remaining hard C -> K, same phoneme as "Kobold"'s K
+    .replace(/Q/g, "K")
+    .replace(/Z/g, "S")
+    .replace(/WH/g, "W")
+    .replace(/GH/g, "G");
+  w = w.replace(/(.)\1+/g, "$1"); // collapse doubled letters
+  const first = w[0] ?? "";
+  const rest = w.slice(1).replace(/[AEIOUY]/g, ""); // drop internal vowels — STT gets the consonant skeleton righter than the vowels
+  return first + rest;
+}
+
+function phoneticSimilarity(a: string, b: string): number {
+  const ka = phoneticKey(a);
+  const kb = phoneticKey(b);
+  if (!ka || !kb) return 0;
+  if (ka === kb) return 1;
+  const d = editDistance(ka, kb, 6);
+  return Math.max(0, 1 - d / Math.max(ka.length, kb.length));
+}
+
 /** 0..1 similarity between a candidate label and a free-text query — token
  *  overlap (each query word matched to its closest label word) blended with a
  *  whole-string edit-distance term, so both "gold drag" and "ogl dragn" hit. */
@@ -42,6 +81,9 @@ export function similarity(query: string, label: string): number {
       const d = editDistance(qt, lt);
       const maxLen = Math.max(qt.length, lt.length);
       best = Math.max(best, maxLen ? 1 - d / maxLen : 0);
+      // scaled down a bit vs. an exact/substring hit — a sound-alike is a
+      // weaker signal than matching letters, so it shouldn't outrank one
+      best = Math.max(best, phoneticSimilarity(qt, lt) * 0.85);
     }
     overlap += Math.max(0, best);
   }
@@ -77,6 +119,11 @@ export function bestMatch<T>(query: string, candidates: Candidate<T>[]): MatchRe
   return {
     best: scored[0]?.c,
     bestScore: scored[0]?.score ?? 0,
-    runnersUp: scored.slice(1, 4).filter((x) => x.score > 0.35).map((x) => x.c),
+    // the #1-scoring candidate belongs at the top of "did you mean" too when
+    // it wasn't confident enough to auto-accept — it's still the single most
+    // likely match (e.g. a phonetically-mangled voice transcript), and
+    // dropping it in favor of the 2nd-4th best (this used to slice(1, 4))
+    // could show the user candidates less relevant than the one it actually meant.
+    runnersUp: scored.slice(0, 4).filter((x) => x.score > 0.35).map((x) => x.c),
   };
 }
