@@ -1,81 +1,101 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { advance } from "@/lib/combat/orchestrator";
-import type { FightSession } from "@/lib/combat/session";
+import { advance, peekFight, sendReaction, type AdvanceResult } from "@/lib/combat/orchestrator";
+import { newSession, type FightSession, type FightingSession } from "@/lib/combat/session";
+import SetupScreen from "./components/SetupScreen";
+import BattleScreen, { type ChatLine } from "./components/BattleScreen";
+import { useSpeechInput, speak } from "./components/useSpeech";
 
-interface ChatLine {
-  role: "user" | "system";
-  text: string;
-  id: number;
-}
-
-const STORAGE_KEY = "dnd-combat-sim.session.v1";
-const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const STORAGE_KEY = "dnd-combat-sim.session.v2";
+const SPEAK_KEY = "dnd-combat-sim.speak-enabled";
 
 let idCounter = 0;
 const nextId = () => idCounter++;
 
+type LiveState = Pick<AdvanceResult, "awaiting" | "awaitingReaction" | "liveUnits">;
+
 export default function Home() {
   const [session, setSession] = useState<FightSession | undefined>(undefined);
-  const [lines, setLines] = useState<ChatLine[]>([
-    { id: nextId(), role: "system", text: "Build a party — try \"draconic sorcerer level 12\" — then set enemies with \"enemies: an adult red dragon\"." },
-  ]);
-  const [input, setInput] = useState("");
-  const listRef = useRef<HTMLDivElement>(null);
+  const [lines, setLines] = useState<ChatLine[]>([]);
+  const [feedback, setFeedback] = useState<string>("");
+  const [live, setLive] = useState<LiveState>({});
+  const [speakEnabled, setSpeakEnabled] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const speech = useSpeechInput();
 
   useEffect(() => {
-    // one-time hydration from localStorage — can't run during SSR (no
-    // `window`) or as a lazy useState initializer (server/client would
-    // then disagree and React would flag a hydration mismatch).
+    // one-time hydration from localStorage — can't be a lazy useState
+    // initializer (SSR has no window/localStorage, and the resulting
+    // server/client mismatch would trip React's hydration check).
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setSession(JSON.parse(raw));
+      if (raw) {
+        const restored: FightSession = JSON.parse(raw);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSession(restored);
+        if (restored.phase !== "setup") {
+          const peeked = peekFight(restored);
+          setLive({ awaiting: peeked.awaiting, awaitingReaction: peeked.awaitingReaction, liveUnits: peeked.liveUnits });
+        }
+      }
+      setSpeakEnabled(localStorage.getItem(SPEAK_KEY) === "1");
     } catch {
-      // ignore — a fresh session is a fine fallback
-    }
-    // register the offline service worker — everything the app needs runs
-    // client-side already, so once this has cached, the fight sim keeps
-    // working with no network at all.
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register(`${BASE_PATH}/sw.js`).catch(() => {
-        // offline support is a bonus, not a requirement — the app still works without it
-      });
+      // ignore — fresh state is a fine fallback
     }
   }, []);
 
-  useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [lines]);
-
-  function send(message: string) {
-    if (!message.trim()) return;
-    setLines((prev) => [...prev, { id: nextId(), role: "user", text: message }]);
-    setInput("");
+  function persist(next: FightSession | undefined) {
+    setSession(next);
     try {
-      const result = advance(session, message);
-      setSession(result.session);
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(result.session));
-      } catch {
-        // best-effort — the explicit Save button is the real save/resume path
-      }
-      const text = result.lines.join("\n");
-      if (text) setLines((prev) => [...prev, { id: nextId(), role: "system", text }]);
-    } catch (e) {
-      setLines((prev) => [...prev, { id: nextId(), role: "system", text: `Something broke resolving that: ${e instanceof Error ? e.message : "unknown error"}` }]);
+      if (next) localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      else localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // best-effort — Save/Load file export is the real save/resume path
     }
   }
 
+  function applyResult(result: AdvanceResult, userText?: string) {
+    persist(result.session);
+    setLive({ awaiting: result.awaiting, awaitingReaction: result.awaitingReaction, liveUnits: result.liveUnits });
+    if (result.session.phase === "setup") {
+      setFeedback(result.lines.join("\n"));
+      return;
+    }
+    setLines((prev) => [
+      ...prev,
+      ...(userText ? [{ id: nextId(), role: "user" as const, text: userText }] : []),
+      ...result.lines.map((t) => ({ id: nextId(), role: "system" as const, text: t })),
+    ]);
+    if (speakEnabled && result.lines.length) speak(result.lines.join(". "));
+  }
+
+  /** The one place every typed, spoken, tapped-chip, or picker-built command goes through. */
+  function runCommand(text: string) {
+    if (!text.trim()) return;
+    applyResult(advance(session, text), text);
+  }
+
+  function reactTo(take: boolean) {
+    if (!session || session.phase === "setup" || !live.awaitingReaction) return;
+    applyResult(sendReaction(session as FightingSession, live.awaitingReaction, take), take ? "(use it)" : "(skip it)");
+  }
+
   function newFight() {
-    setSession(undefined);
+    persist(undefined);
+    setLines([]);
+    setFeedback("");
+    setLive({});
+  }
+
+  function toggleSpeak() {
+    const next = !speakEnabled;
+    setSpeakEnabled(next);
     try {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.setItem(SPEAK_KEY, next ? "1" : "0");
     } catch {
       // ignore
     }
-    setLines([{ id: nextId(), role: "system", text: "New fight. Build a party to begin." }]);
   }
 
   function saveFight() {
@@ -93,19 +113,28 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(String(reader.result));
-        setSession(parsed);
-        setLines((prev) => [...prev, { id: nextId(), role: "system", text: "Loaded saved fight. Say anything to continue." }]);
+        const parsed: FightSession = JSON.parse(String(reader.result));
+        persist(parsed);
+        setLines([{ id: nextId(), role: "system", text: "Loaded saved fight. Say anything to continue." }]);
+        if (parsed.phase !== "setup") {
+          const peeked = peekFight(parsed);
+          setLive({ awaiting: peeked.awaiting, awaitingReaction: peeked.awaitingReaction, liveUnits: peeked.liveUnits });
+        } else {
+          setLive({});
+        }
       } catch {
-        setLines((prev) => [...prev, { id: nextId(), role: "system", text: "That file didn't look like a saved fight." }]);
+        setFeedback("That file didn't look like a saved fight.");
       }
     };
     reader.readAsText(file);
   }
 
+  const draft = !session || session.phase === "setup" ? (session ?? newSession()) : undefined;
+  const fighting: FightingSession | undefined = session && session.phase !== "setup" ? session : undefined;
+
   return (
-    <div className="flex flex-col h-dvh bg-zinc-50 dark:bg-zinc-950">
-      <header className="flex items-center justify-between gap-2 px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+    <div className="flex flex-col h-dvh">
+      <header className="flex items-center justify-between gap-2 px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shrink-0">
         <h1 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">D&D Combat Sim</h1>
         <div className="flex gap-2">
           <button onClick={saveFight} disabled={!session} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 disabled:opacity-40">
@@ -121,36 +150,25 @@ export default function Home() {
         </div>
       </header>
 
-      <div ref={listRef} className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-3">
-        {lines.map((l) => (
-          <div key={l.id} className={`max-w-[88%] whitespace-pre-wrap text-sm leading-relaxed rounded-2xl px-3.5 py-2.5 ${l.role === "user" ? "self-end bg-indigo-600 text-white" : "self-start bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-100 border border-zinc-200 dark:border-zinc-800"}`}>
-            {l.text}
-          </div>
-        ))}
+      <div className="flex-1 min-h-0">
+        {fighting ? (
+          <BattleScreen
+            lines={lines}
+            awaiting={live.awaiting}
+            awaitingReaction={live.awaitingReaction}
+            liveUnitsList={live.liveUnits}
+            done={fighting.phase === "done"}
+            onCommand={runCommand}
+            onReaction={reactTo}
+            onNewFight={newFight}
+            speech={speech}
+            speakEnabled={speakEnabled}
+            onToggleSpeak={toggleSpeak}
+          />
+        ) : (
+          <SetupScreen draft={draft!} onChangeDraft={(d) => persist(d)} onCommand={runCommand} onStart={() => runCommand("start")} speech={speech} feedback={feedback} />
+        )}
       </div>
-
-      <form
-        onSubmit={(e) => { e.preventDefault(); send(input); }}
-        className="flex gap-2 p-3 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900"
-        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Say what happens next…"
-          autoComplete="off"
-          autoCapitalize="off"
-          onKeyDown={(e) => {
-            // explicit Enter handling — some mobile/embedded keyboards don't
-            // trigger a form's native implicit submission on Enter
-            if (e.key === "Enter") { e.preventDefault(); send(input); }
-          }}
-          className="flex-1 rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-        />
-        <button type="submit" disabled={!input.trim()} className="rounded-full bg-indigo-600 text-white text-sm font-medium px-4 py-2.5 disabled:opacity-40">
-          Send
-        </button>
-      </form>
     </div>
   );
 }

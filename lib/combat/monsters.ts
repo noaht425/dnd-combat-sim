@@ -25,3 +25,22 @@ export function findMonster(name: string): MonsterMatch {
   if (r.best && r.bestScore >= 0.72) return { monster: r.best.value, suggestions: [] };
   return { monster: undefined, suggestions: r.runnersUp.map((c) => c.value) };
 }
+
+function crRank(cr: string | undefined): number {
+  if (!cr) return Infinity;
+  if (cr.includes("/")) {
+    const [n, d] = cr.split("/").map(Number);
+    return n / d;
+  }
+  const n = Number(cr);
+  return Number.isFinite(n) ? n : Infinity;
+}
+
+/** The picker's monster list — CR-sorted, excluding the `pc-fighter-15` test
+ *  fixture (a stray PC stat block bundled for engine tests, not a monster). */
+export function listMonsters(): { id: string; name: string; cr: string }[] {
+  return Object.values(ALL_MONSTERS)
+    .filter((m) => m.kind === "monster")
+    .map((m) => ({ id: m.id, name: m.name, cr: m.cr ?? "—" }))
+    .sort((a, b) => crRank(a.cr) - crRank(b.cr) || a.name.localeCompare(b.name));
+}

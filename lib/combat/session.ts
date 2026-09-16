@@ -31,3 +31,13 @@ export function newSession(): SetupDraft {
 export function partyMemberIds(party: PartyMemberSpec[]): string[] {
   return party.map((s, i) => `pc-${i + 1}-${s.template}`);
 }
+
+/** Direct index-based removal for the setup picker's remove buttons — no
+ *  need to round-trip through text parsing for something this unambiguous. */
+export function removePartyMember(d: SetupDraft, index: number): SetupDraft {
+  return { ...d, party: d.party.filter((_, i) => i !== index) };
+}
+
+export function removeEnemy(d: SetupDraft, index: number): SetupDraft {
+  return { ...d, enemyEntries: d.enemyEntries.filter((_, i) => i !== index), enemyNames: d.enemyNames.filter((_, i) => i !== index) };
+}

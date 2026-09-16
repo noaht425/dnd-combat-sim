@@ -3,7 +3,7 @@
 // runBattle(setup) (cheap, pure, deterministic) rather than keeping a mutable
 // server-side fight object — the client just carries the session JSON.
 
-import { runBattle, type AwaitingInput, type BattleOutcome, type BattleSetup } from "../sim/battle";
+import { runBattle, type AwaitingInput, type AwaitingReaction, type BattleOutcome, type BattleSetup } from "../sim/battle";
 import { standardParty } from "../sim/engine/scenario";
 import { parsePartyMember, parseEnemies, buildSummaryLine, type PartyMemberParse } from "./setupParser";
 import { classAliasFor } from "./classTemplates";
@@ -13,6 +13,7 @@ import { narrateNewFrames, postFightReadout } from "./narrate";
 import { newSession, partyMemberIds, type FightSession, type SetupDraft, type FightingSession } from "./session";
 import { findCombatant } from "./actionLookup";
 import { describeAction } from "./describeAction";
+import { liveUnits, type LiveUnit } from "./targetResolver";
 
 const INFO_ALL = /^(actions?|options?|spells?|weapons?|abilities|what can i do|show actions|list actions|my options)\??$/i;
 const INFO_ONE = /^(?:describe|what does|what is|explain|details?(?: on| for)?|look at|examine)\s+(.+?)\??$/i;
@@ -51,6 +52,27 @@ function answerInfoQuery(message: string, setup: BattleSetup, awaiting: Awaiting
 export interface AdvanceResult {
   session: FightSession;
   lines: string[];
+  /** structured turn-choice data for a picker UI — set only while a controlled
+   *  unit's turn is open (fighting phase, no reaction pending) */
+  awaiting?: AwaitingInput;
+  /** structured reaction-prompt data for a Yes/No picker UI */
+  awaitingReaction?: AwaitingReaction;
+  /** the live board (position + HP), for a target picker */
+  liveUnits?: LiveUnit[];
+}
+
+/** Attaches the current turn/reaction/board state to a response so the UI can
+ *  render buttons instead of parsing what came back as chat text. `outcome`
+ *  is omitted for setup-phase responses, where none of this applies. */
+function attachLive(session: FightSession, lines: string[], outcome?: BattleOutcome): AdvanceResult {
+  if (!outcome) return { session, lines };
+  return {
+    session,
+    lines,
+    awaiting: outcome.awaiting,
+    awaitingReaction: outcome.awaitingReaction,
+    liveUnits: outcome.awaiting ? liveUnits(outcome.awaiting.units, outcome.frames.at(-1)?.units) : undefined,
+  };
 }
 
 const START_WORDS = /^(start|begin|fight|go|let'?s go|roll initiative)\.?$/i;
@@ -80,7 +102,7 @@ function startFight(d: SetupDraft): AdvanceResult {
   const { lines: narration, nextIndex } = narrateNewFrames(outcome.frames, 0);
   session.frameCursor = nextIndex;
   const lines = [...narration, ...promptLines(outcome)];
-  return { session, lines };
+  return attachLive(session, lines, outcome);
 }
 
 function promptLines(outcome: BattleOutcome): string[] {
@@ -228,7 +250,7 @@ function handleFightMessage(s: FightingSession, message: string): AdvanceResult 
 
   if (outcomeBefore.awaitingReaction) {
     const r = interpretReaction(message, outcomeBefore.awaitingReaction);
-    if (r.kind === "clarify") return { session: s, lines: [r.question] };
+    if (r.kind === "clarify") return attachLive(s, [r.question], outcomeBefore);
     const reactionChoices = [...(s.setup.reactionChoices ?? []), { round: outcomeBefore.awaitingReaction.round, unitId: outcomeBefore.awaitingReaction.unitId, seq: outcomeBefore.awaitingReaction.seq, take: r.take }];
     const setup = { ...s.setup, reactionChoices };
     return continueFight({ ...s, setup });
@@ -240,16 +262,16 @@ function handleFightMessage(s: FightingSession, message: string): AdvanceResult 
       return continueFight({ ...s, setup: { ...s.setup, decisions } });
     }
     const info = answerInfoQuery(message, s.setup, outcomeBefore.awaiting);
-    if (info) return { session: s, lines: info };
+    if (info) return attachLive(s, info, outcomeBefore);
     const r = interpretTurnCommand(message, outcomeBefore.awaiting, lastSnap);
-    if (r.kind === "clarify") return { session: s, lines: [r.question] };
-    if (r.kind === "reaction-mismatch") return { session: s, lines: ["(no reaction is pending right now)"] };
+    if (r.kind === "clarify") return attachLive(s, [r.question], outcomeBefore);
+    if (r.kind === "reaction-mismatch") return attachLive(s, ["(no reaction is pending right now)"], outcomeBefore);
     const decisions = [...(s.setup.decisions ?? []), r.decision];
     return continueFight({ ...s, setup: { ...s.setup, decisions } }, r.notes);
   }
 
   if (s.phase === "done") return { session: s, lines: ["The fight is over. Start a new session to run another."] };
-  return { session: s, lines: ["Nothing is waiting on input right now."] };
+  return attachLive(s, ["Nothing is waiting on input right now."], outcomeBefore);
 }
 
 function continueFight(s: FightingSession, extraNotes: string[] = []): AdvanceResult {
@@ -257,7 +279,21 @@ function continueFight(s: FightingSession, extraNotes: string[] = []): AdvanceRe
   const { lines: narration, nextIndex } = narrateNewFrames(outcome.frames, s.frameCursor);
   const session: FightingSession = { ...s, frameCursor: nextIndex, phase: outcome.done ? "done" : "fighting" };
   const lines = [...extraNotes, ...narration, ...promptLines(outcome)];
-  return { session, lines };
+  return attachLive(session, lines, outcome);
+}
+
+/** Read-only: current awaiting/awaitingReaction/board state without
+ *  consuming a turn — used to re-derive the UI's picker state after
+ *  restoring a fight from localStorage or a loaded save file (where there's
+ *  no fresh `advance()` response to read it off of). */
+export function peekFight(s: FightingSession): AdvanceResult {
+  return attachLive(s, [], runBattle(s.setup));
+}
+
+/** Directly send a reaction answer built from a picker tap. */
+export function sendReaction(s: FightingSession, awaitingReaction: AwaitingReaction, take: boolean): AdvanceResult {
+  const reactionChoices = [...(s.setup.reactionChoices ?? []), { round: awaitingReaction.round, unitId: awaitingReaction.unitId, seq: awaitingReaction.seq, take }];
+  return continueFight({ ...s, setup: { ...s.setup, reactionChoices } });
 }
 
 export function advance(session: FightSession | undefined, message: string): AdvanceResult {
