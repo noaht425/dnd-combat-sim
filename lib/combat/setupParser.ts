@@ -18,6 +18,14 @@ const NUMBER_WORDS: Record<string, number> = {
   sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
 };
 
+// levels don't take "a"/"an" ("level a" is nonsensical) — a separate map so
+// the level regex below can't accidentally match on those.
+const LEVEL_WORDS: Record<string, number> = Object.fromEntries(Object.entries(NUMBER_WORDS).filter(([k]) => k !== "a" && k !== "an"));
+// dictation renders small numbers as words ("level five"), not digits
+// ("level 5") — voice input hit this a lot, so both forms have to match.
+const LEVEL_NUM = `(?:\\d{1,2}|${Object.keys(LEVEL_WORDS).join("|")})`;
+const levelValue = (raw: string): number => (/^\d+$/.test(raw) ? Number(raw) : LEVEL_WORDS[raw]);
+
 export interface PartyMemberParse {
   ok: boolean;
   spec?: PartyMemberSpec;
@@ -38,9 +46,11 @@ export function parsePartyMember(text: string): PartyMemberParse {
   const [head, ...rest] = text.split(",");
   const n = normalize(head);
 
-  const levelMatch = n.match(/level\s*(\d{1,2})|\blvl\s*(\d{1,2})|\b(\d{1,2})(?:st|nd|rd|th)?\s*level\b/);
-  const level = levelMatch ? Number(levelMatch[1] ?? levelMatch[2] ?? levelMatch[3]) : undefined;
-  const classText = n.replace(/level\s*\d{1,2}|\blvl\s*\d{1,2}|\b\d{1,2}(?:st|nd|rd|th)?\s*level\b/g, "").trim();
+  const levelMatch = n.match(new RegExp(`\\blevel\\s*(${LEVEL_NUM})\\b|\\blvl\\s*(${LEVEL_NUM})\\b|\\b(\\d{1,2})(?:st|nd|rd|th)?\\s*level\\b`));
+  const level = levelMatch ? levelValue(levelMatch[1] ?? levelMatch[2] ?? levelMatch[3]) : undefined;
+  const classText = n
+    .replace(new RegExp(`\\blevel\\s*${LEVEL_NUM}\\b|\\blvl\\s*${LEVEL_NUM}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s*level\\b`, "g"), "")
+    .trim();
 
   const nameMatch = head.match(/\bnamed\s+([a-z][a-z' -]*)/i) ?? head.match(/\bcalled\s+([a-z][a-z' -]*)/i);
   const name = nameMatch?.[1]?.trim();
