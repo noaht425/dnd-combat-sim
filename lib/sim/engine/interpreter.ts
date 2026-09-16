@@ -28,6 +28,9 @@ interface RunCtx {
     attackHit?: boolean;
     attackCrit?: boolean;
     attackAdv?: boolean;
+    /** an ally of the attacker was within 5ft of the target on this attack —
+     *  Sneak Attack's other prerequisite, alongside attackAdv */
+    allyAdjacent?: boolean;
     savePassed?: boolean;
   };
   depth: number;
@@ -51,7 +54,7 @@ interface RunCtx {
   geoTargets?: (node: Extract<AutomationNode, { type: "target" }>, source: CombatantState) => CombatantState[] | null;
   /** battle mode only: per-target attack tweaks (cover -> +AC, long range -> disadvantage,
    *  a melee routine whose target is out of reach -> the swing simply doesn't land) */
-  attackMods?: (target: CombatantState) => { acBonus?: number; disadvantage?: boolean; unreachable?: boolean };
+  attackMods?: (target: CombatantState) => { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean };
   /** running count of attack rolls this action made, so `runAction` can say
    *  "misses" / "can't reach" instead of a flat "(no effect)" */
   attackTally?: { rolled: number; hit: number; unreachable: boolean };
@@ -294,7 +297,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           ctx.attackTally.rolled++;
           if (res.hit) ctx.attackTally.hit++;
         }
-        const next: RunCtx = { ...ctx, last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
+        const next: RunCtx = { ...ctx, last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage, allyAdjacent: tweak?.allyAdjacent }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
         if (res.hit) {
           runAutomation(node.onHit, next);
           applyExtraDamageOnHit(state, source, t, res);
@@ -328,6 +331,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       case "damage": {
         const t = ctx.scope[0];
         if (!t) break;
+        if (node.requiresSneakAttack && !ctx.last.attackAdv && !ctx.last.allyAdjacent) break;
         let amt: number;
         if (ctx.sharedRolls) {
           // AoE: roll this damage string once, reuse for every target (RAW)

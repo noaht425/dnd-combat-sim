@@ -96,9 +96,11 @@ function assassinRogue(level: number): Combatant {
     actions: [{
       id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
       automation: [{ type: "target", who: { who: "squishiestEnemy" }, effects: [
-        { type: "attack", bonus: pb + 5, adv: "adv", onHit: [
+        { type: "attack", bonus: pb + 5, onHit: [
           { type: "damage", amount: `1d8+${pb === 6 ? 5 : 4}`, damageType: "piercing" },
-          { type: "damage", amount: sneak, damageType: "piercing" },
+          // once per turn, only with advantage or an ally next to the target
+          // (checked live against the actual attack — see interpreter.ts)
+          { type: "damage", amount: sneak, damageType: "piercing", requiresSneakAttack: true },
         ] },
         { type: "attack", bonus: pb + 5, onHit: [{ type: "damage", amount: `1d8+${pb === 6 ? 5 : 4}`, damageType: "piercing" }] },
       ] }],

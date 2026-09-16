@@ -42,7 +42,7 @@ describe("battle reactions — surfaced to the player", () => {
     const setup = {
       party: party(),
       enemies: ["adult-red-dragon"] as string[],
-      seed: 1,
+      seed: 2,
       controlled: ["pc-1-assassin-rogue"],
       decisions: [{ round: 2, unitId: "pc-1-assassin-rogue", auto: true } as BattleDecision],
     };
@@ -69,8 +69,8 @@ describe("battle reactions — surfaced to the player", () => {
   });
 
   it("a recorded reaction answer is replayed and the fight finishes", () => {
-    const taken = playOut(1, "pc-1-assassin-rogue", true);
-    const declined = playOut(1, "pc-1-assassin-rogue", false);
+    const taken = playOut(2, "pc-1-assassin-rogue", true);
+    const declined = playOut(2, "pc-1-assassin-rogue", false);
     expect(taken.run.done).toBe(true);
     expect(declined.run.done).toBe(true);
     expect(taken.prompts.length).toBeGreaterThan(0);

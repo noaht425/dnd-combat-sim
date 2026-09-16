@@ -1407,9 +1407,13 @@ function martialPc(
   const perHit = `${baseDie}+${atkMod}`;
 
   const dmgType: DamageType = cls === "monk" ? "bludgeoning" : usesDex ? "piercing" : "slashing";
-  const mkOnHit = (): AutomationNode[] => {
+  const mkOnHit = (first: boolean): AutomationNode[] => {
     const nodes: AutomationNode[] = [{ type: "damage", amount: perHit, damageType: dmgType }];
-    if (cls === "rogue") nodes.push({ type: "damage", amount: `${Math.max(cf.sneakDice ?? 0, Math.ceil(level / 2))}d6`, damageType: dmgType });
+    // Sneak Attack is once per turn (first swing only), and only with
+    // advantage or an ally next to the target — checked live in interpreter.ts
+    if (cls === "rogue" && first) {
+      nodes.push({ type: "damage", amount: `${Math.max(cf.sneakDice ?? 0, Math.ceil(level / 2))}d6`, damageType: dmgType, requiresSneakAttack: true });
+    }
     return nodes;
   };
 
@@ -1419,10 +1423,10 @@ function martialPc(
   const opener: string[] = [];
 
   const nSwings = (cls === "monk" ? swings + 1 : swings) + (cf.bonusAttack ? 1 : 0);
-  const attackEffects: AutomationNode[] = Array.from({ length: nSwings }, (): AutomationNode => ({
+  const attackEffects: AutomationNode[] = Array.from({ length: nSwings }, (_, i): AutomationNode => ({
     type: "attack", bonus: toHit,
     ...(cls === "barbarian" ? { adv: "adv" as const } : {}),
-    onHit: mkOnHit(),
+    onHit: mkOnHit(i === 0),
   }));
   // monk: fold a Stunning Strike attempt into the first swing
   if (cls === "monk" || cf.ki) {

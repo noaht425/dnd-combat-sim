@@ -122,7 +122,7 @@ export type AutomationNode =
   | { type: "target"; who: TargetSpec; effects: AutomationNode[] }
   | { type: "attack"; bonus: number | string; adv?: AdvMode; critRange?: number; onHit: AutomationNode[]; onMiss?: AutomationNode[] }
   | { type: "save"; ability: Ability; dc: number | string; adv?: AdvMode; onFail: AutomationNode[]; onSuccess?: AutomationNode[] }
-  | { type: "damage"; amount: string; damageType: DamageType; half?: boolean; ignoreResistances?: boolean; diceMultiplier?: number }
+  | { type: "damage"; amount: string; damageType: DamageType; half?: boolean; ignoreResistances?: boolean; diceMultiplier?: number; requiresSneakAttack?: boolean }
   | { type: "heal"; amount: string }
   | { type: "tempHp"; amount: string }
   | { type: "applyCondition"; condition: Condition; durationRounds?: number; saveEnds?: z.infer<typeof saveEndsSchema> }
@@ -163,6 +163,11 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       half: z.boolean().optional(),
       ignoreResistances: z.boolean().optional(),
       diceMultiplier: z.number().int().optional(),
+      /** Sneak Attack: only applies with advantage on the attack, or an ally
+       *  of the attacker within 5ft of the target — checked dynamically
+       *  against the attack that's currently resolving, not baked in at
+       *  build time (the attack itself doesn't need forced advantage). */
+      requiresSneakAttack: z.boolean().optional(),
     }),
     z.object({ type: z.literal("heal"), amount: diceSchema }),
     z.object({ type: z.literal("tempHp"), amount: diceSchema }),
