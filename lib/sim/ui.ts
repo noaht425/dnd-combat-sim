@@ -1422,30 +1422,49 @@ function martialPc(
   const reactions: Combatant["actions"] = [];
   const opener: string[] = [];
 
-  const nSwings = (cls === "monk" ? swings + 1 : swings) + (cf.bonusAttack ? 1 : 0);
+  // Flurry (monk) is its own bonus action below, not folded into the base
+  // swing count any more
+  const nSwings = swings + (cf.bonusAttack ? 1 : 0);
   const attackEffects: AutomationNode[] = Array.from({ length: nSwings }, (_, i): AutomationNode => ({
     type: "attack", bonus: toHit,
     ...(cls === "barbarian" ? { adv: "adv" as const } : {}),
     onHit: mkOnHit(i === 0),
   }));
-  // monk: fold a Stunning Strike attempt into the first swing
-  if (cls === "monk" || cf.ki) {
-    const dc = 8 + pb + mod(abilities.wis);
-    const first = attackEffects[0];
-    if (first.type === "attack") {
-      first.onHit.push({
-        type: "branch", if: "self.resource('ki') > 0",
-        then: [
-          { type: "spendResource", resource: "ki", amount: 1 },
-          { type: "save", ability: "con", dc, onFail: [{ type: "applyCondition", condition: "stunned", durationRounds: 1, saveEnds: { ability: "con", dc, at: "endOfTurn" } }] },
-        ],
-      });
-    }
-  }
   actions.push({
     id: "attack", name: "Attack", cost: { action: 1 }, recharge: "none",
     automation: [{ type: "target", who: { who: cls === "rogue" ? "squishiestEnemy" : "aiChoice" }, effects: attackEffects }],
   });
+
+  if (cls === "monk") {
+    const dc = 8 + pb + mod(abilities.wis);
+    const mkMonkSwing = (stunAttempt: boolean): AutomationNode => ({
+      type: "attack", bonus: toHit, onHit: [
+        { type: "damage", amount: perHit, damageType: dmgType },
+        ...(stunAttempt
+          ? [{
+              type: "branch" as const, if: "self.resource('ki') > 0",
+              then: [
+                { type: "spendResource" as const, resource: "ki", amount: 1 },
+                { type: "save" as const, ability: "con" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "stunned" as const, durationRounds: 1, saveEnds: { ability: "con" as const, dc, at: "endOfTurn" as const } }] },
+              ],
+            }]
+          : []),
+      ],
+    });
+    // Stunning Strike is a per-hit choice in the real rules; the sim opts in
+    // on up to the first 2 hits when this variant is picked
+    actions.push({
+      id: "attack-stun", name: "Attack + Stunning Strike", cost: { action: 1 }, recharge: "none",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: nSwings }, (_, i) => mkMonkSwing(i < 2)) }],
+    });
+    // real cost: a bonus action AND 1 ki for 2 extra unarmed strikes —
+    // previously folded into every attack for free
+    actions.push({
+      id: "flurry", name: "Flurry of Blows", cost: { bonus: 1 }, recharge: "none",
+      limitedUse: { resource: "ki", amount: 1 },
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: 2 }, () => mkMonkSwing(false)) }],
+    });
+  }
 
   if (cls === "fighter" && (cf.actionSurge ?? 1) >= 1) {
     resources.action_surge = { max: (cf.actionSurge ?? 1) + (level >= 17 ? 1 : 0), recharge: "shortRest" };

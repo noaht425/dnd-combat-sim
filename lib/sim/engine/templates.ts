@@ -4,7 +4,7 @@
 //
 // `makeTemplate("blaster-wizard", 15)` -> a schema-valid Combatant.
 
-import type { Ability, Combatant } from "../schema";
+import type { Ability, AutomationNode, Combatant } from "../schema";
 import { CASTER_BUILDERS } from "../spells/casterTemplates";
 
 const pbFor = (lvl: number) => 2 + Math.floor((lvl - 1) / 4);
@@ -150,7 +150,22 @@ function openHandMonk(level: number): Combatant {
   const dex = pb === 6 ? 5 : 4;
   const dc = 8 + pb + (pb === 6 ? 3 : 3); // Wis
   const die = level >= 17 ? 10 : level >= 11 ? 8 : level >= 5 ? 6 : 4;
-  const strikes = (level >= 5 ? 2 : 1) + 2; // attack(s) + Martial Arts + Flurry
+  const baseAttacks = level >= 5 ? 2 : 1; // Extra Attack from level 5
+  const mkSwing = (stunAttempt: boolean): AutomationNode => ({
+    type: "attack", bonus: pb + dex, onHit: [
+      { type: "damage", amount: `1d${die}+${dex}`, damageType: "bludgeoning" },
+      // spends ki to try a Stunning Strike — only on the variant that asks for it
+      ...(stunAttempt
+        ? [{
+            type: "branch" as const, if: "self.resource('ki') > 0",
+            then: [
+              { type: "spendResource" as const, resource: "ki", amount: 1 },
+              { type: "save" as const, ability: "con" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "stunned" as const, durationRounds: 1, saveEnds: { ability: "con" as const, dc, at: "endOfTurn" as const } }] },
+            ],
+          }]
+        : []),
+    ],
+  });
   return pc({
     id: "open-hand-monk", name: `Monk ${level}`, level,
     ac: 18, hp: between(level, 9, 6 * 20 + 12),
@@ -158,26 +173,26 @@ function openHandMonk(level: number): Combatant {
     // Diamond Soul (14+): proficient in every save
     proficientSaves: level >= 14 ? ["str", "dex", "con", "int", "wis", "cha"] : ["str", "dex"],
     resources: { ki: { max: Math.max(2, level), recharge: "shortRest" } },
-    actions: [{
-      id: "attack", name: "Flurry of Blows + Stunning Strike", cost: { action: 1 }, recharge: "none",
-      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: strikes }, (_, i) => (
-        {
-          type: "attack" as const, bonus: pb + dex, onHit: [
-            { type: "damage" as const, amount: `1d${die}+${dex}`, damageType: "bludgeoning" as const },
-            // first two hits each spend ki to try a Stunning Strike
-            ...(i < 2
-              ? [{
-                  type: "branch" as const, if: "self.resource('ki') > 0",
-                  then: [
-                    { type: "spendResource" as const, resource: "ki", amount: 1 },
-                    { type: "save" as const, ability: "con" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "stunned" as const, durationRounds: 1, saveEnds: { ability: "con" as const, dc, at: "endOfTurn" as const } }] },
-                  ],
-                }]
-              : []),
-          ],
-        }
-      )) }],
-    }],
+    actions: [
+      {
+        id: "attack", name: "Attack", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, () => mkSwing(false)) }],
+      },
+      {
+        // Stunning Strike is a per-hit choice in the real rules; the sim
+        // opts in on up to the first 2 hits when it's picked, same cap as
+        // before, rather than a wholly separate roll per swing
+        id: "attack-stun", name: "Attack + Stunning Strike", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i < 2)) }],
+      },
+      {
+        // real cost: a bonus action AND 1 ki for 2 extra unarmed strikes —
+        // previously folded into every attack for free
+        id: "flurry", name: "Flurry of Blows", cost: { bonus: 1 }, recharge: "none",
+        limitedUse: { resource: "ki", amount: 1 },
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: 2 }, () => mkSwing(false)) }],
+      },
+    ],
     targetPriority: "lowestHp",
   });
 }
