@@ -2,14 +2,18 @@
 // fully-specified line) into a PartyMemberSpec, and "five cultists, a bandit
 // captain" into enemy id strings the engine's resolveEnemies understands.
 //
-// v1 scope: class + level (+ an optional name) for party members. Ability
-// score / spell / feat overrides from the fully-specified tier of the spec
-// aren't wired up yet — anything past class/level is currently ignored, and
-// the build summary says so, rather than silently dropping it.
+// Class + level + name always apply. Race / feats / magic items / (for
+// casters) specific spells from the fully-specified tier now apply too, via
+// detailParser.ts — buildParty() already had appliers for all of these
+// waiting on PartyMemberSpec fields nothing was ever populating. Raw ability-
+// score overrides ("CHA 19") are seen but not applied — see detailParser.ts's
+// header comment for why — and stay reported rather than silently dropped.
 
-import type { PartyMemberSpec } from "../sim/engine/scenario";
+import { buildParty, type PartyMemberSpec } from "../sim/engine/scenario";
+import { abilityMod } from "../sim/math";
 import { findClassTemplate, type ClassAlias } from "./classTemplates";
 import { findMonster } from "./monsters";
+import { parseDetails, type DetailParse } from "./detailParser";
 import { normalize } from "./fuzzy";
 
 const NUMBER_WORDS: Record<string, number> = {
@@ -32,6 +36,9 @@ export interface PartyMemberParse {
   classInfo?: ClassAlias;
   level?: number;
   levelAssumed?: boolean;
+  /** race/feats/items/spells that WERE recognized and applied — for the build summary */
+  details?: DetailParse;
+  /** text that didn't parse as anything (unrecognized segments + seen-but-unapplied ability scores) */
   ignoredDetail?: string;
   error?: string;
   suggestions?: ClassAlias[];
@@ -40,8 +47,7 @@ export interface PartyMemberParse {
 const DEFAULT_LEVEL = 5;
 
 /** Parse one party member's spec text — "draconic sorcerer level 12" or the
- *  richer "sorcerer level 10, CHA 19, knows fireball" (the part after the
- *  first comma is currently noted, not applied). */
+ *  richer "sorcerer level 10, CHA 19, Resilient (Con), knows fireball". */
 export function parsePartyMember(text: string): PartyMemberParse {
   const [head, ...rest] = text.split(",");
   const n = normalize(head);
@@ -61,7 +67,23 @@ export function parsePartyMember(text: string): PartyMemberParse {
   }
 
   const lvl = Math.max(1, Math.min(20, level ?? DEFAULT_LEVEL));
-  const spec: PartyMemberSpec = { template: match.templateId, level: lvl, name: name || undefined };
+  const restText = rest.join(",").trim();
+  const details = restText ? parseDetails(restText, match.className) : undefined;
+
+  const spec: PartyMemberSpec = {
+    template: match.templateId,
+    level: lvl,
+    name: name || undefined,
+    race: details?.race,
+    feats: details?.feats.length ? details.feats : undefined,
+    items: details?.items.length ? details.items : undefined,
+    spells: details?.spells.length ? details.spells : undefined,
+  };
+
+  const ignoredParts = [
+    ...(details?.unrecognized ?? []),
+    ...(details?.abilityNotes.map((a) => `${a} (ability score overrides aren't wired up yet)`) ?? []),
+  ];
 
   return {
     ok: true,
@@ -69,7 +91,8 @@ export function parsePartyMember(text: string): PartyMemberParse {
     classInfo: match,
     level: lvl,
     levelAssumed: level === undefined,
-    ignoredDetail: rest.length ? rest.join(",").trim() : undefined,
+    details,
+    ignoredDetail: ignoredParts.length ? ignoredParts.join("; ") : undefined,
   };
 }
 
@@ -121,15 +144,30 @@ export function parseEnemies(text: string): EnemyParse {
 }
 
 /** The spoken-friendly build summary from spec §1.3 — key scores, a feat or
- *  two, the handful of things that matter in a fight. v1's templates are
- *  fixed builds (no per-PC ability/feat picks yet), so the summary is the
- *  template's own headline stats rather than a generated one. */
+ *  two, the handful of spells/abilities that'll actually matter. Builds the
+ *  real Combatant (cheap — one PC) so AC/HP/casting-stat are the character's
+ *  actual numbers, not just "a standard X build". */
 export function buildSummaryLine(p: PartyMemberParse): string {
   if (!p.ok || !p.spec || !p.classInfo) return "";
   const name = p.spec.name ? `${p.spec.name} — ` : "";
   const lvlNote = p.levelAssumed ? ` (level not given, defaulted to ${p.level})` : "";
-  const ignored = p.ignoredDetail
-    ? ` — heads up: "${p.ignoredDetail}" wasn't applied yet (ability score / spell / feat picks aren't wired up in this build)`
-    : "";
-  return `${name}${p.classInfo.subclassName} ${p.classInfo.className} ${p.level}${lvlNote}, a standard ${p.classInfo.className} build${ignored}.`;
+
+  const built = buildParty([p.spec])[0];
+  const stats: string[] = [`AC ${built.ac}`, `${built.maxHp} HP`];
+  if (built.spellAbility) {
+    const abbr = built.spellAbility.toUpperCase();
+    stats.push(`${abbr} ${built.abilities[built.spellAbility]} (+${abilityMod(built.abilities[built.spellAbility])} to spells)`);
+  }
+
+  const d = p.details;
+  const highlights: string[] = [];
+  if (d?.race) highlights.push(d.race);
+  if (d?.feats.length) highlights.push(...d.feats);
+  if (d?.items.length) highlights.push(...d.items);
+  if (d?.spellNames.length) highlights.push(`knows ${d.spellNames.join(", ")}`);
+  const highlightNote = highlights.length ? ` — ${highlights.join(", ")}` : ", a standard build";
+
+  const ignored = p.ignoredDetail ? ` (heads up: "${p.ignoredDetail}" wasn't applied)` : "";
+
+  return `${name}${p.classInfo.subclassName} ${p.classInfo.className} ${p.level}${lvlNote} · ${stats.join(", ")}${highlightNote}.${ignored}`;
 }
