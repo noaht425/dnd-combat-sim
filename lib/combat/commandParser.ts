@@ -28,7 +28,7 @@ const DASH_WORDS = /\bdash\b/;
 // words — action names run 1-3 words) against each action and take the best
 // hit anywhere in the clause; the target phrase is resolved separately via
 // extractTargetPhrase / the trailing remainder.
-function findBestAction(text: string, pool: AwaitAction[]): { action: AwaitAction; score: number } | undefined {
+export function findBestAction(text: string, pool: AwaitAction[]): { action: AwaitAction; score: number } | undefined {
   if (!pool.length) return undefined;
   const words = normalize(text).split(" ").filter(Boolean);
   const windows: string[] = [];
