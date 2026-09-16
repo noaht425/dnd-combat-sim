@@ -13,7 +13,7 @@ const SPEAK_KEY = "dnd-combat-sim.speak-enabled";
 let idCounter = 0;
 const nextId = () => idCounter++;
 
-type LiveState = Pick<AdvanceResult, "awaiting" | "awaitingReaction" | "liveUnits">;
+type LiveState = Pick<AdvanceResult, "awaiting" | "awaitingReaction" | "liveUnits" | "roster">;
 
 export default function Home() {
   const [session, setSession] = useState<FightSession | undefined>(undefined);
@@ -36,7 +36,7 @@ export default function Home() {
         setSession(restored);
         if (restored.phase !== "setup") {
           const peeked = peekFight(restored);
-          setLive({ awaiting: peeked.awaiting, awaitingReaction: peeked.awaitingReaction, liveUnits: peeked.liveUnits });
+          setLive({ awaiting: peeked.awaiting, awaitingReaction: peeked.awaitingReaction, liveUnits: peeked.liveUnits, roster: peeked.roster });
         }
       }
       setSpeakEnabled(localStorage.getItem(SPEAK_KEY) === "1");
@@ -57,7 +57,7 @@ export default function Home() {
 
   function applyResult(result: AdvanceResult, userText?: string) {
     persist(result.session);
-    setLive({ awaiting: result.awaiting, awaitingReaction: result.awaitingReaction, liveUnits: result.liveUnits });
+    setLive({ awaiting: result.awaiting, awaitingReaction: result.awaitingReaction, liveUnits: result.liveUnits, roster: result.roster });
     if (result.session.phase === "setup") {
       setFeedback(result.lines.join("\n"));
       return;
@@ -118,7 +118,7 @@ export default function Home() {
         setLines([{ id: nextId(), role: "system", text: "Loaded saved fight. Say anything to continue." }]);
         if (parsed.phase !== "setup") {
           const peeked = peekFight(parsed);
-          setLive({ awaiting: peeked.awaiting, awaitingReaction: peeked.awaitingReaction, liveUnits: peeked.liveUnits });
+          setLive({ awaiting: peeked.awaiting, awaitingReaction: peeked.awaitingReaction, liveUnits: peeked.liveUnits, roster: peeked.roster });
         } else {
           setLive({});
         }
@@ -134,17 +134,19 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-dvh">
-      <header className="flex items-center justify-between gap-2 px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shrink-0">
-        <h1 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">D&D Combat Sim</h1>
-        <div className="flex gap-2">
-          <button onClick={saveFight} disabled={!session} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 disabled:opacity-40">
+      <header className="flex items-center justify-between gap-2 px-4 py-2.5 shrink-0 relative z-10" style={{ background: "linear-gradient(180deg, var(--ink-3), var(--ink-2))", borderBottom: "1px solid var(--line)", boxShadow: "0 2px 8px var(--shadow)" }}>
+        <h1 className="font-display text-sm font-semibold tracking-wide flex items-center gap-1.5" style={{ color: "var(--gold-bright)" }}>
+          <span aria-hidden>⚔</span> Combat Sim
+        </h1>
+        <div className="flex gap-1.5">
+          <button onClick={saveFight} disabled={!session} className="btn-game text-[11px] px-2.5 py-1.5 rounded-md">
             Save
           </button>
-          <button onClick={() => fileRef.current?.click()} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200">
+          <button onClick={() => fileRef.current?.click()} className="btn-game text-[11px] px-2.5 py-1.5 rounded-md">
             Load
           </button>
           <input ref={fileRef} type="file" accept="application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) loadFight(f); e.target.value = ""; }} />
-          <button onClick={newFight} className="text-xs px-2.5 py-1.5 rounded-md border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200">
+          <button onClick={newFight} className="btn-game text-[11px] px-2.5 py-1.5 rounded-md">
             New
           </button>
         </div>
@@ -157,6 +159,7 @@ export default function Home() {
             awaiting={live.awaiting}
             awaitingReaction={live.awaitingReaction}
             liveUnitsList={live.liveUnits}
+            roster={live.roster}
             done={fighting.phase === "done"}
             onCommand={runCommand}
             onReaction={reactTo}

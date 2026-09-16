@@ -65,12 +65,26 @@ function pickAnchor(awaiting: AwaitingInput, target: LiveUnit | undefined, dir: 
   return sorted[0];
 }
 
-function extractTargetPhrase(clause: string): string | undefined {
-  const m =
-    clause.match(/\b(?:at|on|against|toward|towards)\s+(.+)$/) ??
-    clause.match(/\battack\s+(.+)$/) ??
-    clause.match(/\bcast\s+\S+\s+(?:at|on)?\s*(.+)$/);
-  return m?.[1]?.trim();
+/** `actionName`, when given, is stripped out FIRST (it's the actual matched
+ *  action, known exactly — not guessed) before hunting for a target phrase.
+ *  Without it, the old single-word-only "cast \S+ ..." guess mis-split any
+ *  multi-word action name ("cast cure wounds bront" -> action "cast cure",
+ *  target "wounds bront" instead of action "Cure Wounds", target "bront"). */
+function extractTargetPhrase(clause: string, actionName?: string): string | undefined {
+  let rest = clause;
+  if (actionName) {
+    const idx = rest.toLowerCase().indexOf(actionName.toLowerCase());
+    if (idx !== -1) rest = rest.slice(0, idx) + rest.slice(idx + actionName.length);
+  }
+  const m = rest.match(/\b(?:at|on|against|toward|towards)\s+(.+)$/) ?? rest.match(/\b(?:attack|cast|use)\b\s*(.*)$/);
+  const phrase = (m?.[1] ?? rest).trim();
+  return phrase || undefined;
+}
+
+function nearestLiving(units: LiveUnit[], self: LiveUnit, side: "party" | "monster"): LiveUnit | undefined {
+  return [...units.filter((u) => u.side === side && u.id !== self.id)].sort(
+    (a, b) => Math.hypot(a.box.x0 - self.box.x0, a.box.y0 - self.box.y0) - Math.hypot(b.box.x0 - self.box.x0, b.box.y0 - self.box.y0),
+  )[0];
 }
 
 export function interpretTurnCommand(
@@ -101,8 +115,13 @@ export function interpretTurnCommand(
       move = { x: Number(coordMatch[1]), y: Number(coordMatch[2]) };
       continue;
     }
+    // bare "dash" (no verb telling it which way) reads as "close the
+    // distance" — matches its own note below, rather than being a pure
+    // no-op that CLAIMS it moved at normal speed but doesn't move at all
     if (DASH_WORDS.test(clause) && !MOVE_VERBS.test(clause.replace(DASH_WORDS, ""))) {
-      notes.push("(dash noted — this build doesn't model doubled movement from Dash yet; moving at normal speed.)");
+      notes.push("(dash noted — this build doesn't model doubled movement from Dash yet; moving toward the nearest enemy at normal speed.)");
+      const anchor = pickAnchor(awaiting, nearestLiving(units, self, "monster"), "toward");
+      if (anchor) move = anchor;
       continue;
     }
     if (MOVE_VERBS.test(clause)) {
@@ -115,13 +134,11 @@ export function interpretTurnCommand(
           return { kind: "clarify", question: `Which one — ${r.candidates.map((c) => c.name).join(", ")}?` };
         }
         if (r.kind === "found") anchor = pickAnchor(awaiting, r.unit, dir);
-      } else if (dir === "away") {
-        const nearestEnemy = [...units.filter((u) => u.side === "monster")].sort(
-          (a, b) =>
-            Math.hypot(a.box.x0 - self.box.x0, a.box.y0 - self.box.y0) -
-            Math.hypot(b.box.x0 - self.box.x0, b.box.y0 - self.box.y0),
-        )[0];
-        anchor = pickAnchor(awaiting, nearestEnemy, "away");
+      } else {
+        // no named target ("advance" / "retreat" alone) — anchor off the
+        // nearest enemy either way, matching how the target-given case
+        // already treats "away" as relative to whoever's closest
+        anchor = pickAnchor(awaiting, nearestLiving(units, self, "monster"), dir);
       }
       if (anchor) move = anchor;
       continue;
@@ -138,7 +155,7 @@ export function interpretTurnCommand(
   const resolvePool = (clause: string, pool: AwaitAction[]): { action: AwaitAction; targetPhrase?: string } | undefined => {
     const found = findBestAction(clause, pool);
     if (!found) return undefined;
-    return { action: found.action, targetPhrase: extractTargetPhrase(clause) };
+    return { action: found.action, targetPhrase: extractTargetPhrase(clause, found.action.name) };
   };
 
   // Resolve a target for `action` given the clause's target phrase (possibly
@@ -175,8 +192,7 @@ export function interpretTurnCommand(
       const main = resolvePool(clause, awaiting.actions);
       if (main) {
         actionId = main.action.id;
-        const phrase = main.targetPhrase ?? clause.replace(main.action.name.toLowerCase(), "").trim();
-        const r = resolveActionTarget(main.action, phrase);
+        const r = resolveActionTarget(main.action, main.targetPhrase);
         if ("clarify" in r) return { kind: "clarify", question: r.clarify };
         targetId = r.targetId;
         aoeOrigin = r.aoeOrigin;
@@ -187,13 +203,17 @@ export function interpretTurnCommand(
       const bonus = resolvePool(clause, awaiting.bonusActions);
       if (bonus) {
         bonusActionId = bonus.action.id;
-        const phrase = bonus.targetPhrase ?? clause.replace(bonus.action.name.toLowerCase(), "").trim();
-        const r = resolveActionTarget(bonus.action, phrase);
+        const r = resolveActionTarget(bonus.action, bonus.targetPhrase);
         if ("clarify" in r) return { kind: "clarify", question: r.clarify };
         bonusTargetId = r.targetId;
         continue;
       }
     }
+    // this clause didn't read as the main action, a bonus action, or a move
+    // — most often a second "and X" target on a single-target action, which
+    // this build can't apply (one action = one target). Say so instead of
+    // just dropping it with no trace.
+    if (clause) notes.push(`(didn't know what to do with "${clause}" — ignored it.)`);
   }
 
   if (!move && !actionId && !bonusActionId) {

@@ -18,6 +18,10 @@ interface Props {
 
 const MONSTERS = listMonsters();
 
+const inputCls =
+  "rounded-md px-2.5 py-2 text-sm placeholder:text-[color:var(--parchment-faint)] focus:outline-none focus:ring-1";
+const inputStyle: React.CSSProperties = { background: "var(--ink)", border: "1px solid var(--line)", color: "var(--parchment)" };
+
 function MicButton({ speech, onText, className }: { speech: SpeechInput; onText: (t: string) => void; className?: string }) {
   if (!speech.supported) return null;
   return (
@@ -25,10 +29,20 @@ function MicButton({ speech, onText, className }: { speech: SpeechInput; onText:
       type="button"
       onClick={() => speech.listen(onText)}
       aria-label="Speak"
-      className={`shrink-0 rounded-full w-9 h-9 flex items-center justify-center text-sm ${speech.listening ? "bg-red-500 text-white animate-pulse" : "bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-200"} ${className ?? ""}`}
+      className={`btn-game shrink-0 rounded-full w-10 h-10 flex items-center justify-center text-sm ${speech.listening ? "animate-pulse" : ""} ${className ?? ""}`}
+      style={speech.listening ? { background: "linear-gradient(180deg, var(--blood-bright), var(--blood))", borderColor: "#5c2323" } : undefined}
     >
       🎤
     </button>
+  );
+}
+
+function SectionHeader({ children, tone }: { children: React.ReactNode; tone: "gold" | "azure" | "blood" }) {
+  const color = tone === "azure" ? "var(--azure-bright)" : tone === "blood" ? "var(--blood-bright)" : "var(--gold-bright)";
+  return (
+    <h2 className="font-display text-xs font-semibold uppercase tracking-[0.15em] mb-2.5" style={{ color }}>
+      {children}
+    </h2>
   );
 }
 
@@ -68,15 +82,19 @@ export default function SetupScreen({ draft, onChangeDraft, onCommand, onStart, 
   const canStart = draft.party.length > 0 && draft.enemyEntries.length > 0;
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto px-4 py-4 gap-6 bg-zinc-50 dark:bg-zinc-950">
-      <section>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-2">Party</h2>
+    <div className="flex flex-col h-full overflow-y-auto px-4 py-5 gap-5">
+      <section className="panel p-4">
+        <SectionHeader tone="azure">⚜ Party</SectionHeader>
         {draft.party.length > 0 && (
           <ul className="mb-3 flex flex-col gap-1.5">
             {draft.party.map((p, i) => (
-              <li key={i} className="flex items-center justify-between bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-800 dark:text-zinc-100">
+              <li
+                key={i}
+                className="flex items-center justify-between rounded-lg px-3 py-2 text-sm"
+                style={{ background: "var(--ink)", border: "1px solid var(--line)", color: "var(--parchment)", borderLeft: "3px solid var(--azure)" }}
+              >
                 <span>{memberLabel(p)}</span>
-                <button onClick={() => onChangeDraft(removePartyMember(draft, i))} aria-label="Remove" className="text-zinc-400 hover:text-red-500 px-2">
+                <button onClick={() => onChangeDraft(removePartyMember(draft, i))} aria-label="Remove" className="px-2 transition-colors" style={{ color: "var(--parchment-faint)" }}>
                   ✕
                 </button>
               </li>
@@ -84,7 +102,7 @@ export default function SetupScreen({ draft, onChangeDraft, onCommand, onStart, 
           </ul>
         )}
         <div className="flex flex-wrap gap-2 items-center">
-          <select value={klass} onChange={(e) => setKlass(e.target.value)} className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-2 text-sm text-zinc-900 dark:text-zinc-50">
+          <select value={klass} onChange={(e) => setKlass(e.target.value)} className={inputCls} style={inputStyle}>
             {CLASS_TEMPLATES.map((c) => (
               <option key={c.templateId} value={c.templateId}>
                 {c.subclassName} {c.className}
@@ -97,34 +115,37 @@ export default function SetupScreen({ draft, onChangeDraft, onCommand, onStart, 
             max={20}
             value={level}
             onChange={(e) => setLevel(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
-            className="w-16 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-2 text-sm text-zinc-900 dark:text-zinc-50"
+            className={`${inputCls} w-16`}
+            style={inputStyle}
           />
           <input
             placeholder="name (optional)"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="flex-1 min-w-[7rem] rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-2 text-sm text-zinc-900 dark:text-zinc-50"
+            className={`${inputCls} flex-1 min-w-[7rem]`}
+            style={inputStyle}
           />
-          <button onClick={addMember} className="rounded-md bg-indigo-600 text-white text-sm font-medium px-3 py-2">
+          <button onClick={addMember} className="btn-game btn-gold text-sm font-medium px-3.5 py-2 rounded-md">
             Add
           </button>
         </div>
-        <button
-          onClick={() => onCommand(`standard party level ${level}`)}
-          className="mt-2 text-xs text-indigo-600 dark:text-indigo-400 underline underline-offset-2"
-        >
+        <button onClick={() => onCommand(`standard party level ${level}`)} className="mt-2.5 text-xs underline underline-offset-2" style={{ color: "var(--azure-bright)" }}>
           or load a standard 4-person party at level {level}
         </button>
       </section>
 
-      <section>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-2">Enemies</h2>
+      <section className="panel p-4">
+        <SectionHeader tone="blood">☠ Enemies</SectionHeader>
         {draft.enemyNames.length > 0 && (
           <ul className="mb-3 flex flex-col gap-1.5">
             {draft.enemyNames.map((n, i) => (
-              <li key={i} className="flex items-center justify-between bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-800 dark:text-zinc-100">
+              <li
+                key={i}
+                className="flex items-center justify-between rounded-lg px-3 py-2 text-sm"
+                style={{ background: "var(--ink)", border: "1px solid var(--line)", color: "var(--parchment)", borderLeft: "3px solid var(--blood)" }}
+              >
                 <span>{n}</span>
-                <button onClick={() => onChangeDraft(removeEnemy(draft, i))} aria-label="Remove" className="text-zinc-400 hover:text-red-500 px-2">
+                <button onClick={() => onChangeDraft(removeEnemy(draft, i))} aria-label="Remove" className="px-2" style={{ color: "var(--parchment-faint)" }}>
                   ✕
                 </button>
               </li>
@@ -135,10 +156,11 @@ export default function SetupScreen({ draft, onChangeDraft, onCommand, onStart, 
           placeholder="filter monsters…"
           value={monsterFilter}
           onChange={(e) => setMonsterFilter(e.target.value)}
-          className="w-full mb-2 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-2 text-sm text-zinc-900 dark:text-zinc-50"
+          className={`${inputCls} w-full mb-2`}
+          style={inputStyle}
         />
         <div className="flex flex-wrap gap-2 items-center">
-          <select value={selectedMonster?.id ?? ""} onChange={(e) => setMonsterId(e.target.value)} className="flex-1 min-w-[9rem] rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-2 text-sm text-zinc-900 dark:text-zinc-50">
+          <select value={selectedMonster?.id ?? ""} onChange={(e) => setMonsterId(e.target.value)} className={`${inputCls} flex-1 min-w-[9rem]`} style={inputStyle}>
             {filteredMonsters.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name} (CR {m.cr})
@@ -151,16 +173,17 @@ export default function SetupScreen({ draft, onChangeDraft, onCommand, onStart, 
             max={20}
             value={count}
             onChange={(e) => setCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
-            className="w-16 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2 py-2 text-sm text-zinc-900 dark:text-zinc-50"
+            className={`${inputCls} w-16`}
+            style={inputStyle}
           />
-          <button onClick={addEnemy} disabled={!selectedMonster} className="rounded-md bg-indigo-600 text-white text-sm font-medium px-3 py-2 disabled:opacity-40">
+          <button onClick={addEnemy} disabled={!selectedMonster} className="btn-game btn-blood text-sm font-medium px-3.5 py-2 rounded-md">
             Add
           </button>
         </div>
       </section>
 
-      <section>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-2">Or say/type it</h2>
+      <section className="panel p-4">
+        <SectionHeader tone="gold">✦ Or Say / Type It</SectionHeader>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -183,22 +206,23 @@ export default function SetupScreen({ draft, onChangeDraft, onCommand, onStart, 
                 setFreeText("");
               }
             }}
-            className="flex-1 rounded-full border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm text-zinc-900 dark:text-zinc-50"
+            className={`${inputCls} flex-1 rounded-full px-4`}
+            style={inputStyle}
           />
           <MicButton speech={speech} onText={(t) => setFreeText(t)} />
-          <button type="submit" className="rounded-full bg-zinc-800 dark:bg-zinc-700 text-white text-sm font-medium px-4 py-2.5">
+          <button type="submit" className="btn-game text-sm font-medium px-4 py-2.5 rounded-full">
             Send
           </button>
         </form>
-        {feedback && <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 whitespace-pre-wrap">{feedback}</p>}
+        {feedback && (
+          <p className="mt-2.5 text-xs whitespace-pre-wrap leading-relaxed" style={{ color: "var(--parchment-dim)" }}>
+            {feedback}
+          </p>
+        )}
       </section>
 
-      <button
-        onClick={onStart}
-        disabled={!canStart}
-        className="mt-auto sticky bottom-0 rounded-full bg-indigo-600 text-white font-semibold py-3.5 disabled:opacity-40"
-      >
-        Start Fight
+      <button onClick={onStart} disabled={!canStart} className="btn-game btn-gold font-display text-base tracking-wide mt-1 sticky bottom-0 rounded-lg py-3.5">
+        ⚔ Start Fight ⚔
       </button>
     </div>
   );

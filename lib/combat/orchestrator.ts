@@ -14,6 +14,7 @@ import { newSession, partyMemberIds, type FightSession, type SetupDraft, type Fi
 import { findCombatant } from "./actionLookup";
 import { describeAction } from "./describeAction";
 import { liveUnits, type LiveUnit } from "./targetResolver";
+import type { UnitSnap } from "../sim/battle/state";
 
 const INFO_ALL = /^(actions?|options?|spells?|weapons?|abilities|what can i do|show actions|list actions|my options)\??$/i;
 const INFO_ONE = /^(?:describe|what does|what is|explain|details?(?: on| for)?|look at|examine)\s+(.+?)\??$/i;
@@ -57,8 +58,13 @@ export interface AdvanceResult {
   awaiting?: AwaitingInput;
   /** structured reaction-prompt data for a Yes/No picker UI */
   awaitingReaction?: AwaitingReaction;
-  /** the live board (position + HP), for a target picker */
+  /** the live board (position + HP), for a target picker — only set while a
+   *  turn is open, since it's built from `awaiting.units` (positions) */
   liveUnits?: LiveUnit[];
+  /** every combatant's current HP/conditions, for a status roster — set
+   *  whenever there's been at least one frame, including mid-reaction
+   *  (unlike liveUnits, which needs an open turn to have positions to merge) */
+  roster?: UnitSnap[];
 }
 
 /** Attaches the current turn/reaction/board state to a response so the UI can
@@ -72,6 +78,7 @@ function attachLive(session: FightSession, lines: string[], outcome?: BattleOutc
     awaiting: outcome.awaiting,
     awaitingReaction: outcome.awaitingReaction,
     liveUnits: outcome.awaiting ? liveUnits(outcome.awaiting.units, outcome.frames.at(-1)?.units) : undefined,
+    roster: outcome.frames.at(-1)?.units,
   };
 }
 
@@ -168,7 +175,12 @@ function handleSetupMessage(d: SetupDraft, message: string): AdvanceResult {
     lines.push(...er.lines);
     if (cur.party.length && cur.enemyEntries.length) {
       const started = startFight(cur);
-      return { session: started.session, lines: [...lines, ...started.lines] };
+      // spread started, not just session/lines — dropping its
+      // awaiting/awaitingReaction/roster meant the picker UI rendered
+      // completely blank (no roster bar, no turn or reaction card) on the
+      // very first frame of any fight kicked off this way, until the next
+      // message repopulated it via the normal continueFight() path
+      return { ...started, lines: [...lines, ...started.lines] };
     }
     return { session: cur, lines };
   }
@@ -249,6 +261,14 @@ function handleFightMessage(s: FightingSession, message: string): AdvanceResult 
   const lastSnap = outcomeBefore.frames.at(-1)?.units;
 
   if (outcomeBefore.awaitingReaction) {
+    if (/^undo$/i.test(message.trim())) {
+      // undo the most recent thing that led here — a previous reaction
+      // answer if one's been given this fight, else the last turn decision
+      const reactionChoices = s.setup.reactionChoices ?? [];
+      if (reactionChoices.length) return continueFight({ ...s, setup: { ...s.setup, reactionChoices: reactionChoices.slice(0, -1) } });
+      const decisions = (s.setup.decisions ?? []).slice(0, -1);
+      return continueFight({ ...s, setup: { ...s.setup, decisions } });
+    }
     const r = interpretReaction(message, outcomeBefore.awaitingReaction);
     if (r.kind === "clarify") return attachLive(s, [r.question], outcomeBefore);
     const reactionChoices = [...(s.setup.reactionChoices ?? []), { round: outcomeBefore.awaitingReaction.round, unitId: outcomeBefore.awaitingReaction.unitId, seq: outcomeBefore.awaitingReaction.seq, take: r.take }];
@@ -270,7 +290,7 @@ function handleFightMessage(s: FightingSession, message: string): AdvanceResult 
     return continueFight({ ...s, setup: { ...s.setup, decisions } }, r.notes);
   }
 
-  if (s.phase === "done") return { session: s, lines: ["The fight is over. Start a new session to run another."] };
+  if (s.phase === "done") return attachLive(s, ["The fight is over. Start a new session to run another."], outcomeBefore);
   return attachLive(s, ["Nothing is waiting on input right now."], outcomeBefore);
 }
 
