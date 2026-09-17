@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local NLU training pipeline (tools/nlu) — regenerable from the scripts +
+# a fixed random seed; only the trained weights get shipped (lib/combat/)
+__pycache__/
+tools/nlu/data/

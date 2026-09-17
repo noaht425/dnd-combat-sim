@@ -10,6 +10,7 @@ import type { BattleDecision } from "../sim/battle/control";
 import { normalize, similarity } from "./fuzzy";
 import { liveUnits, resolveTarget, type LiveUnit } from "./targetResolver";
 import type { UnitSnap } from "../sim/battle/state";
+import { tagTokens, significantSpans } from "./nluModel";
 
 export type CommandResult =
   | { kind: "decision"; decision: BattleDecision; notes: string[] }
@@ -65,22 +66,6 @@ function pickAnchor(awaiting: AwaitingInput, target: LiveUnit | undefined, dir: 
   return sorted[0];
 }
 
-/** `actionName`, when given, is stripped out FIRST (it's the actual matched
- *  action, known exactly — not guessed) before hunting for a target phrase.
- *  Without it, the old single-word-only "cast \S+ ..." guess mis-split any
- *  multi-word action name ("cast cure wounds bront" -> action "cast cure",
- *  target "wounds bront" instead of action "Cure Wounds", target "bront"). */
-function extractTargetPhrase(clause: string, actionName?: string): string | undefined {
-  let rest = clause;
-  if (actionName) {
-    const idx = rest.toLowerCase().indexOf(actionName.toLowerCase());
-    if (idx !== -1) rest = rest.slice(0, idx) + rest.slice(idx + actionName.length);
-  }
-  const m = rest.match(/\b(?:at|on|against|toward|towards)\s+(.+)$/) ?? rest.match(/\b(?:attack|cast|use)\b\s*(.*)$/);
-  const phrase = (m?.[1] ?? rest).trim();
-  return phrase || undefined;
-}
-
 function nearestLiving(units: LiveUnit[], self: LiveUnit, side: "party" | "monster"): LiveUnit | undefined {
   return [...units.filter((u) => u.side === side && u.id !== self.id)].sort(
     (a, b) => Math.hypot(a.box.x0 - self.box.x0, a.box.y0 - self.box.y0) - Math.hypot(b.box.x0 - self.box.x0, b.box.y0 - self.box.y0),
@@ -101,62 +86,40 @@ export function interpretTurnCommand(
   const self = units.find((u) => u.id === awaiting.unitId);
   if (!self) return { kind: "clarify", question: "I lost track of who's acting — try again?" };
 
-  // split into clauses on "then"/"and" — first movement-shaped clause becomes
-  // the move, the rest are tried as main action then bonus action, in order
-  const clauses = n.split(/\bthen\b|\band\b|,/).map((c) => c.trim()).filter(Boolean);
-
   let move: { x: number; y: number } | undefined;
-  const actionClauses: string[] = [];
   const notes: string[] = [];
+  let working = n;
 
-  for (const clause of clauses) {
-    const coordMatch = clause.match(/\bmove to\s+(\d+)\s*,\s*(\d+)/);
-    if (coordMatch) {
-      move = { x: Number(coordMatch[1]), y: Number(coordMatch[2]) };
-      continue;
-    }
+  // an exact coordinate ("move to 5,7") and bare "dash" are precise
+  // syntactic keywords, not a segmentation problem — handled directly rather
+  // than asking the tagger to learn two patterns it'll never see naturally
+  const coordMatch = n.match(/\bmove to\s+(\d+)\s*,\s*(\d+)/);
+  if (coordMatch) {
+    move = { x: Number(coordMatch[1]), y: Number(coordMatch[2]) };
+    working = working.replace(coordMatch[0], " ").trim();
+  }
+  if (DASH_WORDS.test(working) && !MOVE_VERBS.test(working.replace(DASH_WORDS, ""))) {
     // bare "dash" (no verb telling it which way) reads as "close the
     // distance" — matches its own note below, rather than being a pure
     // no-op that CLAIMS it moved at normal speed but doesn't move at all
-    if (DASH_WORDS.test(clause) && !MOVE_VERBS.test(clause.replace(DASH_WORDS, ""))) {
-      notes.push("(dash noted — this build doesn't model doubled movement from Dash yet; moving toward the nearest enemy at normal speed.)");
-      const anchor = pickAnchor(awaiting, nearestLiving(units, self, "monster"), "toward");
-      if (anchor) move = anchor;
-      continue;
-    }
-    if (MOVE_VERBS.test(clause)) {
-      const dir: "toward" | "away" = RETREAT_VERBS.test(clause) ? "away" : "toward";
-      const targetPhrase = clause.replace(MOVE_VERBS, "").replace(/\b(to|the|towards?)\b/g, "").trim();
-      let anchor: { x: number; y: number } | undefined;
-      if (targetPhrase) {
-        const r = resolveTarget(targetPhrase, units, self, "monster");
-        if (r.kind === "ambiguous") {
-          return { kind: "clarify", question: `Which one — ${r.candidates.map((c) => c.name).join(", ")}?` };
-        }
-        if (r.kind === "found") anchor = pickAnchor(awaiting, r.unit, dir);
-      } else {
-        // no named target ("advance" / "retreat" alone) — anchor off the
-        // nearest enemy either way, matching how the target-given case
-        // already treats "away" as relative to whoever's closest
-        anchor = pickAnchor(awaiting, nearestLiving(units, self, "monster"), dir);
-      }
-      if (anchor) move = anchor;
-      continue;
-    }
-    actionClauses.push(clause);
+    notes.push("(dash noted — this build doesn't model doubled movement from Dash yet; moving toward the nearest enemy at normal speed.)");
+    const anchor = pickAnchor(awaiting, nearestLiving(units, self, "monster"), "toward");
+    if (anchor && !move) move = anchor;
+    working = working.replace(DASH_WORDS, " ").trim();
   }
+
+  // segmentation: a locally-trained tagger (tools/nlu — no LLM, no network
+  // call) marks each remaining word O / ACTION / TARGET / MOVE / DIR, then
+  // spans are paired (each MOVE/ACTION claims the TARGET span(s) immediately
+  // following it) — replaces the old regex clause-splitter, which is what
+  // mismatched "back" against the Weapon action's id "attack" and similar.
+  const tokens = working.split(" ").filter(Boolean);
 
   let actionId: string | undefined;
   let targetId: string | undefined;
   let aoeOrigin: { x: number; y: number } | undefined;
   let bonusActionId: string | undefined;
   let bonusTargetId: string | undefined;
-
-  const resolvePool = (clause: string, pool: AwaitAction[]): { action: AwaitAction; targetPhrase?: string; score: number } | undefined => {
-    const found = findBestAction(clause, pool);
-    if (!found) return undefined;
-    return { action: found.action, targetPhrase: extractTargetPhrase(clause, found.action.name), score: found.score };
-  };
 
   // Resolve a target for `action` given the clause's target phrase (possibly
   // empty). Spec §4.1: a qualifier or a confident name resolves silently; a
@@ -191,43 +154,83 @@ export function interpretTurnCommand(
     return {};
   };
 
-  for (const clause of actionClauses) {
-    // Check both pools and take whichever scores higher — matching main first
-    // unconditionally let a borderline false-positive main match ("back" vs
-    // the Weapon action's "attack" id, similarity 0.5) beat an unambiguous
-    // bonus-action match ("misty step back" vs "Misty Step", similarity 0.67)
-    // just because main happened to be checked first.
-    const main = !actionId ? resolvePool(clause, awaiting.actions) : undefined;
-    const bonus = !bonusActionId ? resolvePool(clause, awaiting.bonusActions) : undefined;
-    if (main && (!bonus || main.score >= bonus.score)) {
-      actionId = main.action.id;
-      const r = resolveActionTarget(main.action, main.targetPhrase);
-      if ("clarify" in r) return { kind: "clarify", question: r.clarify };
-      targetId = r.targetId;
-      aoeOrigin = r.aoeOrigin;
-      continue;
-    }
-    if (bonus) {
-      bonusActionId = bonus.action.id;
-      // a bonus action named with no target of its own ("... then Action
-      // Surge") isn't a fresh targeting decision — it's another swing this
-      // same turn, so it defaults to whoever the main action just hit
-      // rather than re-asking "on who?" for an attack the player didn't
-      // separately aim.
-      if (!bonus.targetPhrase && !bonus.action.friendly && !bonus.action.aoe && targetId) {
-        bonusTargetId = targetId;
-      } else {
-        const r = resolveActionTarget(bonus.action, bonus.targetPhrase);
-        if ("clarify" in r) return { kind: "clarify", question: r.clarify };
-        bonusTargetId = r.targetId;
+  if (tokens.length) {
+    const tags = tagTokens(tokens);
+    const spans = significantSpans(tokens, tags);
+
+    // pair each MOVE/ACTION span with the TARGET span(s) immediately
+    // following it (before the next MOVE/ACTION) — mirrors "clause order"
+    // without needing clause delimiters, since connectives are tagged O and
+    // fall out of significantSpans already
+    type Entry = { kind: "move" | "action"; text: string; targetText?: string };
+    const entries: Entry[] = [];
+    const leftoverTargets: string[] = [];
+    for (const span of spans) {
+      if (span.tag === "TARGET") {
+        const last = entries.at(-1);
+        if (last) last.targetText = last.targetText ? `${last.targetText} ${span.text}` : span.text;
+        else leftoverTargets.push(span.text);
+        continue;
       }
-      continue;
+      entries.push({ kind: span.tag === "MOVE" ? "move" : "action", text: span.text });
     }
-    // this clause didn't read as the main action, a bonus action, or a move
-    // — most often a second "and X" target on a single-target action, which
-    // this build can't apply (one action = one target). Say so instead of
-    // just dropping it with no trace.
-    if (clause) notes.push(`(didn't know what to do with "${clause}" — ignored it.)`);
+
+    for (const entry of entries) {
+      if (entry.kind === "move") {
+        if (move) continue; // an exact coord/dash already claimed the move
+        const dir: "toward" | "away" = RETREAT_VERBS.test(entry.text) ? "away" : "toward";
+        let anchor: { x: number; y: number } | undefined;
+        if (entry.targetText) {
+          const r = resolveTarget(entry.targetText, units, self, "monster");
+          if (r.kind === "ambiguous") return { kind: "clarify", question: `Which one — ${r.candidates.map((c) => c.name).join(", ")}?` };
+          if (r.kind === "found") anchor = pickAnchor(awaiting, r.unit, dir);
+        } else {
+          // no named target ("advance" / "retreat" alone) — anchor off the
+          // nearest enemy either way, matching how the target-given case
+          // already treats "away" as relative to whoever's closest
+          anchor = pickAnchor(awaiting, nearestLiving(units, self, "monster"), dir);
+        }
+        if (anchor) move = anchor;
+        continue;
+      }
+
+      // Check both pools and take whichever scores higher — matching main
+      // first unconditionally let a borderline false-positive main match
+      // beat an unambiguous bonus-action match just because main happened to
+      // be checked first.
+      const main = !actionId ? findBestAction(entry.text, awaiting.actions) : undefined;
+      const bonus = !bonusActionId ? findBestAction(entry.text, awaiting.bonusActions) : undefined;
+      if (main && (!bonus || main.score >= bonus.score)) {
+        actionId = main.action.id;
+        const r = resolveActionTarget(main.action, entry.targetText);
+        if ("clarify" in r) return { kind: "clarify", question: r.clarify };
+        targetId = r.targetId;
+        aoeOrigin = r.aoeOrigin;
+        continue;
+      }
+      if (bonus) {
+        bonusActionId = bonus.action.id;
+        // a bonus action named with no target of its own ("... then Action
+        // Surge") isn't a fresh targeting decision — it's another swing this
+        // same turn, so it defaults to whoever the main action just hit
+        // rather than re-asking "on who?" for an attack the player didn't
+        // separately aim.
+        if (!entry.targetText && !bonus.action.friendly && !bonus.action.aoe && targetId) {
+          bonusTargetId = targetId;
+        } else {
+          const r = resolveActionTarget(bonus.action, entry.targetText);
+          if ("clarify" in r) return { kind: "clarify", question: r.clarify };
+          bonusTargetId = r.targetId;
+        }
+        continue;
+      }
+      // this span didn't read as the main action, a bonus action, or a move
+      // — most often a third action reference this build has no slot left
+      // for (one main + one bonus). Say so instead of just dropping it.
+      if (entry.text) notes.push(`(didn't know what to do with "${entry.text}" — ignored it.)`);
+    }
+
+    for (const t of leftoverTargets) notes.push(`(didn't know what to do with "${t}" — ignored it.)`);
   }
 
   if (!move && !actionId && !bonusActionId) {
