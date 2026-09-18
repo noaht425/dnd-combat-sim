@@ -2,7 +2,7 @@
 
 import type { Action, AutomationNode, Condition, DamageType } from "../schema";
 
-import { applyDamage, rollAttack, rollSave, type AttackResult } from "./resolve";
+import { applyDamage, critRangeFor, rollAttack, rollSave, type AttackResult } from "./resolve";
 import { MINIONS } from "./minions";
 import { isSpell, mayCounterspell, provokeOpportunityAttacks, reactToAttackResolved } from "./reactions";
 import {
@@ -313,7 +313,8 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           break; // out of melee reach — the swing never connects
         }
         const adv = tweak?.disadvantage ? "dis" : node.adv;
-        const res = rollAttack(state, source, t, bonus, adv, node.critRange ?? 20, tweak?.acBonus ?? 0);
+        const critRange = Math.min(node.critRange ?? 20, critRangeFor(source));
+        const res = rollAttack(state, source, t, bonus, adv, critRange, tweak?.acBonus ?? 0);
         if (ctx.attackTally) {
           ctx.attackTally.rolled++;
           if (res.hit) ctx.attackTally.hit++;

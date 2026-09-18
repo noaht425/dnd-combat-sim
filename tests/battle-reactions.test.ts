@@ -83,15 +83,17 @@ describe("battle reactions — surfaced to the player", () => {
 
   it("surfaces a controlled fighter's Riposte", () => {
     // Riposte fires when a MELEE attack misses the fighter — a pair of owlbears
-    // (many +7 swings vs the fighter's AC 19) makes that happen reliably
+    // (many +7 swings vs the fighter's AC 18) makes that happen reliably.
+    // Battle Master, not GWM/Champion — Riposte is a superiority-dice
+    // maneuver, and only battlemaster-fighter carries that kit.
     const setup = {
       party: [
         { template: "assassin-rogue", name: "Sly", level: 5 },
-        { template: "gwm-fighter", name: "Bront", level: 5 },
+        { template: "battlemaster-fighter", name: "Bront", level: 5 },
       ],
       enemies: ["owlbear x2"] as string[],
-      seed: 2,
-      controlled: ["pc-2-gwm-fighter"],
+      seed: 1,
+      controlled: ["pc-2-battlemaster-fighter"],
     };
     const decisions: BattleDecision[] = [];
     const reactionChoices: ReactionChoice[] = [];

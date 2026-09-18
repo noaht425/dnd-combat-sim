@@ -37,6 +37,13 @@ function ruleActive(u: CombatantState, rule: string): boolean {
   return u.ref.specialRules.some((r) => r.rule === rule);
 }
 
+/** the lowest natural roll that crits for `u` (Champion's Improved/Superior
+ *  Critical, Invincible Conqueror, etc.) — 20 if it has no such special rule. */
+export function critRangeFor(u: CombatantState): number {
+  const r = u.ref.specialRules.find((x) => x.rule === "critRange");
+  return r && r.rule === "critRange" ? r.value : 20;
+}
+
 // ---------------------------------------------------- precognition (d20 replacement)
 // Once per round it may replace a d20 rolled by a nearby creature with one of three
 // pre-seen faces. We only spend it defensively: turn a party hit into a miss, or a

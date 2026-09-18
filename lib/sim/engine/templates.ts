@@ -61,7 +61,13 @@ function gwmFighter(level: number): Combatant {
     ac: 19, hp: between(level, 13, 9 * 20 + 15),
     abilities: { str: score(pb === 6 ? 5 : 4), dex: score(1), con: score(3), int: score(0), wis: score(1), cha: score(0) },
     proficientSaves: ["str", "con"],
-    resources: { action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" }, superiority: { max: 4, recharge: "shortRest" }, second_wind: { max: 1, recharge: "shortRest" } },
+    resources: { action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" }, second_wind: { max: 1, recharge: "shortRest" } },
+    // Champion (the subclass this build actually represents — a no-frills
+    // GWM-feat fighter with no maneuver-dice kit): Improved Critical (19-20)
+    // at 3rd level, Superior Critical (18-20) at 15th. The `critRange`
+    // specialRule existed in the schema from the start but nothing ever
+    // read it — wired into rollAttack's crit check via `critRangeFor`.
+    specialRules: level >= 3 ? [{ rule: "critRange", value: level >= 15 ? 18 : 19 }] : [],
     actions: [
       {
         id: "attack", name: "Multiattack (GWM)", cost: { action: 1 }, recharge: "none",
@@ -75,11 +81,6 @@ function gwmFighter(level: number): Combatant {
         automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, swing) }],
       },
     ],
-    reactions: [{
-      id: "riposte", name: "Riposte", cost: { reaction: 1 }, recharge: "none",
-      trigger: "self.wasMissedByMeleeAttack", limitedUse: { resource: "superiority", amount: 1 },
-      automation: [{ type: "useAction", action: "attack", times: 1 }],
-    }],
     opener: ["action-surge"], targetPriority: "lowestHp",
   });
 }

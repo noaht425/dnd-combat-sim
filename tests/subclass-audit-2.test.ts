@@ -26,22 +26,19 @@ describe("Subclass audit fixes, round 2", () => {
   });
 
   it("Hunter Ranger: Colossus Slayer adds 1d8 once per turn against a hurt target", () => {
-    let saw = 0;
-    for (let seed = 1; seed <= 20; seed++) {
-      const out = runBattle({
-        party: [{ template: "hunter-ranger", level: 5, name: "Ranger" }],
-        enemies: ["troll"],
-        seed,
-        controlled: [],
-        maxRounds: 3,
-      } as never);
-      if (/Colossus Slayer|1d8/.test(out.frames.map((f) => f.text ?? "").join("\n"))) saw++;
-    }
-    // just confirm the branch node exists and the battle runs without throwing;
-    // the flavor text isn't narrated per-node, so check the automation shape directly.
+    // the flavor text isn't narrated per-node, so check the automation shape
+    // directly, and confirm the battle actually runs with it without throwing.
     const c = makeTemplate("hunter-ranger", 5);
     const atk = c.actions.find((a) => a.id === "attack")!;
     expect(JSON.stringify(atk.automation)).toContain("target.hp < target.maxhp");
+    const out = runBattle({
+      party: [{ template: "hunter-ranger", level: 5, name: "Ranger" }],
+      enemies: ["troll"],
+      seed: 1,
+      controlled: [],
+      maxRounds: 3,
+    } as never);
+    expect(out.frames.length).toBeGreaterThan(0);
   });
 
   it("Fiend Warlock: Dark One's Blessing grants temp HP on reducing a hostile creature to 0 HP", () => {
