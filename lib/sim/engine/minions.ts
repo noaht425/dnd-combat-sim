@@ -258,6 +258,35 @@ const primalSpirit = minion({
   ],
 });
 
+// Battle Smith artificer's Steel Defender — fixed mid-tier stats, same
+// abstraction as Primal Companion above.
+const steelDefender = minion({
+  id: "steel-defender",
+  name: "Steel Defender",
+  cr: "2",
+  ac: 15,
+  maxHp: "7d8+14",
+  speeds: { walk: 40 },
+  abilities: { str: 14, dex: 12, con: 14, int: 6, wis: 10, cha: 6 },
+  pb: 3,
+  conditionImmunities: ["poisoned", "charmed", "frightened", "exhaustion"],
+  actions: [
+    {
+      id: "rend",
+      name: "Force-Empowered Rend",
+      cost: { action: 1 },
+      recharge: "none",
+      automation: [
+        {
+          type: "target",
+          who: { who: "aiChoice" },
+          effects: [{ type: "attack", bonus: 6, onHit: [{ type: "damage", amount: "1d6+4", damageType: "force" }] }],
+        },
+      ],
+    },
+  ],
+});
+
 export const MINIONS: Record<string, Combatant> = {
   "fire-elemental": fireElemental,
   "chain-devil": chainDevil,
@@ -265,6 +294,7 @@ export const MINIONS: Record<string, Combatant> = {
   wolf,
   "primal-companion": primalCompanion,
   "primal-spirit": primalSpirit,
+  "steel-defender": steelDefender,
 };
 
 /**

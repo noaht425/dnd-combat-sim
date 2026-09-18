@@ -34,6 +34,8 @@ export const CLASS_TEMPLATES: ClassAlias[] = [
     aliases: ["paladin", "vengeance paladin", "oath of vengeance paladin"] },
   { templateId: "hunter-ranger", className: "ranger", subclassName: "Hunter",
     aliases: ["ranger", "hunter ranger", "hunter"] },
+  { templateId: "beastmaster-ranger", className: "ranger", subclassName: "Beast Master",
+    aliases: ["beast master ranger", "beastmaster ranger", "beast master"] },
   { templateId: "draconic-sorcerer", className: "sorcerer", subclassName: "Draconic Bloodline",
     aliases: ["sorcerer", "draconic sorcerer", "dragon sorcerer", "draconic bloodline sorcerer"] },
   { templateId: "wild-magic-sorcerer", className: "sorcerer", subclassName: "Wild Magic",
