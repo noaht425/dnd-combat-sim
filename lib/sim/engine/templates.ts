@@ -84,6 +84,86 @@ function gwmFighter(level: number): Combatant {
   });
 }
 
+function battleMasterFighter(level: number): Combatant {
+  const pb = pbFor(level);
+  const str = pb === 6 ? 5 : 4;
+  const baseAttacks = level >= 20 ? 4 : level >= 11 ? 3 : level >= 5 ? 2 : 1;
+  const toHit = pb + str;
+  const dmgPerHit = `2d6+${str}`;
+  const dieSize = level >= 18 ? 12 : level >= 10 ? 10 : 8;
+  const dc = 8 + pb + str;
+  const mkSwing = (maneuver?: "trip" | "menacing" | "disarming"): AutomationNode => ({
+    type: "attack", bonus: toHit, onHit: [
+      { type: "damage", amount: dmgPerHit, damageType: "slashing" },
+      ...(maneuver
+        ? [{
+            type: "branch" as const, if: "self.resource('superiority') > 0",
+            then: [
+              { type: "spendResource" as const, resource: "superiority", amount: 1 },
+              { type: "damage" as const, amount: `1d${dieSize}`, damageType: "slashing" as const },
+              ...(maneuver === "trip"
+                ? [{ type: "save" as const, ability: "str" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "prone" as const, durationRounds: 1 }] }]
+                : maneuver === "menacing"
+                  ? [{ type: "save" as const, ability: "wis" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "frightened" as const, durationRounds: 1 }] }]
+                  : [{ type: "save" as const, ability: "str" as const, dc, onFail: [{ type: "applyEffect" as const, name: "disarmed", durationRounds: 1, mods: { attackAdvantage: "dis" as const } }] }]),
+            ],
+          }]
+        : []),
+    ],
+  });
+  return pc({
+    id: "battlemaster-fighter", name: `Fighter ${level}`, level,
+    ac: 18, hp: between(level, 13, 9 * 20 + 15),
+    abilities: { str: score(str), dex: score(1), con: score(3), int: score(0), wis: score(1), cha: score(0) },
+    proficientSaves: ["str", "con"],
+    resources: {
+      action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" },
+      superiority: { max: level >= 15 ? 6 : level >= 7 ? 5 : 4, recharge: "shortRest" },
+      second_wind: { max: 1, recharge: "shortRest" },
+    },
+    actions: [
+      {
+        id: "attack", name: "Attack", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, () => mkSwing()) }],
+      },
+      {
+        id: "attack-trip", name: "Attack + Trip Attack", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i === 0 ? "trip" : undefined)) }],
+      },
+      {
+        id: "attack-menacing", name: "Attack + Menacing Attack", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i === 0 ? "menacing" : undefined)) }],
+      },
+      {
+        id: "attack-disarming", name: "Attack + Disarming Attack", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i === 0 ? "disarming" : undefined)) }],
+      },
+      {
+        id: "action-surge", name: "Action Surge", cost: { bonus: 1 }, recharge: "none",
+        limitedUse: { resource: "action_surge", amount: 1 },
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, () => mkSwing()) }],
+      },
+      {
+        // Rally: a bonus action, spend a die, grant temp HP to the most-hurt ally
+        id: "rally", name: "Rally", cost: { bonus: 1 }, recharge: "none",
+        automation: [{
+          type: "branch", if: "self.resource('superiority') > 0",
+          then: [
+            { type: "spendResource", resource: "superiority", amount: 1 },
+            { type: "target", who: { who: "lowestHpAlly" }, effects: [{ type: "tempHp", amount: `1d${dieSize}+${str}` }] },
+          ],
+        }],
+      },
+    ],
+    reactions: [{
+      id: "riposte", name: "Riposte", cost: { reaction: 1 }, recharge: "none",
+      trigger: "self.wasMissedByMeleeAttack", limitedUse: { resource: "superiority", amount: 1 },
+      automation: [{ type: "useAction", action: "attack", times: 1 }],
+    }],
+    opener: ["action-surge"], targetPriority: "lowestHp",
+  });
+}
+
 function assassinRogue(level: number): Combatant {
   const pb = pbFor(level);
   const sneak = `${Math.ceil(level / 2)}d6`;
@@ -239,6 +319,7 @@ export function applyLoadout(c: Combatant, l: Loadout): Combatant {
 
 const BUILDERS: Record<string, (level: number) => Combatant> = {
   "gwm-fighter": gwmFighter,
+  "battlemaster-fighter": battleMasterFighter,
   "assassin-rogue": assassinRogue,
   "totem-barbarian": totemBarbarian,
   "open-hand-monk": openHandMonk,

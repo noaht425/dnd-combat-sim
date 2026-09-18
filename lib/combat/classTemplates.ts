@@ -17,7 +17,9 @@ export interface ClassAlias {
 
 export const CLASS_TEMPLATES: ClassAlias[] = [
   { templateId: "gwm-fighter", className: "fighter", subclassName: "Great Weapon Master",
-    aliases: ["fighter", "gwm fighter", "battlemaster fighter", "great weapon fighter", "champion fighter"] },
+    aliases: ["fighter", "gwm fighter", "great weapon fighter", "champion fighter"] },
+  { templateId: "battlemaster-fighter", className: "fighter", subclassName: "Battle Master",
+    aliases: ["battle master fighter", "battlemaster fighter", "battle master"] },
   { templateId: "assassin-rogue", className: "rogue", subclassName: "Assassin",
     aliases: ["rogue", "assassin", "assassin rogue", "thief"] },
   { templateId: "totem-barbarian", className: "barbarian", subclassName: "Path of the Totem Warrior",
