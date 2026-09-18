@@ -13,14 +13,18 @@ import {
   CombatState,
   CombatTuning,
   CombatantState,
+  beginTurn,
   hpBar,
   humanize,
   initCombatant,
   isIncapacitated,
+  isExtraTurn,
   isMinion,
   livingEnemies,
+  rollTurnOrder,
   say,
   startTurnEconomy,
+  turnOwner,
 } from "./state";
 
 export interface Contribution {
@@ -116,16 +120,9 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
   }
 
   // initiative — dex-mod + d20 (+ initiativeBonus if set); monster gets ties;
-  // an ambusher jumps the queue for the surprise strike
-  const order = [...units.values()]
-    .map((u) => ({
-      id: u.id,
-      init: rng.d20() + (u.ref.initiativeBonus ?? Math.floor((u.ref.abilities.dex - 10) / 2)) +
-        (u.assassinateUntilRound ? 100 : 0),
-      side: u.side,
-    }))
-    .sort((a, b) => b.init - a.init || (a.side === "monster" ? -1 : 1))
-    .map((x) => x.id);
+  // an ambusher jumps the queue for the surprise strike; Thief's Reflexes adds a
+  // second round-1 slot at initiative − 10 (rollTurnOrder)
+  const order = rollTurnOrder(units.values(), rng, (u) => Math.floor((u.ref.abilities.dex - 10) / 2));
 
   const state: CombatState = {
     round: 0,
@@ -142,7 +139,7 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
     summonRegistry: opts.summonRegistry,
   };
 
-  say(state, `Initiative: ${order.map((id) => units.get(id)!.name).join(" > ")}`);
+  say(state, `Initiative: ${order.map((e) => units.get(turnOwner(e))!.name + (isExtraTurn(e) ? " (again)" : "")).join(" > ")}`);
   fireEncounterStartTraits(state); // e.g. an Alchemist rolling the elixirs it brewed at its last long rest
 
   while (!state.ended && state.round < state.maxRounds) {
@@ -161,12 +158,14 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
     checkEnd(state);
     if (state.ended) break;
 
-    for (const id of order) {
-      const u = units.get(id)!;
+    for (const entry of order) {
+      if (isExtraTurn(entry) && state.round !== 1) continue; // Thief's Reflexes: only the first round
+      const u = units.get(turnOwner(entry))!;
       if (!u.alive || state.ended) continue;
-      if (u.downed) { rollDeathSave(state, u); continue; }
+      if (u.downed) { if (!isExtraTurn(entry)) rollDeathSave(state, u); continue; }
 
       startTurnEconomy(u); // action / bonus / reaction refresh at the start of your own turn
+      beginTurn(state, u);
       startOfTurn(state, u);
       if (state.ended) break;
 

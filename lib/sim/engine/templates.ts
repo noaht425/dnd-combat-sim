@@ -6,6 +6,7 @@
 
 import type { Ability, AutomationNode, Combatant } from "../schema";
 import { CASTER_BUILDERS } from "../spells/casterTemplates";
+import { rogueKit, type RogueKit } from "./rogueKit";
 
 const pbFor = (lvl: number) => 2 + Math.floor((lvl - 1) / 4);
 const score = (mod: number) => 10 + mod * 2;
@@ -24,10 +25,16 @@ function pc(base: {
   actions: Combatant["actions"]; reactions?: Combatant["reactions"];
   specialRules?: Combatant["specialRules"];
   keepDistance?: boolean; opener?: string[]; targetPriority?: Combatant["ai"]["targetPriority"];
+  /** walking speed in feet (default 30) */
+  speed?: number;
+  initiativeBonus?: number;
+  /** bonus-action ids the AI takes before its main action / right after its Attack action */
+  bonusRoutine?: string[]; bonusAfterAttack?: string[];
 }): Combatant {
   return {
     id: base.id, name: base.name, kind: "pc", size: "medium", level: base.level,
-    templateId: base.id, ac: base.ac, maxHp: base.hp, speeds: { walk: 30 },
+    templateId: base.id, ac: base.ac, maxHp: base.hp, speeds: { walk: base.speed ?? 30 },
+    ...(base.initiativeBonus !== undefined ? { initiativeBonus: base.initiativeBonus } : {}),
     abilities: base.abilities, pb: pbFor(base.level), proficientSaves: base.proficientSaves,
     saveBonusAll: base.saveBonusAll ?? 0,
     resistances: [], resistancesNonmagical: [], immunities: [], vulnerabilities: [],
@@ -38,6 +45,8 @@ function pc(base: {
       targetPriority: base.targetPriority ?? "lowestHp", aoeMinTargets: 2,
       opener: base.opener ?? [], saveLegendaryResistanceFor: [],
       keepDistance: base.keepDistance ?? false, neverRetreat: true, focusFire: true,
+      ...(base.bonusRoutine ? { bonusRoutine: base.bonusRoutine } : {}),
+      ...(base.bonusAfterAttack ? { bonusAfterAttack: base.bonusAfterAttack } : {}),
     },
   };
 }
@@ -165,201 +174,193 @@ function battleMasterFighter(level: number): Combatant {
   });
 }
 
+// ────────────────────────────────────────────────────────────────────── rogues
+// Everything below is checked against the printed Rogue table and each subclass's text — see rogueKit.ts for
+// the shared base (Sneak Attack, Uncanny Dodge 5th, Evasion 7th, ..., the split main-hand / off-hand attacks).
+// Build assumptions the books don't decide: Dex 18 (20 from 17th), the rapier + shortsword loadout, and — for
+// the skill checks the subclasses lean on — proficiency in the skill (Insight, Persuasion).
+
+/** the shared chassis, with a subclass's own bits layered on */
+function buildRogue(level: number, id: string, kit: RogueKit, o: {
+  cha?: number; // Charisma modifier (default +1)
+  actions?: Combatant["actions"];
+  resources?: Combatant["resources"];
+  specialRules?: Combatant["specialRules"];
+  speed?: number; initiativeBonus?: number; keepDistance?: boolean;
+  bonusRoutine?: string[]; bonusAfterAttack?: string[];
+} = {}): Combatant {
+  return pc({
+    id, name: `Rogue ${level}`, level,
+    ac: 18, hp: between(level, 10, 7 * 20 + 12),
+    abilities: { str: score(0), dex: score(kit.dex), con: score(2), int: score(2), wis: score(2), cha: score(o.cha ?? 1) },
+    proficientSaves: kit.proficientSaves,
+    specialRules: [...kit.specialRules, ...(o.specialRules ?? [])],
+    resources: { ...kit.resources, ...(o.resources ?? {}) },
+    traits: kit.traits,
+    actions: [kit.attack, kit.offhand, ...(o.actions ?? [])],
+    reactions: kit.reactions,
+    keepDistance: o.keepDistance ?? true, targetPriority: "squishiest",
+    speed: o.speed, initiativeBonus: o.initiativeBonus,
+    bonusRoutine: o.bonusRoutine, bonusAfterAttack: o.bonusAfterAttack ?? ["offhand"],
+  });
+}
+
+// Assassin (Player's Handbook): Assassinate — advantage on attack rolls against any creature that hasn't taken a
+// turn yet, and any hit on a SURPRISED creature is a critical hit. The engine's `ambush` rule models an opening
+// ambush (the assassin strikes first, advantage + crit on round-1 hits); nothing else in this subclass is a
+// combat feature before 17th level's Death Strike, which is not modeled.
 function assassinRogue(level: number): Combatant {
-  const pb = pbFor(level);
-  const sneak = `${Math.ceil(level / 2)}d6`;
-  return pc({
-    id: "assassin-rogue", name: `Rogue ${level}`, level,
-    ac: 18, hp: between(level, 10, 7 * 20 + 12),
-    abilities: { str: score(0), dex: score(pb === 6 ? 5 : 4), con: score(2), int: score(2), wis: score(2), cha: score(1) },
-    proficientSaves: ["dex", "int"],
-    // Assassinate — the mechanism (advantage + auto-crit on round-1 hits,
-    // priority to act first) already existed in the engine (resolve.ts,
-    // loop.ts) gated on this "ambush" special rule; nothing actually set it
-    // for the one rogue template that's meant to have it.
-    specialRules: [{ rule: "ambush" }],
-    traits: [{ id: "evasion", name: "Evasion", trigger: "always", automation: [], text: "half on a failed Dex save, none on a success (engine hook)" }],
-    actions: [{
-      id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
-      automation: [{ type: "target", who: { who: "squishiestEnemy" }, effects: [
-        { type: "attack", bonus: pb + 5, onHit: [
-          { type: "damage", amount: `1d8+${pb === 6 ? 5 : 4}`, damageType: "piercing" },
-          // once per turn, only with advantage or an ally next to the target
-          // (checked live against the actual attack — see interpreter.ts)
-          { type: "damage", amount: sneak, damageType: "piercing", requiresSneakAttack: true },
-        ] },
-        { type: "attack", bonus: pb + 5, onHit: [{ type: "damage", amount: `1d8+${pb === 6 ? 5 : 4}`, damageType: "piercing" }] },
-      ] }],
-    }],
-    reactions: [{
-      id: "uncanny-dodge", name: "Uncanny Dodge", cost: { reaction: 1 }, recharge: "none",
-      trigger: "self.wasHitByAttack", automation: [{ type: "note", text: "halves the triggering attack's damage (engine hook)" }],
-    }],
-    keepDistance: true, targetPriority: "squishiest",
-  });
+  return buildRogue(level, "assassin-rogue", rogueKit(level), { specialRules: [{ rule: "ambush" }] });
 }
 
-// Shared chassis every rogue subclass below builds on: the same base stats,
-// Evasion, Uncanny Dodge, and an "Attack + Sneak Attack" action (main-hand +
-// offhand, Two-Weapon Fighting folded into one action like the GWM fighter's
-// bonus swing) — only what's genuinely subclass-specific differs per rogue.
-function rogueBase(level: number) {
-  const pb = pbFor(level);
-  const dex = pb === 6 ? 5 : 4;
-  const sneak = `${Math.ceil(level / 2)}d6`;
-  return {
-    pb, dex, sneak,
-    ac: 18, hp: between(level, 10, 7 * 20 + 12),
-    abilities: { str: score(0), dex: score(dex), con: score(2), int: score(2), wis: score(2), cha: score(1) } as Combatant["abilities"],
-    proficientSaves: ["dex", "int"] as Ability[],
-    evasion: { id: "evasion", name: "Evasion", trigger: "always" as const, automation: [], text: "half on a failed Dex save, none on a success (engine hook)" },
-    uncannyDodge: {
-      id: "uncanny-dodge", name: "Uncanny Dodge", cost: { reaction: 1 }, recharge: "none" as const,
-      trigger: "self.wasHitByAttack", automation: [{ type: "note" as const, text: "halves the triggering attack's damage (engine hook)" }],
-    },
-    /** the base "Attack + Sneak Attack" automation; `sneakAlways` drops the
-     *  advantage/ally-adjacent requirement (Swashbuckler's Rakish Audacity);
-     *  `damageType` lets Soulknife reskin it to psychic (Psychic Blades). */
-    attack: (opts?: { sneakAlways?: boolean; damageType?: import("../schema").DamageType }): Combatant["actions"][number] => ({
-      id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
-      automation: [{ type: "target", who: { who: "squishiestEnemy" }, effects: [
-        { type: "attack", bonus: pb + dex, onHit: [
-          { type: "damage", amount: `1d8+${dex}`, damageType: opts?.damageType ?? "piercing" },
-          { type: "damage", amount: sneak, damageType: opts?.damageType ?? "piercing", ...(opts?.sneakAlways ? {} : { requiresSneakAttack: true }) },
-        ] },
-        { type: "attack", bonus: pb + dex, onHit: [{ type: "damage", amount: `1d8+${dex}`, damageType: opts?.damageType ?? "piercing" }] },
-      ] }],
-    }),
-  };
-}
-
+// Thief (Player's Handbook): Fast Hands, Second-Story Work, Supreme Sneak and Use Magic Device are utility. The
+// one combat feature is Thief's Reflexes (17th): two turns in the first round of combat — your normal initiative
+// and initiative − 10 — unless you're surprised. The turn order really does get a second slot (see rollTurnOrder).
 function thiefRogue(level: number): Combatant {
-  const b = rogueBase(level);
-  return pc({
-    id: "thief-rogue", name: `Rogue ${level}`, level,
-    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
-    traits: [b.evasion],
-    // Thief's Reflexes (17th level) is the class's one real extra-COMBAT
-    // feature (everything earlier — Fast Hands, Second-Story Work, Supreme
-    // Sneak — is utility/exploration, not damage) — modeled as a once-per-
-    // fight bonus action that repeats the Attack action, standing in for the
-    // "act again at initiative -10" turn the engine's fixed turn order can't
-    // literally insert.
-    resources: level >= 17 ? { thiefs_reflexes: { max: 1, recharge: "longRest" } } : {},
-    actions: [
-      b.attack(),
-      ...(level >= 17 ? [{
-        id: "thiefs-reflexes", name: "Thief's Reflexes", cost: { bonus: 1 }, recharge: "none" as const,
-        limitedUse: { resource: "thiefs_reflexes", amount: 1 },
-        automation: [{ type: "useAction" as const, action: "attack", times: 1 }],
-      }] : []),
-    ],
-    reactions: [b.uncannyDodge],
-    keepDistance: true, targetPriority: "squishiest",
+  return buildRogue(level, "thief-rogue", rogueKit(level), {
+    specialRules: level >= 17 ? [{ rule: "extraFirstRoundTurn" }] : [],
   });
 }
 
+// Swashbuckler (Xanathar's Guide to Everything), assuming Charisma 14:
+//   Fancy Footwork (3rd) — no opportunity attacks from a creature you made a melee attack against this turn.
+//   Rakish Audacity (3rd) — + Charisma to initiative; Sneak Attack without advantage when you're within 5 ft of the
+//     target, no OTHER creature is within 5 ft of you, and you don't have disadvantage.
+//   Panache (9th) — action: Persuasion vs Insight; a hostile creature that loses has disadvantage on attacks against
+//     anyone but you (until a companion attacks it, 1 minute). The opportunity-attack clause and the spell trigger
+//     for ending it are not modeled.
+//   Master Duelist (17th) — a missed attack is rolled again with advantage, once per short or long rest.
+// Elegant Maneuver (13th) only buys advantage on Acrobatics / Athletics checks, which the sim has no use for.
 function swashbucklerRogue(level: number): Combatant {
-  const b = rogueBase(level);
-  return pc({
-    id: "swashbuckler-rogue", name: `Rogue ${level}`, level,
-    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
-    traits: [b.evasion],
-    // Rakish Audacity: Sneak Attack no longer needs advantage or an ally
-    // adjacent to the target, just that no OTHER creature is within 5 ft of
-    // it — the engine has no positional "who else is adjacent" check beyond
-    // the existing ally-adjacent one, so this is simplified to "always on",
-    // the honest limit of what's modelable here.
-    actions: [b.attack({ sneakAlways: true })],
-    reactions: [b.uncannyDodge],
-    keepDistance: true, targetPriority: "squishiest",
+  const kit = rogueKit(level);
+  const cha = 2;
+  const sub = level >= 3;
+  return buildRogue(level, "swashbuckler-rogue", kit, {
+    cha, keepDistance: false, // the duelist fights at arm's length — Rakish Audacity needs it
+    initiativeBonus: sub ? kit.dex + cha : undefined,
+    specialRules: [
+      ...(sub ? [{ rule: "fancyFootwork" as const }, { rule: "soloSneak" as const }] : []),
+      ...(level >= 17 ? [{ rule: "rerollMissWithAdvantage" as const, resource: "master_duelist" }] : []),
+    ],
+    resources: level >= 17 ? { master_duelist: { max: 1, recharge: "shortRest" as const } } : {},
+    actions: level >= 9 ? [{
+      id: "panache", name: "Panache", cost: { action: 1 }, recharge: "none" as const,
+      automation: [{ type: "target" as const, who: { who: "aiChoice" as const }, effects: [{
+        type: "contest" as const, bonus: cha + kit.pb, theirs: "wis" as const,
+        onSuccess: [{ type: "applyEffect" as const, name: "panache", durationRounds: 10, mods: { disadvantageUnlessTargetingSource: true, endOnAllyAttack: true } }],
+      }] }],
+    }] : [],
   });
 }
 
+// Mastermind (Xanathar's): Master of Intrigue is social. Master of Tactics (3rd) — the Help action as a BONUS
+// action, from up to 30 ft away: the first attack an ally makes against the creature before the start of your next
+// turn has advantage. Misdirection (13th) is a positional reaction and isn't modeled. The Help takes the bonus
+// action, so the off-hand swing is given up on turns the Mastermind helps someone.
 function mastermindRogue(level: number): Combatant {
-  const b = rogueBase(level);
-  return pc({
-    id: "mastermind-rogue", name: `Rogue ${level}`, level,
-    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
-    traits: [b.evasion],
-    actions: [
-      b.attack(),
-      // Master of Tactics: the Help action at range. RAW just grants
-      // advantage on the ally's next attack — that's exactly what a
-      // short-lived attackAdvantage effect already does here.
-      {
-        id: "master-of-tactics", name: "Master of Tactics", cost: { bonus: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "lowestHpAlly" }, effects: [
-          { type: "applyEffect", name: "master-of-tactics", durationRounds: 1, mods: { attackAdvantage: "adv" } },
-        ] }],
-      },
-    ],
-    reactions: [b.uncannyDodge],
-    keepDistance: true, targetPriority: "squishiest",
+  const kit = rogueKit(level);
+  return buildRogue(level, "mastermind-rogue", kit, {
+    actions: level >= 3 ? [{
+      id: "master-of-tactics", name: "Master of Tactics (Help)", cost: { bonus: 1 }, recharge: "none" as const,
+      automation: [{ type: "branch" as const, if: "self.has_ally", then: [{ type: "target" as const, who: { who: "aiChoice" as const }, effects: [
+        { type: "applyEffect" as const, name: "helped", mods: { attacksAgainstItAdvantage: "adv" as const, consumeOnAttacked: true, untilSourceNextTurn: true } },
+      ] }] }],
+    }] : [],
+    bonusRoutine: level >= 3 ? ["master-of-tactics"] : undefined,
   });
 }
 
+// Inquisitive (Xanathar's): Ear for Deceit, Eye for Detail, Steady Eye and Unerring Eye are perception features.
+//   Insightful Fighting (3rd) — bonus action: Wisdom (Insight) against the target's Charisma (Deception); on a
+//     success Sneak Attack works on it without advantage (not with disadvantage), for 1 minute or until you read a
+//     different creature. Assumes Insight proficiency.
+//   Eye for Weakness (17th) — +3d6 Sneak Attack damage against the creature you're reading.
 function inquisitiveRogue(level: number): Combatant {
-  const b = rogueBase(level);
-  return pc({
-    id: "inquisitive-rogue", name: `Rogue ${level}`, level,
-    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
-    traits: [b.evasion],
-    actions: [
-      b.attack(),
-      // Insightful Fighting: bonus action, size up a target so Sneak Attack
-      // lands on them without needing advantage — modeled as a short
-      // self-advantage buff, which already satisfies the engine's sneak-
-      // attack "had advantage" check without a second bespoke flag.
-      {
-        id: "insightful-fighting", name: "Insightful Fighting", cost: { bonus: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "self" }, effects: [
-          { type: "applyEffect", name: "insightful-fighting", durationRounds: 1, mods: { attackAdvantage: "adv" } },
-        ] }],
-      },
-    ],
-    reactions: [b.uncannyDodge],
-    keepDistance: true, targetPriority: "squishiest",
+  const kit0 = rogueKit(level);
+  const type = "piercing" as const;
+  const kit = rogueKit(level, {
+    riders: level >= 17 ? [{ type: "branch", if: "lastattack.insightmarked", then: [{ type: "damage", amount: "3d6", damageType: type }] }] : [],
+  });
+  return buildRogue(level, "inquisitive-rogue", kit, {
+    actions: level >= 3 ? [{
+      id: "insightful-fighting", name: "Insightful Fighting", cost: { bonus: 1 }, recharge: "none" as const,
+      automation: [{ type: "branch" as const, if: "self.not_reading", then: [{ type: "target" as const, who: { who: "squishiestEnemy" as const }, effects: [
+        { type: "insightfulFighting" as const, bonus: 2 + kit0.pb }, // Wisdom +2, proficient in Insight
+      ] }] }],
+    }] : [],
+    bonusRoutine: level >= 3 ? ["insightful-fighting"] : undefined,
   });
 }
 
+// Scout (Xanathar's):
+//   Skirmisher (3rd) — a reaction move away from an enemy that ends its turn beside you: positional, not modeled.
+//   Survivalist (3rd) — Nature / Survival expertise: not a combat feature.
+//   Superior Mobility (9th) — +10 ft walking speed.
+//   Ambush Master (13th) — advantage on initiative; the first creature you hit in round 1 can be hit with
+//     advantage by everyone until the start of your next turn.
+//   Sudden Strike (17th) — with the Attack action, one extra attack as a BONUS action that may Sneak Attack even
+//     if you already did this turn, but never against the same target twice. (It uses the bonus action, so
+//     the off-hand swing is given up.)
 function scoutRogue(level: number): Combatant {
-  const b = rogueBase(level);
-  return pc({
-    id: "scout-rogue", name: `Rogue ${level}`, level,
-    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
-    traits: [b.evasion],
-    actions: [
-      b.attack(),
-      // Sudden Strike (9th level): a second attack as a bonus action, which
-      // can carry Sneak Attack if the first swing didn't (the "once per
-      // turn" cap is already enforced by requiresSneakAttack's own check).
-      ...(level >= 9 ? [{
-        id: "sudden-strike", name: "Sudden Strike", cost: { bonus: 1 }, recharge: "none" as const,
-        automation: [{ type: "useAction" as const, action: "attack", times: 1 }],
-      }] : []),
+  const kit = rogueKit(level);
+  const sudden = level >= 17;
+  const swing = (kit.attack.automation[0] as { type: "target"; who: { who: "squishiestEnemy" }; effects: AutomationNode[] });
+  return buildRogue(level, "scout-rogue", kit, {
+    speed: level >= 9 ? 40 : 30,
+    specialRules: [
+      ...(level >= 13 ? [{ rule: "initiativeAdvantage" as const }, { rule: "ambushMaster" as const }] : []),
+      ...(sudden ? [{ rule: "suddenStrike" as const }] : []),
     ],
-    reactions: [b.uncannyDodge],
-    keepDistance: true, targetPriority: "squishiest",
+    actions: sudden ? [{
+      id: "sudden-strike", name: "Sudden Strike", cost: { bonus: 1 }, recharge: "none" as const,
+      automation: [{ type: "target" as const, who: { who: "squishiestEnemy" as const, preferFresh: true }, effects: swing.effects }],
+    }] : [],
+    bonusAfterAttack: sudden ? ["sudden-strike", "offhand"] : ["offhand"],
   });
 }
 
+// Soulknife (Tasha's Cauldron of Everything): Psionic Energy dice — 2 × proficiency bonus, d6 (d8 at 5th, d10 at
+// 11th, d12 at 17th), all back on a long rest, and a bonus action recovers one (once per short or long rest).
+//   Psychic Blades (3rd) — the Attack action swings a psychic blade: finesse, thrown 60 ft, 1d6 + ability modifier
+//     psychic; then a bonus-action second blade for 1d4 + the modifier. (Sneak Attack damage is psychic too.)
+//   Soul Blades (9th) — Homing Strikes: add a psionic die to a missed blade attack, spending it only if that turns the
+//     miss into a hit. (Psychic Teleportation is a positional bonus action: not modeled.)
+//   Psychic Veil (13th) — invisibility that ends when you deal damage: not modeled.
+//   Rend Mind (17th) — Sneak Attack with the blades: Wisdom save (DC 8 + PB + Dex) or stunned for 1 minute, save each
+//     turn; once per long rest, or spend three psionic dice.
 function soulknifeRogue(level: number): Combatant {
-  const b = rogueBase(level);
-  return pc({
-    id: "soulknife-rogue", name: `Rogue ${level}`, level,
-    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
-    traits: [b.evasion],
-    // Homing Strikes (9th level): expend a psi die to reroll a missed
-    // Psychic Blades attack — reuses the exact boostMissedAttack specialRule
-    // built for Divine Soul Sorcerer's Favored by the Gods (same shape: add
-    // a bonus die to a roll that would miss, recheck).
-    specialRules: level >= 9 ? [{ rule: "boostMissedAttack", bonusDice: "1d6", resource: "psi_die" }] : [],
-    resources: level >= 9 ? { psi_die: { max: 1, recharge: "longRest" } } : {},
-    // Psychic Blades: the same attack, reskinned to psychic damage.
-    actions: [b.attack({ damageType: "psychic" })],
-    reactions: [b.uncannyDodge],
-    keepDistance: true, targetPriority: "squishiest",
+  const pb0 = pbFor(level);
+  const dex = pb0 === 6 ? 5 : 4;
+  const dc = 8 + pb0 + dex;
+  const dieSize = level >= 17 ? 12 : level >= 11 ? 10 : level >= 5 ? 8 : 6;
+  const stun: AutomationNode[] = [{
+    type: "save", ability: "wis", dc,
+    onFail: [{ type: "applyCondition", condition: "stunned", durationRounds: 10, saveEnds: { ability: "wis", dc, at: "endOfTurn" } }],
+  }];
+  const rendMind: AutomationNode = {
+    type: "branch", if: "lastattack.sneaklanded", then: [{
+      type: "branch", if: "self.resource('rend_mind') > 0",
+      then: [{ type: "spendResource", resource: "rend_mind" }, ...stun],
+      else: [{ type: "branch", if: "self.resource('psi_die') >= 3", then: [{ type: "spendResource", resource: "psi_die", amount: 3 }, ...stun] }],
+    }],
+  };
+  const sub = level >= 3;
+  const kit = rogueKit(level, sub ? {
+    die: "1d6", type: "psychic", offhandDie: "1d4", offhandMod: true, offhandName: "Second Psychic Blade",
+    riders: level >= 17 ? [rendMind] : [],
+  } : {});
+  return buildRogue(level, "soulknife-rogue", kit, {
+    specialRules: level >= 9 ? [{ rule: "boostMissedAttack" as const, bonusDice: `1d${dieSize}`, resource: "psi_die" }] : [],
+    resources: sub ? {
+      psi_die: { max: 2 * pb0, recharge: "longRest" as const },
+      psi_recovery: { max: 1, recharge: "shortRest" as const },
+      ...(level >= 17 ? { rend_mind: { max: 1, recharge: "longRest" as const } } : {}),
+    } : {},
+    actions: sub ? [{
+      id: "psionic-recovery", name: "Regain a Psionic Energy die", cost: { bonus: 1 }, recharge: "none" as const,
+      limitedUse: { resource: "psi_recovery", amount: 1 },
+      automation: [{ type: "spendResource" as const, resource: "psi_die", amount: -1 }],
+    }] : [],
   });
 }
 

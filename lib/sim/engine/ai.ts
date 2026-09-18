@@ -225,9 +225,9 @@ export const PARTY_FRICTION = 0.1;
 
 /** A template's own list of bonus-action abilities an AI-run PC takes every turn when available
  *  (commanding a companion, an extra attack, a buff) — first match wins. */
-function takeBonusRoutine(state: CombatState, u: CombatantState): void {
+function takeBonusRoutine(state: CombatState, u: CombatantState, ids: string[] | undefined = u.ref.ai.bonusRoutine): void {
   if (u.bonusUsedThisTurn) return;
-  const routine = pick(state, u, u.ref.ai.bonusRoutine ?? []);
+  const routine = pick(state, u, ids ?? []);
   if (!routine) return;
   spend(u, routine);
   markEconomy(u, routine);
@@ -352,6 +352,7 @@ export function takePcTurn(state: CombatState, u: CombatantState, level: number)
     spend(u, best);
     markEconomy(u, best);
     runAction(state, u, best);
+    if (best.id === "attack" && !state.ended) takeBonusRoutine(state, u, u.ref.ai.bonusAfterAttack);
   }
 }
 

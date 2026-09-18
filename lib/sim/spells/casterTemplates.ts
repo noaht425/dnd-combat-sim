@@ -4,6 +4,7 @@
 
 import type { Action, Combatant } from "../schema";
 import { eldritchCannonFor, houndOfIllOmenFor, steelDefenderFor, type CannonVariant } from "../engine/minions";
+import { rogueKit } from "../engine/rogueKit";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
@@ -1030,45 +1031,64 @@ export function clockworkSoulSorcerer(level: number): Combatant {
   };
 }
 
-// Arcane Trickster: a third-caster rogue (spell slots at Eldritch Knight's
-// rate) whose spell list is mostly illusion/enchantment off the wizard list
-// (Mage Hand Legerdemain, Shield, Invisibility) — `spellClass: "wizard"` just
-// borrows the wizard spell-list plumbing already built (this sim has no
-// separate "rogue" spell list of its own), with an explicit `prepared` list
-// so autoPrepare's per-class scoring never has to know what a rogue caster
-// is. The Sneak Attack chassis (attack action, Evasion, Uncanny Dodge) is
-// bolted on the same way the martial-only rogues build it in templates.ts —
-// duplicated rather than imported, since templates.ts already imports THIS
-// file (importing back would be circular).
+// Arcane Trickster (Player's Handbook): a third-caster rogue casting WIZARD spells with Intelligence. From the
+// printed table: the slots are the third-caster row (slots.ts), cantrips are Mage Hand + 2 (+1 at 10th), and the
+// spells known climb 3, 4, 4, 4, 5, 6, 6, 7, 8, 8, 9, 10, 10, 11, 11, 11, 12, 13 over levels 3-20. The first three
+// (1st level) need only two enchantment/illusion picks; every later pick must be enchantment or illusion EXCEPT the
+// ones gained at 8th, 14th and 20th, which may be any school — and a spell can only be learned once you have slots
+// for it (1st at 3rd, 2nd at 7th, 3rd at 13th, 4th at 19th). Which spells is the player's choice; the list below is
+// one legal build, in the order they're learned.
+//   Mage Hand Legerdemain (3rd) is utility. Magical Ambush (9th) needs hiding (not modeled). Spell Thief (17th) is
+//   not modeled.
+//   Versatile Trickster (13th) — bonus action: designate a creature beside the spectral hand, advantage on attacks
+//   against it until the end of the turn (so Sneak Attack qualifies). Assumes Mage Hand is already up — it's a
+//   cantrip that lasts a minute, cast before the fight.
+export const ARCANE_TRICKSTER_LEARNED: { level: number; spell: string }[] = [
+  { level: 3, spell: "shield" },                // any school (the third 1st-level spell)
+  { level: 3, spell: "sleep" },                 // enchantment
+  { level: 3, spell: "color-spray" },           // illusion
+  { level: 4, spell: "charm-person" },          // enchantment
+  { level: 7, spell: "mirror-image" },          // illusion, 2nd level
+  { level: 8, spell: "misty-step" },            // any school
+  { level: 10, spell: "hold-person" },          // enchantment
+  { level: 11, spell: "suggestion" },           // enchantment
+  { level: 13, spell: "hypnotic-pattern" },     // illusion, 3rd level
+  { level: 14, spell: "counterspell" },         // any school
+  { level: 16, spell: "fear" },                 // illusion
+  { level: 19, spell: "phantasmal-killer" },    // illusion, 4th level
+  { level: 20, spell: "fireball" },             // any school
+];
+
 export function arcaneTricksterRogue(level: number): Combatant {
-  const pb = pbFor(level);
-  const dex = pb === 6 ? 5 : 4;
-  const int = pb === 6 ? 3 : 2;
-  const sneak = `${Math.ceil(level / 2)}d6`;
-  return makeCaster({
+  const kit = rogueKit(level);
+  const int = kit.pb === 6 ? 3 : 2;
+  const sub = level >= 3;
+  const c = makeCaster({
     id: "arcane-trickster-rogue", name: `Rogue ${level}`, level, spellClass: "wizard", casterKind: "third", spellAbility: "int",
     ac: 18, hp: between(level, 10, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(dex), con: score(2), int: score(int), wis: score(1), cha: score(1) },
-    proficientSaves: ["dex", "int"], focus: "balanced",
-    cantrips: ["mage-hand", "minor-illusion"],
-    prepared: ["shield", "invisibility"],
-    extraTraits: [{ id: "evasion", name: "Evasion", trigger: "always", automation: [], text: "half on a failed Dex save, none on a success (engine hook)" }],
-    extraReactions: [{
-      id: "uncanny-dodge", name: "Uncanny Dodge", cost: { reaction: 1 }, recharge: "none",
-      trigger: "self.wasHitByAttack", automation: [{ type: "note", text: "halves the triggering attack's damage (engine hook)" }],
-    }],
-    extraActions: [{
-      id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
-      automation: [{ type: "target", who: { who: "squishiestEnemy" }, effects: [
-        { type: "attack", bonus: pb + dex, onHit: [
-          { type: "damage", amount: `1d8+${dex}`, damageType: "piercing" },
-          { type: "damage", amount: sneak, damageType: "piercing", requiresSneakAttack: true },
-        ] },
-        { type: "attack", bonus: pb + dex, onHit: [{ type: "damage", amount: `1d8+${dex}`, damageType: "piercing" }] },
-      ] }],
-    }],
+    abilities: { str: score(-1), dex: score(kit.dex), con: score(2), int: score(int), wis: score(1), cha: score(1) },
+    proficientSaves: kit.proficientSaves, focus: "balanced",
+    cantrips: sub ? ["mage-hand", "minor-illusion", "fire-bolt", ...(level >= 10 ? ["ray-of-frost"] : [])] : [],
+    prepared: sub ? ARCANE_TRICKSTER_LEARNED.filter((l) => l.level <= level).map((l) => l.spell) : [],
+    extraTraits: kit.traits,
+    extraReactions: kit.reactions,
+    extraActions: [
+      kit.attack, kit.offhand,
+      ...(level >= 13 ? [{
+        id: "versatile-trickster", name: "Versatile Trickster", cost: { bonus: 1 }, recharge: "none" as const,
+        automation: [{ type: "target" as const, who: { who: "self" as const }, effects: [
+          { type: "applyEffect" as const, name: "versatile-trickster", mods: { attackAdvantage: "adv" as const, untilSourceNextTurn: true } },
+        ] }],
+      }] : []),
+    ],
     keepDistance: true, opener: [], targetPriority: "squishiest",
   });
+  return {
+    ...c,
+    specialRules: [...c.specialRules, ...kit.specialRules],
+    resources: { ...c.resources, ...kit.resources },
+    ai: { ...c.ai, bonusAfterAttack: ["offhand"], ...(level >= 13 ? { bonusRoutine: ["versatile-trickster"] } : {}) },
+  };
 }
 
 export function moonDruid(level: number): Combatant {

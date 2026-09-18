@@ -484,6 +484,8 @@ export function provokeOpportunityAttacks(state: CombatState, mover: CombatantSt
   const takers = [...state.units.values()]
     .filter((u) => u.side !== mover.side && u.alive && !u.downed && u.zone === "melee" && !isIncapacitated(u))
     .filter((u) => !u.reactionUsed && canTakeReactions(u) && basicSwing(u))
+    // Fancy Footwork: a creature the mover made a melee attack against this turn can't take the swing
+    .filter((u) => !(mover.footwork && mover.footwork.serial === (state.turnSerial ?? 0) && mover.footwork.ids.includes(u.id)))
     .slice(0, cap);
   for (const u of takers) {
     const swing = basicSwing(u)!;

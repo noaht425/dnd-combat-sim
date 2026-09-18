@@ -332,17 +332,19 @@ export function geoTargetsFor(state: BattleState, u: CombatantState, plan: Battl
 export function attackModsFor(state: BattleState, u: CombatantState, needsMelee = false) {
   const LONG_RANGE_FT = 120;
   const reach = unitReachFt(u);
-  return (target: CombatantState): { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean } => {
+  return (target: CombatantState): { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean; soloDuel?: boolean } => {
     const me = boxOfUnit(state, u);
     const tb = boxOfUnit(state, target);
     const blockers: Box[] = [];
     let allyAdjacent = false;
+    let crowded = false; // some creature other than the target within 5 ft of the attacker (Rakish Audacity)
     for (const x of state.units.values()) {
       if (!x.alive || x.id === u.id || x.id === target.id) continue;
       blockers.push(boxOfUnit(state, x));
+      if (feetBetweenBoxes(me, boxOfUnit(state, x)) <= 5.001) crowded = true;
       // Sneak Attack's other prerequisite: an ally of the attacker within
       // 5ft of the target (not incapacitated, i.e. still a threat)
-      if (x.side === u.side && !x.downed && feetBetweenBoxes(boxOfUnit(state, x), tb) <= 5.001) allyAdjacent = true;
+      if (x.side === u.side && !x.downed && !isIncapacitated(x) && feetBetweenBoxes(boxOfUnit(state, x), tb) <= 5.001) allyAdjacent = true;
     }
     const gap = feetBetweenBoxes(me, tb);
     const cover = coverBetween(state.grid, me, tb, blockers);
@@ -351,6 +353,7 @@ export function attackModsFor(state: BattleState, u: CombatantState, needsMelee 
       disadvantage: gap > LONG_RANGE_FT || undefined,
       unreachable: needsMelee && gap > reach + 0.001 ? true : undefined,
       allyAdjacent: allyAdjacent || undefined,
+      soloDuel: (gap <= 5.001 && !crowded) || undefined,
     };
   };
 }

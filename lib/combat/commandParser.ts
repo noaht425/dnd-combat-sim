@@ -80,7 +80,7 @@ export function interpretTurnCommand(
   const raw = text.trim();
   const n = normalize(raw);
   if (!n) return { kind: "clarify", question: `What should ${awaiting.unitName} do?` };
-  if (HOLD_WORDS.test(n)) return { kind: "decision", decision: { round: awaiting.round, unitId: awaiting.unitId }, notes: [`${awaiting.unitName} holds.`] };
+  if (HOLD_WORDS.test(n)) return { kind: "decision", decision: { round: awaiting.round, unitId: awaiting.unitId, extraTurn: awaiting.extraTurn }, notes: [`${awaiting.unitName} holds.`] };
 
   const units = liveUnits(awaiting.units, lastSnap);
   const self = units.find((u) => u.id === awaiting.unitId);
@@ -243,7 +243,7 @@ export function interpretTurnCommand(
 
   return {
     kind: "decision",
-    decision: { round: awaiting.round, unitId: awaiting.unitId, move, actionId, targetId, aoeOrigin, bonusActionId, bonusTargetId },
+    decision: { round: awaiting.round, unitId: awaiting.unitId, extraTurn: awaiting.extraTurn, move, actionId, targetId, aoeOrigin, bonusActionId, bonusTargetId },
     notes,
   };
 }

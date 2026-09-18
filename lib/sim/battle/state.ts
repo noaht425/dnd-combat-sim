@@ -30,6 +30,8 @@ export interface BattleState extends CombatState {
   /** set when the loop stopped on a controlled unit that has no decision yet */
   awaiting?: AwaitingInput;
   pausedForInput?: boolean;
+  /** true while the loop is on a Thief's second round-1 turn (its decision is keyed apart from the first) */
+  extraTurnNow?: boolean;
   /** reinforcement waves: extra monsters that arrive at a map edge on a given round */
   waves?: Wave[];
   spawnedWaves: Set<number>;

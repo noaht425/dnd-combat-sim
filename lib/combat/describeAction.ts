@@ -112,6 +112,10 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return `${n.dice}d8 damage ward`;
     case "randomEffect":
       return "unpredictable — a random effect";
+    case "contest":
+      return `win a contested ${n.theirs.toUpperCase()} check against the target, then ${describeNodes(n.onSuccess, siblings, depth + 1).join(", ") || "it takes effect"}`;
+    case "insightfulFighting":
+      return "read a foe's tactics (Insight vs Deception) so Sneak Attack lands without advantage";
     case "note":
     case "restoreSlot":
     case "removeEffect":

@@ -93,6 +93,8 @@ export interface AttackResult {
   hit: boolean;
   crit: boolean;
   hadAdvantage: boolean;
+  /** the roll was made at (net) disadvantage — Sneak Attack's no-advantage routes all refuse it */
+  hadDisadvantage?: boolean;
   nat: number;
 }
 
@@ -150,6 +152,16 @@ function rollAttackImpl(
   if (ruleActive(target, "denyAdvantageToAttackers") && adv === "adv") adv = "flat";
   for (const e of target.effects) {
     if (e.mods?.attacksAgainstItAdvantage === "dis") adv = combineAdv(adv, "dis");
+    // "attack rolls against that target have advantage" — only for the side that put it there (Help, Ambush Master)
+    if (e.mods?.attacksAgainstItAdvantage === "adv" && state.units.get(e.sourceId)?.side === attacker.side) adv = combineAdv(adv, "adv");
+  }
+  // Panache: a companion of the rogue attacking the creature ends the hold the rogue had on it
+  if (target.effects.some((e) => e.mods?.endOnAllyAttack && e.sourceId !== attacker.id && state.units.get(e.sourceId)?.side === attacker.side)) {
+    target.effects = target.effects.filter((e) => !(e.mods?.endOnAllyAttack && e.sourceId !== attacker.id && state.units.get(e.sourceId)?.side === attacker.side));
+  }
+  // the Help action is spent by the first attack roll made against the target
+  if (target.effects.some((e) => e.mods?.consumeOnAttacked && state.units.get(e.sourceId)?.side === attacker.side)) {
+    target.effects = target.effects.filter((e) => !(e.mods?.consumeOnAttacked && state.units.get(e.sourceId)?.side === attacker.side));
   }
   for (const e of attacker.effects) {
     if (e.mods?.attackAdvantage === "adv") adv = combineAdv(adv, "adv");
@@ -179,9 +191,9 @@ function rollAttackImpl(
   const { used } = state.rng.d20mode(adv);
   let ac = effectiveAc(target) + extraTargetAc;
   const hits = (f: number) => f >= critRange || f + toHit >= ac;
-  const face = precogSwap(state, attacker, used, used !== 1 && hits(used), hits);
-  const crit = face >= critRange;
-  const autoMiss = face === 1;
+  let face = precogSwap(state, attacker, used, used !== 1 && hits(used), hits);
+  let crit = face >= critRange;
+  let autoMiss = face === 1;
 
   // Favored by the Gods (Divine Soul) — once per rest, when the roll as-is
   // would miss, add a fixed bonus die and recheck. A crit is decided by the
@@ -200,14 +212,36 @@ function rollAttackImpl(
     }
   }
 
+  // Master Duelist — once per rest, a missed attack roll is rolled again with advantage
+  if (autoMiss || (!crit && face + toHit < ac)) {
+    const md = attacker.ref.specialRules.find((r) => r.rule === "rerollMissWithAdvantage");
+    if (md && md.rule === "rerollMissWithAdvantage" && (attacker.resources.get(md.resource) ?? 0) > 0) {
+      attacker.resources.set(md.resource, (attacker.resources.get(md.resource) ?? 0) - 1);
+      const again = state.rng.d20mode(adv === "dis" ? "flat" : "adv").used;
+      say(state, `${attacker.name} turns the miss around with Master Duelist (${face} -> ${again})`, attacker.id);
+      face = again;
+      crit = face >= critRange;
+      autoMiss = face === 1;
+    }
+  }
+
   // the target may spend a reaction to change this outcome (Shield, Weight of Ages)
   if (!state.inReaction && !autoMiss) {
     const rr = reactToIncomingAttack(state, { target, hitMargin: face + toHit - ac, crit });
-    if (rr.negated) return { hit: false, crit: false, hadAdvantage: adv === "adv", nat: face };
+    if (rr.negated) return { hit: false, crit: false, hadAdvantage: adv === "adv", hadDisadvantage: adv === "dis", nat: face };
     if (rr.shielded) ac = effectiveAc(target) + extraTargetAc; // the +5 Shield effect is now active
   }
 
-  const hit = !autoMiss && (crit || face + toHit >= ac);
+  let hit = !autoMiss && (crit || face + toHit >= ac);
+  // Stroke of Luck — once per rest, a miss becomes a hit (decided after any Shield-style reaction has had its say)
+  if (!hit) {
+    const sol = attacker.ref.specialRules.find((r) => r.rule === "turnMissIntoHit");
+    if (sol && sol.rule === "turnMissIntoHit" && (attacker.resources.get(sol.resource) ?? 0) > 0) {
+      attacker.resources.set(sol.resource, (attacker.resources.get(sol.resource) ?? 0) - 1);
+      hit = true;
+      say(state, `${attacker.name} turns the miss into a hit with Stroke of Luck`, attacker.id);
+    }
+  }
   // a hit with a melee attack against a paralyzed or unconscious creature is a
   // critical hit (attacker within 5 ft)
   let finalCrit = crit;
@@ -216,7 +250,7 @@ function rollAttackImpl(
     finalCrit = true;
   }
   if (hit && assassinating) finalCrit = true; // Assassinate: any hit on a surprised foe is a crit
-  return { hit, crit: finalCrit, hadAdvantage: adv === "adv", nat: face };
+  return { hit, crit: finalCrit, hadAdvantage: adv === "adv", hadDisadvantage: adv === "dis", nat: face };
 }
 
 // ------------------------------------------------------------------ save rolls

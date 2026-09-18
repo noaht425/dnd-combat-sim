@@ -31,6 +31,14 @@ interface RunCtx {
     /** an ally of the attacker was within 5ft of the target on this attack —
      *  Sneak Attack's other prerequisite, alongside attackAdv */
     allyAdjacent?: boolean;
+    /** the attack roll was at net disadvantage */
+    attackDis?: boolean;
+    /** Swashbuckler: within 5 ft of the target with no other creature within 5 ft of the attacker */
+    soloDuel?: boolean;
+    /** this attack's Sneak Attack damage has been claimed (riders like Rend Mind key off it) */
+    sneakLanded?: boolean;
+    /** ...and the target is the creature the rogue is currently reading (Eye for Weakness) */
+    insightMarked?: boolean;
     savePassed?: boolean;
   };
   depth: number;
@@ -54,7 +62,7 @@ interface RunCtx {
   geoTargets?: (node: Extract<AutomationNode, { type: "target" }>, source: CombatantState) => CombatantState[] | null;
   /** battle mode only: per-target attack tweaks (cover -> +AC, long range -> disadvantage,
    *  a melee routine whose target is out of reach -> the swing simply doesn't land) */
-  attackMods?: (target: CombatantState) => { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean };
+  attackMods?: (target: CombatantState) => { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean; soloDuel?: boolean };
   /** running count of attack rolls this action made, so `runAction` can say
    *  "misses" / "can't reach" instead of a flat "(no effect)" */
   attackTally?: { rolled: number; hit: number; unreachable: boolean };
@@ -225,6 +233,10 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/target\.grappledby\(self\)/i, () => !!tgt && hasCondition(tgt, "grappled")],
     [/lastsave\.passed/i, () => ctx.last.savePassed === true],
     [/lastattack\.hadadvantage/i, () => ctx.last.attackAdv === true],
+    [/self\.has_?ally/i, () => livingAllies(st, s).some((a) => a.id !== s.id && a.summonerId === undefined)],
+    [/self\.not_?reading/i, () => !(s.insightTargetId && (s.insightUntilRound ?? 0) >= st.round && st.units.get(s.insightTargetId)?.alive)],
+    [/lastattack\.sneaklanded/i, () => ctx.last.sneakLanded === true],
+    [/lastattack\.insightmarked/i, () => ctx.last.insightMarked === true],
   ];
   for (const [re, fn] of checks) {
     if (re.test(expr)) {
@@ -264,7 +276,14 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
     }
     case "nearestEnemy": return enemies.length ? [enemies[0]] : [];
     case "lowestHpEnemy": return enemies.length ? [enemies.slice().sort((a, b) => a.hp - b.hp)[0]] : [];
-    case "squishiestEnemy": return enemies.length ? [enemies.slice().sort((a, b) => a.ac - b.ac || a.hp - b.hp)[0]] : [];
+    case "squishiestEnemy": {
+      const sorted = enemies.slice().sort((a, b) => a.ac - b.ac || a.hp - b.hp);
+      if (who.preferFresh && source.sneakSpent && source.sneakSpent.serial === (state.turnSerial ?? 0)) {
+        const fresh = sorted.find((e) => !source.sneakSpent!.targets.includes(e.id));
+        if (fresh) return [fresh];
+      }
+      return sorted.slice(0, 1);
+    }
     case "marked": {
       const m = source.markedTargetId ? state.units.get(source.markedTargetId) : undefined;
       return m && m.alive && !m.downed ? [m] : enemies.slice(0, 1);
@@ -308,6 +327,60 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
   }
 }
 
+/** Monte-Carlo has no grid, only the abstract melee / ranged zones: "nobody else within 5 ft of me" reads as
+ *  "the attacker and its target are the only creatures in the melee zone". */
+function abstractSoloDuel(state: CombatState, attacker: CombatantState, target: CombatantState): boolean {
+  if (attacker.zone !== "melee") return false;
+  for (const x of state.units.values()) {
+    if (x.alive && x.id !== attacker.id && x.id !== target.id && x.zone === "melee") return false;
+  }
+  return true;
+}
+
+/**
+ * Can this hit carry Sneak Attack? Once per turn (any creature's turn), and the hit needs one of:
+ *   - advantage on the roll (and no disadvantage cancelling it),
+ *   - an ally of the attacker within 5 ft of the target,
+ *   - Swashbuckler's Rakish Audacity (`soloSneak`): a solo duel, no disadvantage,
+ *   - Inquisitive's Insightful Fighting: the target is the one currently read, no disadvantage.
+ * Scout's Sudden Strike (`suddenStrike`) allows a second Sneak Attack in a turn, on a different target.
+ * On success the budget is spent and `last.sneakLanded` (+ `insightMarked`) are set for the riders.
+ */
+function claimSneakAttack(ctx: RunCtx, target: CombatantState): boolean {
+  const { state, source, last } = ctx;
+  const serial = state.turnSerial ?? 0;
+  if (!source.sneakSpent || source.sneakSpent.serial !== serial) source.sneakSpent = { serial, targets: [] };
+  const spent = source.sneakSpent;
+  const rules = source.ref.specialRules;
+  if (spent.targets.length > 0) {
+    const second = rules.some((r) => r.rule === "suddenStrike") && spent.targets.length < 2 && !spent.targets.includes(target.id);
+    if (!second) return false;
+  }
+  const reading = source.insightTargetId === target.id && (source.insightUntilRound ?? 0) >= state.round;
+  const ok =
+    last.attackAdv ||
+    (!last.attackDis && (last.allyAdjacent || reading || (last.soloDuel && rules.some((r) => r.rule === "soloSneak"))));
+  if (!ok) return false;
+  spent.targets.push(target.id);
+  last.sneakLanded = true;
+  last.insightMarked = reading;
+  return true;
+}
+
+/** Scout's Ambush Master: the first creature it hits in round 1 is easier for the whole party to hit until
+ *  the start of the scout's next turn. */
+function tagAmbushTarget(state: CombatState, attacker: CombatantState, target: CombatantState): void {
+  if (state.round !== 1 || attacker.ambushMasterUsed) return;
+  if (!attacker.ref.specialRules.some((r) => r.rule === "ambushMaster")) return;
+  attacker.ambushMasterUsed = true;
+  target.effects = target.effects.filter((e) => e.name !== "ambush-master");
+  target.effects.push({
+    name: "ambush-master", mods: { attacksAgainstItAdvantage: "adv", untilSourceNextTurn: true },
+    expiresRound: Infinity, sourceId: attacker.id,
+  });
+  say(state, `${attacker.name} marks ${target.name} — attacks against it have advantage until ${attacker.name}'s next turn`, attacker.id);
+}
+
 export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
   if (ctx.depth > 12) return;
   const { state, source } = ctx;
@@ -349,8 +422,15 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           ctx.attackTally.rolled++;
           if (res.hit) ctx.attackTally.hit++;
         }
-        const next: RunCtx = { ...ctx, last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage, allyAdjacent: tweak?.allyAdjacent }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
+        const soloDuel = tweak ? tweak.soloDuel : abstractSoloDuel(state, source, t);
+        const next: RunCtx = { ...ctx, last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage, attackDis: res.hadDisadvantage, allyAdjacent: tweak?.allyAdjacent, soloDuel, sneakLanded: false, insightMarked: false }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
+        if (source.zone === "melee" && source.ref.specialRules.some((r) => r.rule === "fancyFootwork")) {
+          const serial = state.turnSerial ?? 0;
+          if (!source.footwork || source.footwork.serial !== serial) source.footwork = { serial, ids: [] };
+          if (!source.footwork.ids.includes(t.id)) source.footwork.ids.push(t.id);
+        }
         if (res.hit) {
+          tagAmbushTarget(state, source, t);
           runAutomation(node.onHit, next);
           applyExtraDamageOnHit(state, source, t, res);
           fireOnHitTraits(state, t, source);
@@ -385,7 +465,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       case "damage": {
         const t = ctx.scope[0];
         if (!t) break;
-        if (node.requiresSneakAttack && !ctx.last.attackAdv && !ctx.last.allyAdjacent) break;
+        if (node.requiresSneakAttack && !claimSneakAttack(ctx, t)) break;
         let amt: number;
         if (ctx.sharedRolls) {
           // AoE: roll this damage string once, reuse for every target (RAW)
@@ -507,6 +587,33 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const t = ctx.scope[0] ?? source;
         for (const u of state.units.values()) if (u.ward?.sourceId === source.id) u.ward = undefined; // "until you use this feature again"
         t.ward = { dice: node.dice, sourceId: source.id };
+        break;
+      }
+
+      case "contest": {
+        const t = ctx.scope[0];
+        if (!t || !t.alive || t.downed) break;
+        const mine = state.rng.d20() + node.bonus;
+        const theirs = state.rng.d20() + Math.floor((t.ref.abilities[node.theirs] - 10) / 2);
+        if (mine > theirs) runAutomation(node.onSuccess, { ...ctx, depth: ctx.depth + 1, last: { ...ctx.last } });
+        else say(state, `${source.name} can't win over ${t.name} (${mine} vs ${theirs})`, source.id);
+        break;
+      }
+
+      case "insightfulFighting": {
+        const t = ctx.scope[0];
+        if (!t || !t.alive || t.downed) break;
+        if (source.insightTargetId === t.id && (source.insightUntilRound ?? 0) >= state.round) break; // already reading them
+        if (isIncapacitated(t)) break; // "a creature you can see that isn't incapacitated"
+        const mine = state.rng.d20() + node.bonus;
+        const theirs = state.rng.d20() + Math.floor((t.ref.abilities.cha - 10) / 2); // Charisma (Deception)
+        if (mine > theirs) { // a tie leaves things as they were
+          source.insightTargetId = t.id;
+          source.insightUntilRound = state.round + 10; // 1 minute
+          say(state, `${source.name} reads ${t.name}'s tactics (${mine} vs ${theirs}) — Sneak Attack no longer needs advantage against it`, source.id);
+        } else {
+          say(state, `${t.name} gives ${source.name} nothing to read (${mine} vs ${theirs})`, source.id);
+        }
         break;
       }
 

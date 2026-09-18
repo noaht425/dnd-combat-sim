@@ -6,7 +6,7 @@ import type { Combatant } from "../schema";
 import { makeRng } from "../engine/rng";
 import { buildParty, resolveEnemies, type PartyMemberSpec } from "../engine/scenario";
 import { summarise, type CombatResult } from "../engine/loop";
-import { initCombatant, type CombatantState } from "../engine/state";
+import { initCombatant, isExtraTurn, type CombatantState } from "../engine/state";
 import type { Size } from "../schema";
 import type { AwaitingInput, BattleDecision } from "./control";
 import { BattleGrid, BattleMapDef, blocksMove, footprint, gridFromDef, inBounds, makeGrid, terrainAt } from "./grid";
@@ -306,6 +306,7 @@ export function runBattle(s: BattleSetup): BattleOutcome {
   runBattleLoop(state);
 
   const initiative: RosterInit[] = state.order
+    .filter((e) => !isExtraTurn(e)) // the roster lists each creature once; a Thief's second turn is a turn, not a combatant
     .map((id) => state.units.get(id))
     .filter((u): u is CombatantState => !!u)
     .map((u) => ({ id: u.id, name: u.name, glyph: glyphs.get(u.id) ?? "?", side: u.side }));

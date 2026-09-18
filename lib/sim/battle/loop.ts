@@ -23,11 +23,15 @@ import {
 } from "../engine/loop";
 import { applyDamage, rollSave } from "../engine/resolve";
 import {
+  beginTurn,
   initCombatant,
+  isExtraTurn,
   isIncapacitated,
   livingEnemies,
+  rollTurnOrder,
   say,
   startTurnEconomy,
+  turnOwner,
   type CombatantState,
 } from "../engine/state";
 import { resolveEnemies } from "../engine/scenario";
@@ -110,19 +114,9 @@ function rollInitiative(state: BattleState): void {
   for (const u of state.units.values()) {
     if (u.ref.specialRules.some((r) => r.rule === "ambush")) u.assassinateUntilRound = 1;
   }
-  const order = [...state.units.values()]
-    .map((u) => ({
-      id: u.id,
-      init:
-        state.rng.d20() +
-        (u.ref.initiativeBonus ?? abilityMod(u.ref.abilities.dex)) +
-        (u.assassinateUntilRound ? 100 : 0),
-      side: u.side,
-    }))
-    .sort((a, b) => b.init - a.init || (a.side === "monster" ? -1 : 1))
-    .map((x) => x.id);
+  const order = rollTurnOrder(state.units.values(), state.rng, (u) => abilityMod(u.ref.abilities.dex));
   state.order = order;
-  say(state, `Initiative: ${order.map((id) => state.units.get(id)!.name).join(" > ")}`);
+  say(state, `Initiative: ${order.map((e) => state.units.get(turnOwner(e))!.name + (isExtraTurn(e) ? " (again)" : "")).join(" > ")}`);
 }
 
 function terrainString(state: BattleState): string {
@@ -175,9 +169,9 @@ function charmParalysed(state: BattleState, u: CombatantState): boolean {
 
 /** The unit's own list of bonus-action abilities an AI-run PC takes every turn when available
  *  (see engine/ai.ts) — commanding a companion, an extra attack, a buff. First match wins. */
-function runBonusRoutine(state: BattleState, u: CombatantState): void {
+function runBonusRoutine(state: BattleState, u: CombatantState, ids: string[] | undefined = u.ref.ai.bonusRoutine): void {
   if (u.bonusUsedThisTurn || state.ended) return;
-  const routine = pick(state, u, u.ref.ai.bonusRoutine ?? []);
+  const routine = pick(state, u, ids ?? []);
   if (!routine) return;
   const rplan = planForAction(state, u, routine);
   const rgeo = { geoTargets: geoTargetsFor(state, u, rplan), attackMods: attackModsFor(state, u, rplan.needsMelee) };
@@ -224,7 +218,7 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
 
   // player control: replay a recorded decision, or pause for one
   if (state.controlled?.has(u.id)) {
-    const d = state.decisions?.find((x) => x.round === state.round && x.unitId === u.id);
+    const d = state.decisions?.find((x) => x.round === state.round && x.unitId === u.id && !!x.extraTurn === !!state.extraTurnNow);
     if (!d) {
       state.awaiting = computeAwaiting(state, u);
       state.pausedForInput = true;
@@ -251,7 +245,7 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
 
   // round-1 opener (Action Surge, Hunter's Mark, Frightful Presence, …) — skip an
   // opener that swings if we can't reach; self-buffs (Rage, Bless) still fire
-  if (state.round === 1 && u.ref.ai.opener.length) {
+  if (state.round === 1 && !state.extraTurnNow && u.ref.ai.opener.length) {
     const opener = pick(state, u, u.ref.ai.opener);
     if (opener && !(meleeOutOfReach && actionMakesAttacks(u, opener))) {
       spend(u, opener);
@@ -300,6 +294,7 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
     targetIds: plan.templateHitIds ?? (plan.targetId ? [plan.targetId] : undefined),
     templateCells: plan.templateCells,
   });
+  if (action.id === "attack") runBonusRoutine(state, u, u.ref.ai.bonusAfterAttack); // e.g. the second Psychic Blade
 }
 
 function partyHpFraction(state: BattleState): number {
@@ -355,15 +350,20 @@ export function runBattleLoop(state: BattleState): void {
     checkEnd(state);
     if (state.ended) break;
 
-    for (const id of state.order) {
-      const u = state.units.get(id);
+    for (const entry of state.order) {
+      if (isExtraTurn(entry) && state.round !== 1) continue; // Thief's Reflexes: only the first round
+      const u = state.units.get(turnOwner(entry));
       if (!u || !u.alive || state.ended) continue;
       if (u.downed) {
+        if (isExtraTurn(entry)) continue;
         rollDeathSave(state, u);
         recordFrame(state, { kind: "turn", actorId: u.id, text: `${u.name} — death save` });
         continue;
       }
       startTurnEconomy(u);
+      beginTurn(state, u);
+      state.extraTurnNow = isExtraTurn(entry);
+      if (state.extraTurnNow) recordFrame(state, { kind: "action", actorId: u.id, text: `${u.name} takes a second turn (Thief's Reflexes)` });
       // startOfTurn() runs DoT/persistent-effect ticks (Spike Growth, Burning,
       // molten ground, ...) and hazardTick() runs terrain hazards — both apply
       // real damage to `state` but neither one records a frame, so without this

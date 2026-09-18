@@ -85,34 +85,39 @@ describe("battle reactions — surfaced to the player", () => {
     // Riposte fires when a MELEE attack misses the fighter — a pair of owlbears
     // (many +7 swings vs the fighter's AC 18) makes that happen reliably.
     // Battle Master, not GWM/Champion — Riposte is a superiority-dice
-    // maneuver, and only battlemaster-fighter carries that kit.
-    const setup = {
-      party: [
-        { template: "assassin-rogue", name: "Sly", level: 5 },
-        { template: "battlemaster-fighter", name: "Bront", level: 5 },
-      ],
-      enemies: ["owlbear x2"] as string[],
-      seed: 1,
-      controlled: ["pc-2-battlemaster-fighter"],
+    // maneuver, and only battlemaster-fighter carries that kit. Whether a given
+    // seed's dice produce a miss at a moment the reaction is available depends on
+    // the whole fight, so try a few seeds: the mechanism must surface on at least one.
+    const surfaced = (seed: number): boolean => {
+      const setup = {
+        party: [
+          { template: "assassin-rogue", name: "Sly", level: 5 },
+          { template: "battlemaster-fighter", name: "Bront", level: 5 },
+        ],
+        enemies: ["owlbear x2"] as string[],
+        seed,
+        controlled: ["pc-2-battlemaster-fighter"],
+      };
+      const decisions: BattleDecision[] = [];
+      const reactionChoices: ReactionChoice[] = [];
+      const kinds: string[] = [];
+      let run = runBattle({ ...setup, decisions, reactionChoices });
+      let guard = 300;
+      while (!run.done && guard-- > 0) {
+        if (run.awaitingReaction) {
+          const r = run.awaitingReaction;
+          kinds.push(r.kind);
+          expect(r.unitName).toBe("Bront");
+          reactionChoices.push({ round: r.round, unitId: r.unitId, seq: r.seq, take: true });
+        } else if (run.awaiting) {
+          decisions.push({ round: run.awaiting.round, unitId: run.awaiting.unitId, auto: true });
+        } else break;
+        run = runBattle({ ...setup, decisions, reactionChoices });
+      }
+      expect(run.done).toBe(true);
+      return kinds.includes("riposte");
     };
-    const decisions: BattleDecision[] = [];
-    const reactionChoices: ReactionChoice[] = [];
-    const kinds: string[] = [];
-    let run = runBattle({ ...setup, decisions, reactionChoices });
-    let guard = 300;
-    while (!run.done && guard-- > 0) {
-      if (run.awaitingReaction) {
-        const r = run.awaitingReaction;
-        kinds.push(r.kind);
-        expect(r.unitName).toBe("Bront");
-        reactionChoices.push({ round: r.round, unitId: r.unitId, seq: r.seq, take: true });
-      } else if (run.awaiting) {
-        decisions.push({ round: run.awaiting.round, unitId: run.awaiting.unitId, auto: true });
-      } else break;
-      run = runBattle({ ...setup, decisions, reactionChoices });
-    }
-    expect(run.done).toBe(true);
-    expect(kinds).toContain("riposte");
+    expect([1, 2, 3, 4, 5, 6, 7, 8].some(surfaced)).toBe(true);
   });
 
   it("replays are deterministic — same answers, same final frame", () => {

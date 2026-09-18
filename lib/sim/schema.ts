@@ -79,7 +79,9 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   z.object({ who: z.literal("lowestHpAlly") }),      // the most-hurt ally (healing spells)
   z.object({ who: z.literal("nearestEnemy") }),
   z.object({ who: z.literal("lowestHpEnemy") }),
-  z.object({ who: z.literal("squishiestEnemy") }),  // lowest AC / lowest effective HP
+  // lowest AC / lowest effective HP. `preferFresh`: skip a creature this one has already Sneak-Attacked this turn when
+  // any other is available (Scout's Sudden Strike may Sneak Attack again, but never the same target twice)
+  z.object({ who: z.literal("squishiestEnemy"), preferFresh: z.boolean().optional() }),
   z.object({ who: z.literal("chosenEnemies"), upTo: z.number().int().positive() }),
   z.object({
     who: z.literal("area"),
@@ -116,6 +118,12 @@ export const effectModsSchema = z.object({
   /** the holder has disadvantage on attack rolls against the creature that applied this effect
    *  (Armorer Infiltrator's Perfected Armor glimmer) */
   disadvantageOnlyTargetingSource: z.boolean().optional(),
+  /** spent by the first attack roll made against the holder (the Help action) */
+  consumeOnAttacked: z.boolean().optional(),
+  /** ends the moment a creature on the applier's side (other than the applier) attacks the holder (Panache) */
+  endOnAllyAttack: z.boolean().optional(),
+  /** ends at the start of the turn of the creature that applied it ("until the start of your next turn") */
+  untilSourceNextTurn: z.boolean().optional(),
 });
 export type EffectMods = z.infer<typeof effectModsSchema>;
 
@@ -158,6 +166,12 @@ export type AutomationNode =
   | { type: "commandSummon"; action: string; limit?: number; rangeFt?: number }
   /** regain the lowest-level expended spell slot (Wild Magic Surge) */
   | { type: "restoreSlot" }
+  /** Inquisitive's Insightful Fighting: `bonus` is the rogue's Wisdom (Insight) modifier, rolled against the
+   *  target's Charisma (Deception). On a success the rogue may Sneak Attack that target without advantage. */
+  | { type: "insightfulFighting"; bonus: number }
+  /** a contested ability check: the source rolls d20 + `bonus`, the target d20 + its `theirs` modifier; only a strictly
+   *  higher roll wins (a tie leaves things as they were), and `onSuccess` then runs against the target (Panache) */
+  | { type: "contest"; bonus: number; theirs: Ability; onSuccess: AutomationNode[] }
   /** weighted random pick, one branch fires (Wild Magic Surge and similar
    *  chaotic-magic tables) — weights don't need to sum to anything in
    *  particular, they're relative. A no-op option (empty `then`, a big
@@ -231,6 +245,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     }),
     z.object({ type: z.literal("spendResource"), resource: z.string(), amount: z.number().int().optional(), from: z.literal("party").optional() }),
     z.object({ type: z.literal("restoreSlot") }),
+    z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
+    z.object({ type: z.literal("contest"), bonus: z.number().int(), theirs: abilitySchema, onSuccess: z.array(automationNodeSchema) }),
     z.object({ type: z.literal("commandSummon"), action: z.string(), limit: z.number().int().positive().optional(), rangeFt: z.number().positive().optional() }),
     z.object({ type: z.literal("rechargeRoll"), resource: z.string() }),
     z.object({ type: z.literal("useAction"), action: z.string(), times: z.number().int().positive().optional() }),
@@ -292,6 +308,22 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("surviveDrop"), ability: abilitySchema, baseDc: z.number().int(), resource: z.string(), excludeTypes: z.array(damageTypeSchema).default([]), excludeCrit: z.boolean().default(true) }),
   // Clockwork Soul's Restore Balance: reaction, cancel advantage/disadvantage on a d20 rolled by a creature within range
   z.object({ rule: z.literal("restoreBalance"), resource: z.string(), rangeFt: z.number().positive() }),
+  // Swashbuckler's Fancy Footwork: a creature this one made a melee attack against can't make opportunity attacks against it for the rest of that turn
+  z.object({ rule: z.literal("fancyFootwork") }),
+  // Thief's Reflexes: a second turn in round 1, at initiative − 10 (not if the party is surprised)
+  z.object({ rule: z.literal("extraFirstRoundTurn") }),
+  // Scout's Ambush Master: advantage on initiative rolls
+  z.object({ rule: z.literal("initiativeAdvantage") }),
+  // Scout's Ambush Master: the first creature this one hits in round 1 is easier for the whole party to hit until the start of its next turn
+  z.object({ rule: z.literal("ambushMaster") }),
+  // Swashbuckler's Rakish Audacity: Sneak Attack without advantage when within 5 ft of the target, no OTHER creature is within 5 ft of the attacker, and no disadvantage
+  z.object({ rule: z.literal("soloSneak") }),
+  // Scout's Sudden Strike: a second Sneak Attack in the same turn, but never against the same target twice
+  z.object({ rule: z.literal("suddenStrike") }),
+  // Stroke of Luck: once per rest, turn a missed attack into a hit
+  z.object({ rule: z.literal("turnMissIntoHit"), resource: z.string() }),
+  // Master Duelist: once per rest, reroll a missed attack with advantage
+  z.object({ rule: z.literal("rerollMissWithAdvantage"), resource: z.string() }),
   // advantage on saving throws against effects that would impose these conditions (Aberrant Mind's Psychic Defenses)
   z.object({ rule: z.literal("advantageOnSavesAgainst"), conditions: z.array(conditionSchema) }),   // Favored by the Gods — once/rest, add a bonus die to a roll that would miss and recheck
 ]);
@@ -378,6 +410,7 @@ export const aiSchema = z.object({
   targetPriority: z.enum(["lowestHp", "squishiest", "marked", "nearest", "highestThreat"]).default("highestThreat"),
   aoeMinTargets: z.number().int().positive().default(2),          // only breathe/AoE if it catches at least this many
   opener: z.array(z.string()).default([]),                        // action ids to prefer on round 1 (Frightful Presence, a mark-a-foe opener)
+  bonusAfterAttack: z.array(z.string()).optional(),               // bonus-action ids an AI-run PC takes right AFTER its `attack` action (Soulknife's second Psychic Blade), first match wins
   bonusRoutine: z.array(z.string()).optional(),                  // bonus-action ids an AI-run PC takes EVERY turn when available, first match wins (command a companion, an extra attack)
   saveLegendaryResistanceFor: z.array(z.string()).default(["stunned", "paralyzed", "banished", "save-or-die", "controlled"]),
   keepDistance: z.boolean().default(false),

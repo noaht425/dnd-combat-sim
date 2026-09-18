@@ -60,6 +60,8 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 export interface BattleDecision {
   round: number;
   unitId: string;
+  /** this decision is for the unit's SECOND turn of round 1 (Thief's Reflexes) */
+  extraTurn?: boolean;
   /** don't pause — let the AI take this turn (still recorded so replays stay stable) */
   auto?: boolean;
   /** anchor square to move to (the engine paths there, applying opportunity attacks) */
@@ -101,6 +103,8 @@ export interface AwaitingInput {
   unitId: string;
   unitName: string;
   round: number;
+  /** this is the unit's second turn of round 1 (Thief's Reflexes) */
+  extraTurn?: boolean;
   pos: { x: number; y: number };
   speedFt: number;
   reachFt: number;
@@ -169,7 +173,7 @@ export function computeAwaiting(state: BattleState, u: CombatantState): Awaiting
 
   // round-1 opener: the first ai.opener id that's still an available action here
   const openerId =
-    state.round === 1
+    state.round === 1 && !state.extraTurnNow
       ? u.ref.ai.opener.find((id) =>
           [...actions, ...bonusActions].some((x) => x.id === id),
         )
@@ -191,6 +195,7 @@ export function computeAwaiting(state: BattleState, u: CombatantState): Awaiting
     unitId: u.id,
     unitName: u.name,
     round: state.round,
+    extraTurn: state.extraTurnNow || undefined,
     pos: { x: p.x, y: p.y },
     speedFt: speedFt(u),
     reachFt: unitReachFt(u),

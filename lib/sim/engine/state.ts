@@ -63,6 +63,15 @@ export interface CombatantState {
   assassinateUntilRound?: number; // Ambush: while state.round <= this, hits have advantage and auto-crit
   /** Absorb Elements — resistance to one damage type until the start of the reactor's next turn */
   absorbElements?: { type: DamageType; untilRound: number };
+  /** Sneak Attack is once per TURN (any creature's): which turn it was last spent on, and against whom */
+  sneakSpent?: { serial: number; targets: string[] };
+  /** Inquisitive's Insightful Fighting — the creature currently read, and the round the minute runs out */
+  insightTargetId?: string;
+  insightUntilRound?: number;
+  /** Fancy Footwork — the creatures it has made a melee attack against this turn (no opportunity attacks from them) */
+  footwork?: { serial: number; ids: string[] };
+  /** Scout's Ambush Master — already tagged the first creature it hit in round 1 */
+  ambushMasterUsed?: boolean;
 
   zone: "melee" | "ranged";
   alive: boolean;
@@ -95,8 +104,10 @@ export interface LogEntry {
 
 export interface CombatState {
   round: number;
-  order: string[]; // combatant ids, highest initiative first
+  order: string[]; // combatant ids, highest initiative first (a Thief's second turn is `<id>~2`, see EXTRA_TURN)
   activeIdx: number;
+  /** bumped at the start of every turn anyone takes — Sneak Attack's "once per turn" keys off it */
+  turnSerial?: number;
   units: Map<string, CombatantState>;
   rng: Rng;
   log: LogEntry[];
@@ -174,6 +185,43 @@ export function startTurnEconomy(u: CombatantState): void {
   u.bonusUsedThisTurn = false;
   u.reactionUsed = false;
   u.leveledSpellThisTurn = false;
+}
+
+/** Mark the start of someone's turn: Sneak Attack's once-per-turn budget resets, and anything that lasts
+ *  "until the start of your next turn" and was put out by this creature ends (Help, Ambush Master). */
+export function beginTurn(state: CombatState, u: CombatantState): void {
+  state.turnSerial = (state.turnSerial ?? 0) + 1;
+  for (const other of state.units.values()) {
+    if (!other.effects.some((e) => e.sourceId === u.id && e.mods?.untilSourceNextTurn)) continue;
+    other.effects = other.effects.filter((e) => !(e.sourceId === u.id && e.mods?.untilSourceNextTurn));
+  }
+}
+
+/** suffix on an initiative-order entry that is a creature's SECOND turn of round 1 (Thief's Reflexes) */
+export const EXTRA_TURN = "~2";
+export const isExtraTurn = (entry: string): boolean => entry.endsWith(EXTRA_TURN);
+export const turnOwner = (entry: string): string => (isExtraTurn(entry) ? entry.slice(0, -EXTRA_TURN.length) : entry);
+
+/**
+ * Roll initiative for everyone and return the turn order (ids, highest first; monsters win ties).
+ * Scout's Ambush Master rolls with advantage; Thief's Reflexes adds a second entry at initiative − 10
+ * that only ever runs in round 1 — and not at all if the party is surprised, which here means a monster
+ * has the `ambush` rule.
+ */
+export function rollTurnOrder(units: Iterable<CombatantState>, rng: Rng, dexMod: (u: CombatantState) => number): string[] {
+  const all = [...units];
+  const partySurprised = all.some((u) => u.side === "monster" && u.ref.specialRules.some((r) => r.rule === "ambush"));
+  const entries: { id: string; init: number; side: CombatantState["side"] }[] = [];
+  for (const u of all) {
+    const adv = u.ref.specialRules.some((r) => r.rule === "initiativeAdvantage");
+    const roll = adv ? rng.d20mode("adv").used : rng.d20();
+    const init = roll + (u.ref.initiativeBonus ?? dexMod(u)) + (u.assassinateUntilRound ? 100 : 0);
+    entries.push({ id: u.id, init, side: u.side });
+    if (u.side === "party" && !partySurprised && u.ref.specialRules.some((r) => r.rule === "extraFirstRoundTurn")) {
+      entries.push({ id: u.id + EXTRA_TURN, init: init - 10, side: u.side });
+    }
+  }
+  return entries.sort((a, b) => b.init - a.init || (a.side === "monster" ? -1 : 1)).map((x) => x.id);
 }
 
 /** Apply healing to `target` (respecting a `cannotHeal` rider). Returns HP restored. */
