@@ -170,7 +170,11 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/self\.hp\s*<=\s*(\d+)/i, () => s.hp <= Number(RegExp.$1)],
     [/round\s*>=\s*(\d+)/i, () => st.round >= Number(RegExp.$1)],
     [/self\.has\('([^']+)'\)/i, () => s.effects.some((e) => e.name === RegExp.$1) || hasCondition(s, RegExp.$1 as Condition)],
-    [/self\.resource\('([^']+)'\)\s*>\s*0/i, () => (s.resources.get(RegExp.$1) ?? 0) > 0],
+    [/self\.resource\('([^']+)'\)\s*(>=|>)\s*(\d+)/i, () => {
+      const cur = s.resources.get(RegExp.$1) ?? 0;
+      const n = Number(RegExp.$3);
+      return RegExp.$2 === ">=" ? cur >= n : cur > n;
+    }],
     // A caster can walk in mid-song and sustain a charm-song as a bonus action —
     // so it counts as "singing" from round 1 until it drops.
     [/self\.(is_?singing|singing)/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],

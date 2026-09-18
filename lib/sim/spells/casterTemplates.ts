@@ -118,16 +118,64 @@ export function battleSmithArtificer(level: number): Combatant {
   });
 }
 
+// Metamagic: sorcery points (level 2+, one per sorcerer level) spent on top
+// of the normal spell-slot cost. Twinned and Quickened are the two most
+// mechanically distinct options (retargeting and action economy — visibly
+// different from a plain cast, unlike e.g. Subtle/Distant which this engine
+// has no way to make observable) so those are what's built; Empowered would
+// need a new "reroll low dice" schema field this doesn't have yet.
+function withMetamagic(c: Combatant, level: number): Combatant {
+  const extra: Combatant["actions"] = [];
+  for (const a of c.actions) {
+    if (!a.isSpell) continue;
+    // cantrips have no slot suffix in their id (level 0) — Twinned/Quickened
+    // both work on cantrips too (RAW), and "Twinned Fire Bolt" every turn at
+    // 1 sorcery point is the single most iconic sorcerer combo, so this
+    // can't skip them the way the Wild Magic Surge check correctly does
+    // (surge is genuinely leveled-spell-only).
+    const slotMatch = a.id.match(/-(\d+)$/);
+    const slot = slotMatch ? Number(slotMatch[1]) : 0;
+    extra.push({
+      ...a,
+      id: `${a.id}-quickened`, name: `${a.name} (Quickened)`, cost: { bonus: 1 },
+      automation: [{
+        type: "branch", if: "self.resource('sorcery_points') >= 2",
+        then: [{ type: "spendResource", resource: "sorcery_points", amount: 2 }, ...a.automation],
+      }],
+    });
+    const top = a.automation[0];
+    if (top?.type === "target" && top.who.who === "aiChoice") {
+      const cost = Math.max(1, slot);
+      extra.push({
+        ...a,
+        id: `${a.id}-twinned`, name: `${a.name} (Twinned)`,
+        automation: [{
+          type: "branch", if: `self.resource('sorcery_points') >= ${cost}`,
+          then: [
+            { type: "spendResource", resource: "sorcery_points", amount: cost },
+            { type: "target", who: { who: "chosenEnemies", upTo: 2 }, effects: top.effects },
+          ],
+        }],
+      });
+    }
+  }
+  return {
+    ...c,
+    actions: [...c.actions, ...extra],
+    resources: { ...c.resources, sorcery_points: { max: level >= 2 ? level : 0, recharge: "longRest" } },
+  };
+}
+
 export function draconicSorcerer(level: number): Combatant {
   const pb = pbFor(level);
   const cha = pb === 6 ? 5 : 4;
-  return makeCaster({
+  return withMetamagic(makeCaster({
     id: "draconic-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
     ac: 14, hp: between(level, 9, 7 * 20 + 12),
     abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
     proficientSaves: ["con", "cha"], focus: "blaster",
     extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-  });
+  }), level);
 }
 
 // Wild Magic Surge: RAW is a natural 1 on a d20 after casting a sorcerer
@@ -161,13 +209,19 @@ function withWildMagicSurge(c: Combatant): Combatant {
 export function wildMagicSorcerer(level: number): Combatant {
   const pb = pbFor(level);
   const cha = pb === 6 ? 5 : 4;
-  return withWildMagicSurge(makeCaster({
+  // Wild Magic Surge first, Metamagic second — withMetamagic derives its
+  // Quickened/Twinned variants from whatever automation is already on each
+  // base spell action, so this order makes those variants surge too
+  // (correct: RAW surges on casting any leveled spell, however augmented).
+  // The reverse order would miss them — their ids end in a word, not a
+  // slot number, so withWildMagicSurge's own id filter wouldn't match them.
+  return withMetamagic(withWildMagicSurge(makeCaster({
     id: "wild-magic-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
     ac: 14, hp: between(level, 9, 7 * 20 + 12),
     abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
     proficientSaves: ["con", "cha"], focus: "blaster",
     extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-  }));
+  })), level);
 }
 
 export function moonDruid(level: number): Combatant {
