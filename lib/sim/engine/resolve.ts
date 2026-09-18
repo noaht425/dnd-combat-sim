@@ -16,6 +16,8 @@ import {
   reactToDamageTaken,
   reactToDrop,
   reactToElementalDamage,
+  deflectAttack,
+  reactToFailedSave,
   reactToIncomingAttack,
   reduceIncomingDamage,
 } from "./reactions";
@@ -35,6 +37,13 @@ function combineAdv(...parts: Array<AdvMode | undefined>): AdvMode {
 
 function ruleActive(u: CombatantState, rule: string): boolean {
   return u.ref.specialRules.some((r) => r.rule === rule);
+}
+
+/** roll a simple "NdM" (optionally "+K") bonus-dice string, e.g. Boldness's d4 */
+function rollBonusDice(state: CombatState, dice: string): number {
+  const m = dice.replace(/\s+/g, "").match(/^(\d+)d(\d+)([+-]\d+)?$/);
+  if (!m) return 0;
+  return state.rng.dice(Number(m[1]), Number(m[2])) + (m[3] ? Number(m[3]) : 0);
 }
 
 /** the lowest natural roll that crits for `u` (Champion's Improved/Superior
@@ -145,6 +154,11 @@ function rollAttackImpl(
     if (e.mods?.attackAdvantage === "adv") adv = combineAdv(adv, "adv");
     if (e.mods?.attackAdvantage === "dis") adv = combineAdv(adv, "dis");
     if (e.mods?.attackBonusAll) toHit += e.mods.attackBonusAll;
+    if (e.mods?.attackBonusDice) toHit += rollBonusDice(state, e.mods.attackBonusDice);
+    // "disadvantage on attack rolls against targets other than you" / "against you" — the
+    // effect remembers who applied it (Armorer: Thunder Gauntlets, Infiltrator's glimmer)
+    if (e.mods?.disadvantageUnlessTargetingSource && e.sourceId !== target.id) adv = combineAdv(adv, "dis");
+    if (e.mods?.disadvantageOnlyTargetingSource && e.sourceId === target.id) adv = combineAdv(adv, "dis");
   }
   // Ambush / Assassinate — advantage on round 1 vs foes that haven't acted
   const assassinating = !!attacker.assassinateUntilRound && state.round <= attacker.assassinateUntilRound;
@@ -155,6 +169,9 @@ function rollAttackImpl(
     if (attacker.side === "monster" && state.tuning.monsterToHitDelta) toHit += state.tuning.monsterToHitDelta;
     if (attacker.side === "party" && state.tuning.partyToHitDelta) toHit += state.tuning.partyToHitDelta;
   }
+
+  // a bodyguard companion (Steel Defender) may impose disadvantage on this roll before it's made
+  if (deflectAttack(state, attacker, target, adv)) adv = combineAdv(adv, "dis");
 
   const { used } = state.rng.d20mode(adv);
   let ac = effectiveAc(target) + extraTargetAc;
@@ -262,13 +279,18 @@ function rollSaveImpl(
   if (ability === "dex" && hasCondition(target, "restrained")) adv = combineAdv(adv, "dis");
 
   const { used } = state.rng.d20mode(adv);
-  const mod = saveModifierOf(target, ability);
+  let mod = saveModifierOf(target, ability);
+  for (const e of target.effects) if (e.mods?.saveBonusDice) mod += rollBonusDice(state, e.mods.saveBonusDice);
   const succeeds = (f: number) => f + mod >= dc; // 2014 RAW: no auto-success on a natural 20 for saves
   const face = precogSwap(state, target, used, succeeds(used), succeeds);
   const passed = succeeds(face);
 
   // the endurance rider — add CON to a failed save, at an escalating self-cost
   if (!passed && maybeForcedEndurance(state, target, face + mod, dc, opts.stakes ?? "damage")) {
+    return { passed: true, usedLegendaryResistance: false };
+  }
+  // an ally artificer's Flash of Genius (+INT) may turn this failure into a success
+  if (!passed && reactToFailedSave(state, target, face + mod, dc)) {
     return { passed: true, usedLegendaryResistance: false };
   }
   return maybeLegendary(state, target, passed, opts);
@@ -474,7 +496,9 @@ function handleDropToZero(state: CombatState, target: CombatantState): void {
   }
   target.hp = 0;
   if (target.downedRound === undefined) target.downedRound = state.round;
-  if (target.side === "monster") {
+  // a summoned companion on the party's side (Steel Defender, Eldritch Cannon, a conjured beast)
+  // is destroyed at 0 HP like a monster — it doesn't make death saves like a player character
+  if (target.side === "monster" || target.summonerId !== undefined) {
     target.alive = false;
     say(state, `${target.name} is destroyed`, target.id);
   } else {

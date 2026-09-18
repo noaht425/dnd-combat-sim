@@ -33,15 +33,17 @@ describe("Companion subclasses", () => {
     expect(text).toMatch(/Primal Companion 1 uses Multiattack/);
   });
 
-  it("Battle Smith artificer summons a Steel Defender round 1 that acts all fight", () => {
+  it("Battle Smith artificer has its Steel Defender from the start of the fight and commands it with a bonus action", () => {
     const { roster, text } = companionFightText("battlesmith-artificer", "Smith");
     expect(roster.some((n) => n.startsWith("Steel Defender"))).toBe(true);
-    expect(text).toMatch(/Steel Defender: Activate -> Steel Defender 1 \+\d+.*raises 1× Steel Defender/);
-    expect(text).toMatch(/Steel Defender 1 uses Force-Empowered Rend/);
+    // created at the end of a long rest, so it's there before anyone acts — not a round-1 action
+    expect(text).toMatch(/The battle begins\nSmith raises 1× Steel Defender/);
+    // it attacks only when the artificer spends a bonus action commanding it
+    expect(text).toMatch(/Smith uses Command Steel Defender: Rend[\s\S]*Steel Defender 1 \(commanded\) uses Force-Empowered Rend/);
   });
 
-  it("both classes still take their own action the same turn they summon (bonus action cost)", () => {
+  it("the Steel Defender's command is a bonus action; Beast Master's companion is still a bonus-action summon", () => {
     expect(makeTemplate("beastmaster-ranger", 5).actions.find((a) => a.id === "call-companion")?.cost).toEqual({ bonus: 1 });
-    expect(makeTemplate("battlesmith-artificer", 5).actions.find((a) => a.id === "call-companion")?.cost).toEqual({ bonus: 1 });
+    expect(makeTemplate("battlesmith-artificer", 5).actions.find((a) => a.id === "command-rend")?.cost).toEqual({ bonus: 1 });
   });
 });

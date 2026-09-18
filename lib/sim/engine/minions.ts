@@ -6,7 +6,7 @@
 // Kept deliberately light. Both entries are SRD 5.2.1 (CC-BY-4.0); homebrew
 // summons live in the git-ignored local monster JSON, not here.
 
-import type { Combatant } from "../schema";
+import type { Action, Combatant } from "../schema";
 import { parseCombatant } from "../schema";
 
 const AI = {
@@ -296,6 +296,148 @@ export const MINIONS: Record<string, Combatant> = {
   "primal-spirit": primalSpirit,
   "steel-defender": steelDefender,
 };
+
+// ---------------------------------------------------------------------------
+// Level-scaled PC companions — the Battle Smith's Steel Defender and the
+// Artillerist's Eldritch Cannon (both Tasha's Cauldron of Everything; stat
+// lines below are from the printed text). Unlike the fixed stat blocks above,
+// these depend on the summoner's level / INT modifier / proficiency bonus, so
+// the artificer template builders call `steelDefenderFor` / `eldritchCannonFor`
+// to register the exact block they need (idempotent — same inputs, same id) and
+// name it in their `summon` node. Kept out of `MINIONS` so they don't show up
+// as options in the enemy picker.
+export const PC_SUMMONS: Record<string, Combatant> = {};
+
+/** Steel Defender: HP 2 + INT + 5×level, AC 15 (+2 at 15th, Improved Defender), Rend uses the
+ *  artificer's spell attack modifier for 1d8 + PB force, Repair 3/day (2d8 + PB), Deflect
+ *  Attack reaction. Only Dodges on its own turn unless the artificer commands it. */
+export function steelDefenderFor(level: number, int: number, pb: number): string {
+  const id = `steel-defender-L${level}`;
+  if (PC_SUMMONS[id]) return id;
+  REVERTS_ON_SUMMONER_DEATH.add(id); // "The defender also perishes if you die."
+  const improved = level >= 15;
+  // Arcane Jolt (9th level): when the defender hits, the artificer can channel the shared pool of
+  // uses (INT mod per long rest) through the strike for extra force damage
+  const joltDice = level >= 15 ? "4d6" : "2d6";
+  PC_SUMMONS[id] = minion({
+    id, name: "Steel Defender", size: "medium",
+    ac: improved ? 17 : 15,
+    maxHp: 2 + int + 5 * level,
+    speeds: { walk: 40 },
+    abilities: { str: 14, dex: 12, con: 14, int: 4, wis: 10, cha: 6 },
+    pb,
+    proficientSaves: ["dex", "con"],
+    immunities: ["poison"],
+    conditionImmunities: ["charmed", "exhaustion", "poisoned"],
+    specialRules: [{ rule: "cannotBeSurprised" }], // Vigilant
+    commandOnly: true,
+    resources: { repair: { max: 3, recharge: "longRest" } },
+    actions: [
+      {
+        id: "dodge", name: "Dodge", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "self" }, effects: [
+          { type: "applyEffect", name: "dodging", durationRounds: 1, mods: { attacksAgainstItAdvantage: "dis" } },
+        ] }],
+      },
+      {
+        id: "rend", name: "Force-Empowered Rend", cost: {}, recharge: "none",
+        text: "Melee weapon attack, reach 5 ft.",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{
+          type: "attack", bonus: pb + int, onHit: [
+            { type: "damage", amount: `1d8+${pb}`, damageType: "force" },
+            ...(level >= 9 ? [{
+              type: "branch" as const, if: "party.resource('arcane_jolt') > 0",
+              then: [
+                { type: "spendResource" as const, resource: "arcane_jolt", from: "party" as const },
+                { type: "damage" as const, amount: joltDice, damageType: "force" as const },
+              ],
+            }] : []),
+          ],
+        }] }],
+      },
+      {
+        id: "repair", name: "Repair", cost: {}, recharge: "none",
+        limitedUse: { resource: "repair", amount: 1 },
+        automation: [{ type: "target", who: { who: "self" }, effects: [{ type: "heal", amount: `2d8+${pb}` }] }],
+      },
+    ],
+    reactions: [{
+      id: "deflect-attack", name: "Deflect Attack", cost: { reaction: 1 }, recharge: "none",
+      trigger: "ally.isAttacked",
+      // Improved Defender (15th): the attacker takes 1d4 + INT force damage (engine hook in
+      // reactions.ts imposes the disadvantage; this automation is the retaliation, run at the attacker)
+      automation: improved
+        ? [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "damage", amount: `1d4+${int}`, damageType: "force" }] }]
+        : [{ type: "note", text: "imposes disadvantage on the attack roll (engine hook)" }],
+    }],
+  });
+  return id;
+}
+
+export type CannonVariant = "flamethrower" | "ballista" | "protector";
+
+/** Eldritch Cannon: AC 18, HP 5×level, immune to poison and psychic damage, all ability scores 10.
+ *  Its variant's activation is a bonus action from the artificer. Explosive Cannon (9th): damage
+ *  rolls +1d8 and the artificer can detonate it for a 20-ft burst. */
+export function eldritchCannonFor(variant: CannonVariant, level: number, int: number, pb: number): string {
+  const id = `eldritch-cannon-${variant}-L${level}`;
+  if (PC_SUMMONS[id]) return id;
+  const dc = 8 + pb + int;
+  const explosive = level >= 9;
+  const dmg = explosive ? "3d8" : "2d8"; // 2d8, +1d8 from Explosive Cannon
+  const activate: Action =
+    variant === "flamethrower"
+      ? {
+          id: "activate", name: "Flamethrower", cost: {}, recharge: "none",
+          text: "Exhales fire in an adjacent 15-foot cone: Dexterity save, 2d8 fire, half on a success.",
+          automation: [{ type: "target", who: { who: "area", shape: "cone", size: 15 }, effects: [{
+            type: "save", ability: "dex", dc,
+            onFail: [{ type: "damage", amount: dmg, damageType: "fire" }],
+            onSuccess: [{ type: "damage", amount: dmg, damageType: "fire", half: true }],
+          }] }],
+        }
+      : variant === "ballista"
+        ? {
+            id: "activate", name: "Force Ballista", cost: {}, recharge: "none",
+            text: "Ranged spell attack, range 120 ft: 2d8 force damage, pushed up to 5 feet.",
+            // the 5-foot push is not simulated (the interpreter's "move" push/pull nodes are no-ops)
+            automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{
+              type: "attack", bonus: pb + int, onHit: [
+                { type: "damage", amount: dmg, damageType: "force" },
+                { type: "move", kind: "push", distance: 5 },
+              ],
+            }] }],
+          }
+        : {
+            id: "activate", name: "Protector", cost: {}, recharge: "none",
+            text: "Burst of positive energy: itself and each ally within 10 feet gains 1d8 + INT temporary hit points.",
+            automation: [{ type: "target", who: { who: "eachAlly", withinFt: 10 }, effects: [
+              { type: "tempHp", amount: `1d8+${Math.max(1, int)}` },
+            ] }],
+          };
+  const detonate: Action[] = explosive ? [{
+    id: "detonate", name: "Detonate", cost: {}, recharge: "none",
+    text: "Destroys the cannon; each creature within 20 feet: Dexterity save, 3d8 force, half on a success.",
+    automation: [
+      { type: "target", who: { who: "area", shape: "emanation", size: 20 }, effects: [{
+        type: "save", ability: "dex", dc,
+        onFail: [{ type: "damage", amount: "3d8", damageType: "force" }],
+        onSuccess: [{ type: "damage", amount: "3d8", damageType: "force", half: true }],
+      }] },
+      { type: "target", who: { who: "self" }, effects: [{ type: "damage", amount: "999", damageType: "force", ignoreResistances: true }] },
+    ],
+  }] : [];
+  PC_SUMMONS[id] = minion({
+    id, name: `Eldritch Cannon (${variant === "ballista" ? "Force Ballista" : variant === "flamethrower" ? "Flamethrower" : "Protector"})`,
+    size: "small", ac: 18, maxHp: 5 * level,
+    speeds: { walk: 0 }, // "walk or climb up to 15 feet ... provided it has legs" — this one doesn't
+    abilities: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+    pb, immunities: ["poison", "psychic"], commandOnly: true,
+    actions: [activate, ...detonate],
+    ai: { ...AI, keepDistance: true },
+  });
+  return id;
+}
 
 /**
  * Minions of these stat blocks vanish the instant their summoner dies. Empty

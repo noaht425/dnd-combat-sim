@@ -6,12 +6,14 @@
 import { abilityMod } from "../math";
 import {
   actionAvailable,
+  commandOnlyPlan,
   markEconomy,
   pick,
   spend,
   takeLairAction,
   takeLegendaryActions,
 } from "../engine/ai";
+import { fireEncounterStartTraits } from "../engine/interpreter";
 import { chooseFocusTarget } from "../engine/score";
 import {
   checkEnd,
@@ -30,7 +32,7 @@ import {
 } from "../engine/state";
 import { resolveEnemies } from "../engine/scenario";
 import { TERRAIN_GLYPH, blocksMove, footprint, inBounds, terrainAt } from "./grid";
-import { actionMakesAttacks, attackModsFor, geoTargetsFor, planTurn, reposition } from "./ai";
+import { actionMakesAttacks, attackModsFor, geoTargetsFor, planForAction, planTurn, reposition } from "./ai";
 import { applyDecision, computeAwaiting, runActionLogged } from "./control";
 import { BattleState, ReactionPause, canFly, deriveZones, nearestEnemyFt, recordFrame, unitReachFt } from "./state";
 
@@ -171,8 +173,39 @@ function charmParalysed(state: BattleState, u: CombatantState): boolean {
   return foes.length > 0 && foes.every((f) => f.id === c.sourceId);
 }
 
+/** The unit's own list of bonus-action abilities an AI-run PC takes every turn when available
+ *  (see engine/ai.ts) — commanding a companion, an extra attack, a buff. First match wins. */
+function runBonusRoutine(state: BattleState, u: CombatantState): void {
+  if (u.bonusUsedThisTurn || state.ended) return;
+  const routine = pick(state, u, u.ref.ai.bonusRoutine ?? []);
+  if (!routine) return;
+  const rplan = planForAction(state, u, routine);
+  const rgeo = { geoTargets: geoTargetsFor(state, u, rplan), attackMods: attackModsFor(state, u, rplan.needsMelee) };
+  spend(u, routine);
+  markEconomy(u, routine);
+  const text = runActionLogged(state, u, routine, { geo: rgeo }, `${u.name} uses ${routine.name}`);
+  recordFrame(state, {
+    kind: "action",
+    actorId: u.id,
+    text,
+    targetIds: rplan.templateHitIds ?? (rplan.targetId ? [rplan.targetId] : undefined),
+  });
+}
+
 function takeBattleTurn(state: BattleState, u: CombatantState): void {
   if (!livingEnemies(state, u).length) return;
+
+  // a Steel Defender / Eldritch Cannon only Dodges on its own turn unless its summoner spent a
+  // bonus action commanding it this round (that command already ran its action)
+  const co = commandOnlyPlan(state, u);
+  if (co.handled) {
+    if (co.dodge) {
+      markEconomy(u, co.dodge);
+      const text = runActionLogged(state, u, co.dodge, {}, `${u.name} uses ${co.dodge.name}`);
+      recordFrame(state, { kind: "action", actorId: u.id, text });
+    }
+    return;
+  }
   if (charmParalysed(state, u)) {
     say(state, `${u.name} is charmed and won't act`, u.id);
     return;
@@ -230,9 +263,13 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
         text,
         targetIds: plan.targetId ? [plan.targetId] : undefined,
       });
-      if (opener.cost.action) return;
+      if (opener.cost.action) {
+        runBonusRoutine(state, u); // e.g. activate the cannon that action just created
+        return;
+      }
     }
   }
+  runBonusRoutine(state, u);
   if (u.actionUsedThisTurn) return;
   // the opener may have finished the fight (or killed the only target in range)
   if (state.ended || !livingEnemies(state, u).length) return;
@@ -292,6 +329,11 @@ export function runBattleLoop(state: BattleState): void {
     text: "The battle begins",
     terrain: { width: state.grid.width, height: state.grid.height, tiles: terrainString(state) },
   });
+  // encounter-start traits (an Alchemist's elixirs) — surfaced as their own frame so the player sees them
+  const logBefore = state.log.length;
+  fireEncounterStartTraits(state);
+  const startLines = state.log.slice(logBefore).map((l) => l.text).filter(Boolean);
+  if (startLines.length) recordFrame(state, { kind: "action", text: startLines.join("  ·  ") });
 
   try {
    while (!state.ended && !state.pausedForInput && state.round < state.maxRounds) {

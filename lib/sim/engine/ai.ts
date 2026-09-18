@@ -223,8 +223,39 @@ export function takeLairAction(state: CombatState, u: CombatantState): void {
 // per-turn chance the PC's turn is spent on something less than optimal.
 export const PARTY_FRICTION = 0.1;
 
+/** A template's own list of bonus-action abilities an AI-run PC takes every turn when available
+ *  (commanding a companion, an extra attack, a buff) — first match wins. */
+function takeBonusRoutine(state: CombatState, u: CombatantState): void {
+  if (u.bonusUsedThisTurn) return;
+  const routine = pick(state, u, u.ref.ai.bonusRoutine ?? []);
+  if (!routine) return;
+  spend(u, routine);
+  markEconomy(u, routine);
+  runAction(state, u, routine);
+}
+
+/**
+ * A companion that only Dodges on its own turn unless its summoner spent a bonus action commanding
+ * it this round (Steel Defender: "the only action it takes on its turn is the Dodge action, unless
+ * you take a bonus action on your turn to command it"; an Eldritch Cannon acts only when activated).
+ * `handled` = this is such a companion and its own turn is fully resolved here; `dodge` = the
+ * Dodge to take, if it wasn't commanded. If the summoner is dead or incapacitated the companion
+ * falls back to the ordinary AI.
+ */
+export function commandOnlyPlan(state: CombatState, u: CombatantState): { handled: boolean; dodge?: Action } {
+  if (!u.ref.commandOnly || u.summonerId === undefined) return { handled: false };
+  const summoner = state.units.get(u.summonerId);
+  if (!summoner || !summoner.alive || isIncapacitated(summoner)) return { handled: false };
+  return { handled: true, dodge: u.commandedRound === state.round ? undefined : u.ref.actions.find((a) => a.id === "dodge") };
+}
+
 export function takePcTurn(state: CombatState, u: CombatantState, level: number): void {
   if (isIncapacitated(u)) return;
+  const co = commandOnlyPlan(state, u);
+  if (co.handled) {
+    if (co.dodge) { markEconomy(u, co.dodge); runAction(state, u, co.dodge); }
+    return;
+  }
   if (!livingEnemies(state, u).length) return;
   if (charmParalysed(state, u)) { say(state, `${u.name} is charmed and won't act`, u.id); return; }
 
@@ -286,9 +317,12 @@ export function takePcTurn(state: CombatState, u: CombatantState, level: number)
       spend(u, opener);
       markEconomy(u, opener);
       runAction(state, u, opener);
+      takeBonusRoutine(state, u); // e.g. activate the cannon that action just created
       return;
     }
   }
+
+  takeBonusRoutine(state, u);
 
   // any-round bonus-action spell (Hex, a smite, Ensnaring Strike, ...) — the round-1
   // opener above is a curated list; this scores whatever's left every turn so a

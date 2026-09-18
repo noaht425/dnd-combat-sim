@@ -20,6 +20,8 @@ const CANTRIPS: Partial<Record<SpellClass, number[]>> = {
   druid: [0, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
   bard: [0, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
   warlock: [0, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+  // Artificer table (Tasha's): 2 cantrips through 9th level, 3 at 10th, 4 at 14th
+  artificer: [0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4],
 };
 
 export type CasterFocus = "blaster" | "controller" | "support" | "balanced";

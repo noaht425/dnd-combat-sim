@@ -54,6 +54,7 @@ type RKind =
   | "onDamaged"      // punish the source of any attack/spell damage (also Hellish Rebuke)
   | "onBigHit"       // react to 30+ damage from one source
   | "onDrop"         // react to a creature hitting 0 hp
+  | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
   | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
   | "unknown";
 
@@ -67,6 +68,7 @@ function classify(r: Action): RKind {
   if (id.includes("absorb-elements") || id.includes("absorbelements") || tr.includes("tookelementaldamage")) return "absorbElements";
   if (id.includes("hellish-rebuke") || id.includes("hellishrebuke")) return "onDamaged";
   if (id.includes("riposte")) return tr.includes("missed") ? "retaliateOnMiss" : "retaliateOnHit";
+  if (id.includes("deflect-attack")) return "deflectAttack";
   if (id.includes("cutting-words") || id.includes("cuttingwords")) return "protectAllyAttackRoll";
   if (tr.includes("belowhalf") || tr.includes("reducedtohalf")) return "onBloodied";
   if (tr.includes("tookdamagefromattackorspell")) return "onDamaged";
@@ -102,6 +104,85 @@ function fire(state: CombatState, u: CombatantState, r: Action, forceTarget?: Co
   } finally {
     state.inReaction = false;
   }
+}
+
+// ---------------------------------------------- before an attack roll is made
+
+/**
+ * Deflect Attack (Steel Defender): "imposes disadvantage on the attack roll of one creature it can
+ * see that is within 5 feet of it, provided the attack roll is against a creature other than the
+ * defender." Called from `rollAttackImpl` BEFORE the d20 is rolled, since it changes how the roll
+ * is made. `adv` is the roll's state so far — disadvantage already there means the reaction would
+ * be wasted. Returns whether disadvantage should be imposed. Range is real feet in battle mode
+ * (`state.distanceFt`); the Monte-Carlo engine has no distances, so it falls back to "both are in
+ * the melee zone".
+ */
+export function deflectAttack(
+  state: CombatState,
+  attacker: CombatantState,
+  target: CombatantState,
+  adv: "adv" | "dis" | "flat",
+): boolean {
+  if (state.inReaction || adv === "dis") return false;
+  for (const d of livingAllies(state, target)) {
+    if (d.id === target.id) continue; // "against a creature other than the defender"
+    for (const r of d.ref.reactions) {
+      if (classify(r) !== "deflectAttack" || !ready(state, d, r)) continue;
+      const near = state.distanceFt
+        ? state.distanceFt(d, attacker) <= 5.001
+        : d.zone === "melee" && attacker.zone === "melee";
+      if (!near) continue;
+      const ok = decideReaction(
+        state,
+        d,
+        "deflectAttack",
+        `${attacker.name} is attacking ${target.name} — ${d.name}'s Deflect Attack imposes disadvantage on the roll.`,
+        "Deflect Attack",
+        "Let it through",
+      );
+      if (!ok) continue;
+      // retaliation (Improved Defender, 15th level) lives in the reaction's own automation and is
+      // pinned onto the attacker; below 15th level that automation is just a note
+      fire(state, d, r, attacker);
+      say(state, `${d.name} deflects the attack`, d.id);
+      return true;
+    }
+  }
+  return false;
+}
+
+// ------------------------------------------------------- a saving throw failed
+
+/**
+ * Flash of Genius (Artificer, 7th level): "When you or another creature you can see within 30 feet
+ * of you makes an ability check or a saving throw, you can use your reaction to add your
+ * Intelligence modifier to the roll." Only spent when it actually turns a failed save into a
+ * success. Saving throws only — the sim rolls no ability checks. Range is real feet in battle mode;
+ * the Monte-Carlo engine has no distances, so anyone on the side counts as within range.
+ */
+export function reactToFailedSave(state: CombatState, target: CombatantState, rollTotal: number, dc: number): boolean {
+  if (state.inReaction) return false;
+  for (const a of livingAllies(state, target)) {
+    const rule = a.ref.specialRules.find((r) => r.rule === "flashOfGenius");
+    if (!rule || rule.rule !== "flashOfGenius") continue;
+    if (a.reactionUsed || !canTakeReactions(a) || (a.resources.get(rule.resource) ?? 0) <= 0) continue;
+    if (rollTotal + rule.bonus < dc) continue; // wouldn't turn it around
+    if (a.id !== target.id && state.distanceFt && state.distanceFt(a, target) > rule.rangeFt + 0.001) continue;
+    const ok = decideReaction(
+      state,
+      a,
+      "flashOfGenius",
+      `${target.name} fails a saving throw (${rollTotal} vs DC ${dc}) — ${a.name}'s Flash of Genius adds +${rule.bonus} and turns it into a success.`,
+      "Flash of Genius",
+      "Let it fail",
+    );
+    if (!ok) continue;
+    a.reactionUsed = true;
+    a.resources.set(rule.resource, (a.resources.get(rule.resource) ?? 0) - 1);
+    say(state, `${a.name} uses Flash of Genius (+${rule.bonus}) for ${target.name}`, a.id);
+    return true;
+  }
+  return false;
 }
 
 // ------------------------------------------------ attack about to be finalised

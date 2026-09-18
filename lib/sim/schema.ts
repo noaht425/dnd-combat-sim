@@ -71,7 +71,9 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   z.object({ who: z.literal("aiChoice") }),         // let this combatant's ai.targetPriority pick
   z.object({ who: z.literal("marked") }),           // the creature this combatant has sworn vengeance on / chosen
   z.object({ who: z.literal("eachEnemy") }),
-  z.object({ who: z.literal("eachAlly") }),
+  // `withinFt` narrows to allies within that many feet of the caster (battle mode's real grid
+  // only — the Monte-Carlo engine has no distances, so there it still means the whole side)
+  z.object({ who: z.literal("eachAlly"), withinFt: z.number().positive().optional() }),
   z.object({ who: z.literal("lowestHpAlly") }),      // the most-hurt ally (healing spells)
   z.object({ who: z.literal("nearestEnemy") }),
   z.object({ who: z.literal("lowestHpEnemy") }),
@@ -104,6 +106,14 @@ export const effectModsSchema = z.object({
   disadvantageOnFirstD20EachRound: z.boolean().optional(), // "doomed"
   saveAdvantage: advModeSchema.optional(),          // the affected creature's own saves (foresight = adv)
   checkAdvantage: advModeSchema.optional(),         // the affected creature's own ability checks
+  attackBonusDice: diceSchema.optional(),           // a die rolled and added to each of the holder's attack rolls (Boldness elixir: d4)
+  saveBonusDice: diceSchema.optional(),             // ...and to each of its saving throws
+  /** the holder has disadvantage on attack rolls against anyone EXCEPT the creature that applied
+   *  this effect (Armorer Guardian's Thunder Gauntlets) */
+  disadvantageUnlessTargetingSource: z.boolean().optional(),
+  /** the holder has disadvantage on attack rolls against the creature that applied this effect
+   *  (Armorer Infiltrator's Perfected Armor glimmer) */
+  disadvantageOnlyTargetingSource: z.boolean().optional(),
 });
 export type EffectMods = z.infer<typeof effectModsSchema>;
 
@@ -131,10 +141,16 @@ export type AutomationNode =
   | { type: "move"; kind: "pull" | "push" | "teleportSelf" | "teleportSelfToMarked" | "withdraw"; distance?: number; provokes?: boolean }
   | { type: "mark"; note?: string }
   | { type: "branch"; if: string; then: AutomationNode[]; else?: AutomationNode[] }
-  | { type: "spendResource"; resource: string; amount?: number }
+  /** `amount` is how much to spend (default 1); NEGATIVE gains that much instead. `from: "party"`
+   *  draws from / adds to the first living party member that owns the resource (an Alchemist's
+   *  elixir stock, drunk by whichever ally uses their own action to drink it). */
+  | { type: "spendResource"; resource: string; amount?: number; from?: "party" }
   | { type: "rechargeRoll"; resource: string }
   | { type: "useAction"; action: string; times?: number }
   | { type: "summon"; statBlock: string; count: string; max?: number; note?: string }
+  /** the summoner spends a bonus action to make each of its living summons that has an action
+   *  with this id take it now (Steel Defender's Rend/Repair, an Eldritch Cannon's activation) */
+  | { type: "commandSummon"; action: string; limit?: number; rangeFt?: number }
   /** weighted random pick, one branch fires (Wild Magic Surge and similar
    *  chaotic-magic tables) — weights don't need to sum to anything in
    *  particular, they're relative. A no-op option (empty `then`, a big
@@ -206,7 +222,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       then: z.array(automationNodeSchema),
       else: z.array(automationNodeSchema).optional(),
     }),
-    z.object({ type: z.literal("spendResource"), resource: z.string(), amount: z.number().int().optional() }),
+    z.object({ type: z.literal("spendResource"), resource: z.string(), amount: z.number().int().optional(), from: z.literal("party").optional() }),
+    z.object({ type: z.literal("commandSummon"), action: z.string(), limit: z.number().int().positive().optional(), rangeFt: z.number().positive().optional() }),
     z.object({ type: z.literal("rechargeRoll"), resource: z.string() }),
     z.object({ type: z.literal("useAction"), action: z.string(), times: z.number().int().positive().optional() }),
     z.object({
@@ -257,6 +274,7 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("acMeltOnHit"), amount: z.number().int().positive(), min: z.number().int() }), // each physical hit shaves the target's AC, stacking
   z.object({ rule: z.literal("noReactionsAfter"), damageType: damageTypeSchema }),                   // a damage type that strips the target's reactions for a round
   z.object({ rule: z.literal("ambush") }),                                                          // acts first on round 1; its round-1 hits have advantage and auto-crit (Assassinate)
+  z.object({ rule: z.literal("flashOfGenius"), resource: z.string(), bonus: z.number().int(), rangeFt: z.number().positive() }), // Artificer, 7th level: reaction, add INT to a save of yourself or a creature within range
   z.object({ rule: z.literal("boostMissedAttack"), bonusDice: z.string(), resource: z.string() }),   // Favored by the Gods — once/rest, add a bonus die to a roll that would miss and recheck
 ]);
 export type SpecialRule = z.infer<typeof specialRuleSchema>;
@@ -342,6 +360,7 @@ export const aiSchema = z.object({
   targetPriority: z.enum(["lowestHp", "squishiest", "marked", "nearest", "highestThreat"]).default("highestThreat"),
   aoeMinTargets: z.number().int().positive().default(2),          // only breathe/AoE if it catches at least this many
   opener: z.array(z.string()).default([]),                        // action ids to prefer on round 1 (Frightful Presence, a mark-a-foe opener)
+  bonusRoutine: z.array(z.string()).optional(),                  // bonus-action ids an AI-run PC takes EVERY turn when available, first match wins (command a companion, an extra attack)
   saveLegendaryResistanceFor: z.array(z.string()).default(["stunned", "paralyzed", "banished", "save-or-die", "controlled"]),
   keepDistance: z.boolean().default(false),
   neverRetreat: z.boolean().default(false),
@@ -410,6 +429,10 @@ export const combatantSchema = z.object({
   lairActions: lairActionsSchema.optional(),
   regionalNote: z.string().optional(),
   flavor: flavorSchema.optional(),
+  /** a summoned companion that takes no actions of its own on its turn (beyond a plain Dodge, if it
+   *  has a "dodge" action) unless its summoner spends a bonus action to command it — Steel
+   *  Defender, Eldritch Cannon */
+  commandOnly: z.boolean().optional(),
 
   // prefault (not default) so the inner field defaults inside aiSchema are applied
   ai: aiSchema.prefault({}),

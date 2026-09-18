@@ -2,9 +2,11 @@
 // which pulls a prepared / known list from the SRD catalog, wires real slot
 // resources, and expands every prepared spell into its upcast Action variants.
 
-import type { Combatant } from "../schema";
+import type { Action, Combatant } from "../schema";
+import { eldritchCannonFor, steelDefenderFor, type CannonVariant } from "../engine/minions";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
+import { autoPrepare } from "./prepare";
 
 /** "cast-fireball-3" -> "fireball"; "cast-fire-bolt" -> "fire-bolt" (cantrips
  *  have no trailing slot number) — the slot suffix is always a bare integer,
@@ -28,20 +30,31 @@ function addFlatBonus(amount: string, bonus: number): string {
   return `${dice}${flatPart}${rest}`;
 }
 
-/** finds the FIRST damage node reachable from `nodes` (optionally restricted
- *  to `damageType`) and adds `bonus` to its dice string — used for effects
- *  that boost "one damage roll" of a spell (Empowered Evocation, Elemental
- *  Affinity), which unlike Disciple of Life's flat-HP-node-per-heal only
+/** finds the FIRST rolled node reachable from `nodes` — a damage node (optionally restricted to
+ *  one or several `damageType`s) or, with `includeHeal`, a heal node — and adds `bonus` to its dice
+ *  string. A number merges into the flat modifier; a string ("1d8") is appended as a dice term.
+ *  Used for effects that boost "one roll" of a spell (Empowered Evocation, Elemental Affinity,
+ *  Arcane Firearm, Alchemical Savant), which unlike Disciple of Life's flat-HP-node-per-heal only
  *  ever touch a single roll per cast, not every matching node. */
-function injectFirstDamageBonus(nodes: import("../schema").AutomationNode[], bonus: number, damageType?: string): { nodes: import("../schema").AutomationNode[]; applied: boolean } {
-  type DamageNode = Extract<import("../schema").AutomationNode, { type: "damage" }>;
-  const matches = (n: import("../schema").AutomationNode): n is DamageNode => n.type === "damage" && (!damageType || n.damageType === damageType);
+function injectFirstDamageBonus(
+  nodes: import("../schema").AutomationNode[],
+  bonus: number | string,
+  damageType?: string | string[],
+  includeHeal = false,
+): { nodes: import("../schema").AutomationNode[]; applied: boolean } {
+  type Rolled = Extract<import("../schema").AutomationNode, { type: "damage" | "heal" }>;
+  const types = damageType === undefined ? undefined : Array.isArray(damageType) ? damageType : [damageType];
+  const matches = (n: import("../schema").AutomationNode): n is Rolled =>
+    (n.type === "damage" && (!types || types.includes(n.damageType))) || (includeHeal && n.type === "heal");
+  const withBonus = (amount: string): string => (typeof bonus === "number" ? addFlatBonus(amount, bonus) : `${amount}+${bonus}`);
+  const sameRoll = (a: Rolled, b: Rolled): boolean =>
+    a.type === b.type && a.amount === b.amount && (a.type !== "damage" || a.damageType === (b as typeof a).damageType);
   let applied = false;
   const walk = (list: import("../schema").AutomationNode[]): import("../schema").AutomationNode[] => list.map((n) => {
     if (applied) return n;
     if (matches(n)) {
       applied = true;
-      return { ...n, amount: addFlatBonus(n.amount, bonus) };
+      return { ...n, amount: withBonus(n.amount) };
     }
     if (n.type === "target") return { ...n, effects: walk(n.effects) };
     if (n.type === "attack") return { ...n, onHit: walk(n.onHit), onMiss: n.onMiss && walk(n.onMiss) };
@@ -55,11 +68,11 @@ function injectFirstDamageBonus(nodes: import("../schema").AutomationNode[], bon
       const failIdx = n.onFail.findIndex(matches);
       if (!applied && failIdx !== -1) {
         applied = true;
-        const original = n.onFail[failIdx] as DamageNode;
-        const amount = addFlatBonus(original.amount, bonus);
+        const original = n.onFail[failIdx] as Rolled;
+        const amount = withBonus(original.amount);
         const onFail = n.onFail.map((x, i) => (i === failIdx ? { ...original, amount } : x));
         const onSuccess = n.onSuccess?.map((x) =>
-          matches(x) && x.amount === original.amount && x.damageType === original.damageType ? { ...x, amount } : x,
+          matches(x) && sameRoll(x, original) ? { ...x, amount } : x,
         );
         return { ...n, onFail, onSuccess };
       }
@@ -245,33 +258,352 @@ export function beastMasterRanger(level: number): Combatant {
   });
 }
 
-export function battleSmithArtificer(level: number): Combatant {
+// ============================================================================ Artificer
+// Every feature below is built from the printed Tasha's Cauldron of Everything text (the Artificer
+// class page and its four subclass pages on dnd5e.wikidot.com, read directly rather than recalled).
+// Shared modeling assumptions carried over from the original Battle Smith template, NOT derived from
+// the rules: AC 18, the HP curve, and ability scores (STR/DEX +1, CON +2, INT +4/+5), plus a 1d8
+// piercing weapon for the Battle Smith's magic weapon. Where the engine can't express a feature
+// exactly, the comment on that feature says what was simplified.
+
+type SubclassSpells = [number, string[]][];
+
+// "always prepared" spell tables from each subclass page — they don't count against the prepared limit
+const ARTILLERIST_SPELLS: SubclassSpells = [
+  [3, ["shield", "thunderwave"]], [5, ["scorching-ray", "shatter"]], [9, ["fireball", "wind-wall"]],
+  [13, ["ice-storm", "wall-of-fire"]], [17, ["cone-of-cold", "wall-of-force"]],
+];
+const ALCHEMIST_SPELLS: SubclassSpells = [
+  [3, ["healing-word", "ray-of-sickness"]], [5, ["flaming-sphere", "melfs-acid-arrow"]], [9, ["gaseous-form", "mass-healing-word"]],
+  [13, ["blight", "death-ward"]], [17, ["cloudkill", "raise-dead"]],
+];
+const ARMORER_SPELLS: SubclassSpells = [
+  [3, ["magic-missile", "thunderwave"]], [5, ["mirror-image", "shatter"]], [9, ["hypnotic-pattern", "lightning-bolt"]],
+  [13, ["fire-shield", "greater-invisibility"]], [17, ["passwall", "wall-of-force"]],
+];
+const BATTLE_SMITH_SPELLS: SubclassSpells = [
+  [3, ["heroism", "shield"]], [5, ["branding-smite", "warding-bond"]], [9, ["aura-of-vitality", "conjure-barrage"]],
+  [13, ["aura-of-purity", "fire-shield"]], [17, ["banishing-smite", "mass-cure-wounds"]],
+];
+
+/** shared numbers + spell list every artificer subclass starts from */
+function artificerParts(level: number, table: SubclassSpells) {
   const pb = pbFor(level);
-  const int = pb === 6 ? 5 : 4;
+  const int = pb === 6 ? 5 : 4; // INT modifier (the original artificer template's convention)
+  // spells prepared = INT mod + half artificer level (verified against the class text); the subclass's
+  // always-prepared spells come on top of that count
+  const base = autoPrepare("artificer", "half", level, int, "balanced");
+  const always = level >= 3 ? table.filter(([l]) => level >= l).flatMap(([, ids]) => ids) : [];
+  return {
+    pb, int, dex: 1,
+    cantrips: base.cantrips,
+    prepared: [...new Set([...always, ...base.spells])],
+    abilities: { str: score(1), dex: score(1), con: score(2), int: score(int), wis: score(0), cha: score(0) } as Combatant["abilities"],
+    hp: between(level, 11, 7 * 20 + 14),
+  };
+}
+
+/** the artificer's starting weapon ("a light crossbow and 20 bolts"; light crossbow 1d8 piercing, range 80/320) */
+const lightCrossbow = (pb: number, dex: number): Action => ({
+  id: "attack", name: "Light Crossbow", cost: { action: 1 }, recharge: "none",
+  text: "Ranged weapon attack, range 80/320 ft.",
+  automation: [{ type: "target", who: { who: "aiChoice" }, effects: [
+    { type: "attack", bonus: pb + dex, onHit: [{ type: "damage", amount: `1d8+${dex}`, damageType: "piercing" }] },
+  ] }],
+});
+
+/** Flash of Genius (7th level): reaction, +INT to a save of you or a creature within 30 ft, INT-mod
+ *  uses per long rest (min 1). Saving throws only — the sim rolls no ability checks. */
+function withFlashOfGenius(c: Combatant, level: number, int: number): Combatant {
+  if (level < 7) return c;
+  return {
+    ...c,
+    specialRules: [...c.specialRules, { rule: "flashOfGenius", resource: "flash_of_genius", bonus: int, rangeFt: 30 }],
+    resources: { ...c.resources, flash_of_genius: { max: Math.max(1, int), recharge: "longRest" } },
+  };
+}
+
+/** Arcane Firearm (Artillerist, 5th): "roll a d8, and you gain a bonus to one of the spell's damage
+ *  rolls" — applied to the first damage roll of every artificer spell (the firearm is assumed to be
+ *  the casting focus every time). */
+function withArcaneFirearm(c: Combatant, level: number): Combatant {
+  if (level < 5) return c;
+  return {
+    ...c,
+    actions: c.actions.map((a) => {
+      if (!a.isSpell) return a;
+      const r = injectFirstDamageBonus(a.automation, "1d8");
+      return r.applied ? { ...a, automation: r.nodes } : a;
+    }),
+  };
+}
+
+/** Alchemical Savant (Alchemist, 5th): a bonus equal to INT (min +1) to one roll of a spell that
+ *  restores hit points or deals acid, fire, necrotic, or poison damage (alchemist's supplies assumed
+ *  to be the casting focus every time). */
+function withAlchemicalSavant(c: Combatant, level: number, int: number): Combatant {
+  if (level < 5) return c;
+  const bonus = Math.max(1, int);
+  return {
+    ...c,
+    actions: c.actions.map((a) => {
+      if (!a.isSpell) return a;
+      const r = injectFirstDamageBonus(a.automation, bonus, ["acid", "fire", "necrotic", "poison"], true);
+      return r.applied ? { ...a, automation: r.nodes } : a;
+    }),
+  };
+}
+
+// ---- Battle Smith -----------------------------------------------------------------------------
+// Battle Ready: INT (not STR/DEX) on attack and damage with a magic weapon. The Enhanced Weapon
+// infusion is what makes the weapon magic: +1 to attack and damage, +2 from 10th level (verified).
+// Steel Defender: exists from the start of the fight (created at the end of a long rest) — an
+// encounterStart trait raises it — and only Dodges unless the artificer spends a bonus action to
+// command it (see minions.ts for its stat block). Arcane Jolt (9th): when the artificer hits with the
+// weapon (first swing only — "no more than once on a turn") or the defender hits, spend one of INT-mod
+// uses for +2d6 force damage (+4d6 at 15th); the healing mode of Arcane Jolt is NOT modeled.
+export function battleSmithArtificer(level: number): Combatant {
+  const p = artificerParts(level, BATTLE_SMITH_SPELLS);
   const attacks = level >= 5 ? 2 : 1;
-  return makeCaster({
+  const infusion = level >= 10 ? 2 : 1;
+  const joltDice = level >= 15 ? "4d6" : "2d6";
+  const swing = (first: boolean) => ({
+    type: "attack" as const, bonus: p.pb + p.int + infusion, onHit: [
+      { type: "damage" as const, amount: `1d8+${p.int + infusion}`, damageType: "piercing" as const },
+      ...(level >= 9 && first ? [{
+        type: "branch" as const, if: "self.resource('arcane_jolt') > 0",
+        then: [
+          { type: "spendResource" as const, resource: "arcane_jolt" },
+          { type: "damage" as const, amount: joltDice, damageType: "force" as const },
+        ],
+      }] : []),
+    ],
+  });
+  const defenderId = level >= 3 ? steelDefenderFor(level, p.int, p.pb) : undefined;
+  const commands: Combatant["actions"] = defenderId ? [
+    {
+      id: "command-rend", name: "Command Steel Defender: Rend", cost: { bonus: 1 }, recharge: "none",
+      text: "Bonus action: the steel defender makes its Force-Empowered Rend attack.",
+      automation: [{ type: "commandSummon", action: "rend" }],
+    },
+    {
+      id: "command-repair", name: "Command Steel Defender: Repair", cost: { bonus: 1 }, recharge: "none",
+      text: "Bonus action: the steel defender uses Repair (3/day) to heal itself.",
+      automation: [{ type: "commandSummon", action: "repair" }],
+    },
+  ] : [];
+  const c = makeCaster({
     id: "battlesmith-artificer", name: `Artificer ${level}`, level, spellClass: "artificer", casterKind: "half", spellAbility: "int",
-    ac: 18, hp: between(level, 11, 7 * 20 + 14),
-    abilities: { str: score(1), dex: score(1), con: score(2), int: score(int), wis: score(0), cha: score(0) },
-    proficientSaves: ["con", "int"], focus: "balanced",
+    ac: 18, hp: p.hp, abilities: p.abilities, proficientSaves: ["con", "int"],
+    prepared: p.prepared, cantrips: p.cantrips,
+    extraTraits: defenderId ? [{
+      id: "steel-defender", name: "Steel Defender", trigger: "encounterStart",
+      automation: [{ type: "summon", statBlock: defenderId, count: "1", max: 1 }],
+      text: "Created at the end of a long rest; present from the start of the fight.",
+    }] : [],
     extraActions: [
       {
         id: "attack", name: "Infused Weapon Attack", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks }, () => (
-          // +1 infusion folded into to-hit/damage, per the "Infuse an item" note elsewhere
-          { type: "attack" as const, bonus: pb + int + 1, onHit: [{ type: "damage" as const, amount: `1d8+${int + 1}`, damageType: "piercing" as const }] }
-        )) }],
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks }, (_, i) => swing(i === 0)) }],
       },
-      {
-        // a real persistent ally, not a spell-slot summon — joins the
-        // roster at the start of the fight and acts on its own turn order
-        // slot for the whole encounter
-        id: "call-companion", name: "Steel Defender: Activate", cost: { bonus: 1 }, recharge: "none",
-        automation: [{ type: "summon", statBlock: "steel-defender", count: "1", max: 1 }],
-      },
+      ...commands,
     ],
-    keepDistance: false, opener: ["call-companion", "attack"], targetPriority: "lowestHp",
+    keepDistance: false, opener: [], targetPriority: "lowestHp",
   });
+  return withFlashOfGenius({
+    ...c,
+    resources: level >= 9 ? { ...c.resources, arcane_jolt: { max: Math.max(1, p.int), recharge: "longRest" } } : c.resources,
+    ai: { ...c.ai, bonusRoutine: defenderId ? ["command-rend"] : [] },
+  }, level, p.int);
+}
+
+// ---- Artillerist ------------------------------------------------------------------------------
+// Eldritch Cannon (3rd): an action creates it (once per long rest; the "or expend a spell slot"
+// re-creation is NOT modeled), the artificer spends a bonus action to activate it each turn (see
+// minions.ts). Explosive Cannon (9th): +1d8 to its damage and Detonate. Fortified Position (15th):
+// two cannons at once; its half-cover aura is NOT modeled, and both cannons are the same type.
+// The AI-run Artillerist opens with a Force Ballista — a choice the rules leave to the player.
+export function artilleristArtificer(level: number): Combatant {
+  const p = artificerParts(level, ARTILLERIST_SPELLS);
+  const create = (variant: CannonVariant, label: string): Action => ({
+    id: `cannon-${variant}`, name: `Eldritch Cannon: ${label}`, cost: { action: 1 }, recharge: "none",
+    limitedUse: { resource: "eldritch_cannon", amount: 1 },
+    text: "Action: creates a Small eldritch cannon within 5 feet (AC 18, HP 5 x level). Activate it with a bonus action.",
+    automation: [{ type: "summon", statBlock: eldritchCannonFor(variant, level, p.int, p.pb), count: level >= 15 ? "2" : "1", max: level >= 15 ? 2 : 1 }],
+  });
+  const cannon: Combatant["actions"] = level >= 3 ? [
+    create("ballista", "Force Ballista"),
+    create("flamethrower", "Flamethrower"),
+    create("protector", "Protector"),
+    {
+      id: "activate-cannon", name: "Activate Eldritch Cannon", cost: { bonus: 1 }, recharge: "none",
+      text: "Bonus action: the cannon(s) within 60 feet activate.",
+      automation: [{ type: "commandSummon", action: "activate", rangeFt: 60 }],
+    },
+    ...(level >= 9 ? [{
+      id: "detonate-cannon", name: "Detonate Eldritch Cannon", cost: { action: 1 }, recharge: "none" as const,
+      text: "Action: destroys a cannon; each creature within 20 feet of it makes a Dexterity save or takes 3d8 force damage (half on a success).",
+      automation: [{ type: "commandSummon" as const, action: "detonate", limit: 1, rangeFt: 60 }],
+    }] : []),
+  ] : [];
+  const c = makeCaster({
+    id: "artillerist-artificer", name: `Artificer ${level}`, level, spellClass: "artificer", casterKind: "half", spellAbility: "int",
+    ac: 18, hp: p.hp, abilities: p.abilities, proficientSaves: ["con", "int"],
+    prepared: p.prepared, cantrips: p.cantrips,
+    extraActions: [lightCrossbow(p.pb, p.dex), ...cannon],
+    keepDistance: true, opener: level >= 3 ? ["cannon-ballista"] : [], targetPriority: "lowestHp",
+  });
+  return withFlashOfGenius(withArcaneFirearm({
+    ...c,
+    resources: level >= 3 ? { ...c.resources, eldritch_cannon: { max: 1, recharge: "longRest" } } : c.resources,
+    ai: { ...c.ai, bonusRoutine: level >= 3 ? ["activate-cannon"] : [] },
+  }, level), level, p.int);
+}
+
+// ---- Armorer ----------------------------------------------------------------------------------
+// Arcane Armor (3rd): the armor's special weapon uses INT for attack and damage. Two models, chosen
+// per rest, built as two templates. Extra Attack (5th). NOT modeled: Armor Modifications (9th,
+// infusion slots) and Perfected Armor (15th — Guardian's reaction pull, Infiltrator's glimmer).
+function armorerBase(level: number, model: "guardian" | "infiltrator") {
+  const p = artificerParts(level, ARMORER_SPELLS);
+  const attacks = level >= 5 ? 2 : 1;
+  const armored = level >= 3;
+  const swing = (first: boolean) =>
+    model === "guardian"
+      ? {
+          // Thunder Gauntlets: 1d8 thunder; a creature hit has disadvantage on attack rolls against
+          // targets other than you until the start of your next turn
+          type: "attack" as const, bonus: p.pb + p.int, onHit: [
+            { type: "damage" as const, amount: `1d8+${p.int}`, damageType: "thunder" as const },
+            { type: "applyEffect" as const, name: "thunder-gauntlets", durationRounds: 1, mods: { disadvantageUnlessTargetingSource: true } },
+          ],
+        }
+      : {
+          // Lightning Launcher: 1d6 lightning, plus an extra 1d6 once on each of your turns
+          type: "attack" as const, bonus: p.pb + p.int, onHit: [
+            { type: "damage" as const, amount: `1d6+${p.int}`, damageType: "lightning" as const },
+            ...(first ? [{ type: "damage" as const, amount: "1d6", damageType: "lightning" as const }] : []),
+          ],
+        };
+  const weapon: Action = armored ? {
+    id: "attack", cost: { action: 1 }, recharge: "none",
+    ...(model === "guardian"
+      ? { name: "Thunder Gauntlets", text: "Melee weapon attack with the armor's gauntlets." }
+      : { name: "Lightning Launcher", text: "Ranged weapon attack, range 90/300 ft." }),
+    automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks }, (_, i) => swing(i === 0)) }],
+  } : lightCrossbow(p.pb, p.dex);
+  const defensiveField: Combatant["actions"] = model === "guardian" && armored ? [{
+    id: "defensive-field", name: "Defensive Field", cost: { bonus: 1 }, recharge: "none",
+    limitedUse: { resource: "defensive_field", amount: 1 },
+    text: "Bonus action: temporary hit points equal to your artificer level, replacing any you have (PB uses per long rest).",
+    automation: [{ type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: String(level) }] }],
+  }] : [];
+  const c = makeCaster({
+    id: model === "guardian" ? "armorer-guardian-artificer" : "armorer-infiltrator-artificer",
+    name: `Artificer ${level}`, level, spellClass: "artificer", casterKind: "half", spellAbility: "int",
+    ac: 18, hp: p.hp, abilities: p.abilities, proficientSaves: ["con", "int"],
+    prepared: p.prepared, cantrips: p.cantrips,
+    extraActions: [weapon, ...defensiveField],
+    keepDistance: model === "infiltrator", opener: [], targetPriority: "lowestHp",
+  });
+  return withFlashOfGenius({
+    ...c,
+    // Powered Steps (Infiltrator): walking speed +5 feet
+    speeds: model === "infiltrator" && armored ? { ...c.speeds, walk: 35 } : c.speeds,
+    resources: defensiveField.length ? { ...c.resources, defensive_field: { max: p.pb, recharge: "longRest" } } : c.resources,
+    ai: { ...c.ai, bonusRoutine: defensiveField.length ? ["defensive-field"] : [] },
+  }, level, p.int);
+}
+
+export const armorerGuardianArtificer = (level: number): Combatant => armorerBase(level, "guardian");
+export const armorerInfiltratorArtificer = (level: number): Combatant => armorerBase(level, "infiltrator");
+
+// ---- Alchemist --------------------------------------------------------------------------------
+// Experimental Elixir (3rd): at a long rest the Alchemist brews 1 elixir (2 at 6th, 3 at 15th), each
+// rolled on the d6 table; at the start of a fight those are rolled with the fight's seeded dice and
+// held as `elixir_*` resources. Every party member gets "Drink Elixir" actions (added in buildParty,
+// see elixirDrinkActions) and spends their OWN action to drink, drawing from the Alchemist's stock.
+// NOT modeled: making extra elixirs with a spell slot, Swiftness/Flight/Transformation effects (the
+// flask is consumed), Restorative Reagents' free Lesser Restoration and Chemical Mastery's free
+// Greater Restoration (neither spell has combat automation in this sim's catalog).
+const ELIXIRS = [
+  ["healing", "Healing"], ["swiftness", "Swiftness"], ["resilience", "Resilience"],
+  ["boldness", "Boldness"], ["flight", "Flight"], ["transformation", "Transformation"],
+] as const;
+
+/** the "Drink Elixir" actions every party member gets when an Alchemist is present */
+export function elixirDrinkActions(level: number, int: number): Combatant["actions"] {
+  // Restorative Reagents (9th): whoever drinks also gains 2d6 + INT temporary hit points
+  const reagents = level >= 9 ? [{ type: "tempHp" as const, amount: `2d6+${Math.max(1, int)}` }] : [];
+  const effects: Record<string, import("../schema").AutomationNode[]> = {
+    healing: [{ type: "heal", amount: `2d4+${int}` }],
+    resilience: [{ type: "applyEffect", name: "elixir-resilience", durationRounds: 100, mods: { acBonus: 1 } }], // +1 AC for 10 minutes
+    boldness: [{ type: "applyEffect", name: "elixir-boldness", durationRounds: 10, mods: { attackBonusDice: "1d4", saveBonusDice: "1d4" } }], // a d4 on every attack roll and save for a minute
+    swiftness: [{ type: "note", text: "+10 ft walking speed for an hour (not modeled)" }],
+    flight: [{ type: "note", text: "10 ft flying speed for 10 minutes (not modeled)" }],
+    transformation: [{ type: "note", text: "Alter Self for 10 minutes (not modeled)" }],
+  };
+  const texts: Record<string, string> = {
+    healing: `Regain 2d4 + ${int} hit points.`,
+    resilience: "+1 bonus to AC for 10 minutes.",
+    boldness: "Add a d4 to every attack roll and saving throw for a minute.",
+    swiftness: "+10 feet walking speed for an hour (effect not modeled).",
+    flight: "10 ft flying speed for 10 minutes (effect not modeled).",
+    transformation: "Alter Self for 10 minutes (effect not modeled).",
+  };
+  return ELIXIRS.map(([id, label]) => ({
+    id: `drink-elixir-${id}`, name: `Drink Elixir: ${label}`, cost: { action: 1 }, recharge: "none" as const,
+    text: `Uses your action to drink an experimental elixir of ${label}. ${texts[id]}`,
+    automation: [{
+      type: "branch" as const, if: `party.resource('elixir_${id}') > 0`,
+      then: [
+        { type: "spendResource" as const, resource: `elixir_${id}`, from: "party" as const },
+        { type: "target" as const, who: { who: "self" as const }, effects: [...effects[id], ...reagents] },
+      ],
+    }],
+  }));
+}
+
+export function alchemistArtificer(level: number): Combatant {
+  const p = artificerParts(level, ALCHEMIST_SPELLS);
+  const flasks = level >= 15 ? 3 : level >= 6 ? 2 : 1;
+  const brewing = level >= 3;
+  // Chemical Mastery (15th): Heal without a slot or preparing it, once per long rest
+  const freeHeal: Combatant["actions"] = level >= 15 && SPELLS_BY_ID["heal"]?.build ? [{
+    id: "cast-heal-chemical-mastery", name: "Heal (Chemical Mastery)", cost: { action: 1 }, recharge: "none", isSpell: true,
+    limitedUse: { resource: "chemical_mastery_heal", amount: 1 },
+    automation: SPELLS_BY_ID["heal"].build!({ slotLevel: 6, casterLevel: level, spellMod: p.int, dc: 8 + p.pb + p.int, toHit: p.pb + p.int, pb: p.pb }),
+  }] : [];
+  const c = makeCaster({
+    id: "alchemist-artificer", name: `Artificer ${level}`, level, spellClass: "artificer", casterKind: "half", spellAbility: "int",
+    ac: 18, hp: p.hp, abilities: p.abilities, proficientSaves: ["con", "int"],
+    prepared: p.prepared, cantrips: p.cantrips,
+    extraTraits: brewing ? [{
+      id: "experimental-elixir", name: "Experimental Elixir", trigger: "encounterStart",
+      automation: Array.from({ length: flasks }, () => ({
+        type: "randomEffect" as const,
+        options: ELIXIRS.map(([id, label]) => ({
+          weight: 1,
+          then: [{ type: "spendResource" as const, resource: `elixir_${id}`, amount: -1 }],
+          note: `has an experimental elixir of ${label}`,
+        })),
+      })),
+      text: "Brewed at the last long rest; effects rolled on the d6 table.",
+    }] : [],
+    extraActions: [lightCrossbow(p.pb, p.dex), ...freeHeal],
+    keepDistance: true, opener: [], targetPriority: "lowestHp",
+  });
+  const elixirPools = brewing
+    ? Object.fromEntries(ELIXIRS.map(([id]) => [`elixir_${id}`, { max: 3, recharge: "longRest" as const, start: 0 }]))
+    : {};
+  const withKit: Combatant = {
+    ...c,
+    resources: { ...c.resources, ...elixirPools, ...(freeHeal.length ? { chemical_mastery_heal: { max: 1, recharge: "longRest" as const } } : {}) },
+    // Chemical Mastery (15th): resistance to acid and poison damage, immunity to the poisoned condition
+    resistances: level >= 15 ? [...c.resistances, "acid", "poison"] : c.resistances,
+    conditionImmunities: level >= 15 ? [...c.conditionImmunities, "poisoned"] : c.conditionImmunities,
+  };
+  return withFlashOfGenius(withAlchemicalSavant(withKit, level, p.int), level, p.int);
 }
 
 // Metamagic: sorcery points (level 2+, one per sorcerer level) spent on top
@@ -652,6 +984,10 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "hunter-ranger": hunterRanger,
   "beastmaster-ranger": beastMasterRanger,
   "battlesmith-artificer": battleSmithArtificer,
+  "artillerist-artificer": artilleristArtificer,
+  "armorer-guardian-artificer": armorerGuardianArtificer,
+  "armorer-infiltrator-artificer": armorerInfiltratorArtificer,
+  "alchemist-artificer": alchemistArtificer,
   "arcane-trickster-rogue": arcaneTricksterRogue,
   "draconic-sorcerer": draconicSorcerer,
   "wild-magic-sorcerer": wildMagicSorcerer,

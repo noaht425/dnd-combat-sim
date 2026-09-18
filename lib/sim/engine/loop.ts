@@ -6,7 +6,7 @@ import type { Combatant } from "../schema";
 import { makeRng } from "./rng";
 import { makeGenericParty } from "./party-build";
 import { takeLairAction, takeLegendaryActions, takeMonsterTurn, takePcTurn } from "./ai";
-import { runAutomation } from "./interpreter";
+import { fireEncounterStartTraits, runAutomation } from "./interpreter";
 import { chooseFocusTarget } from "./score";
 import { REVERTS_ON_SUMMONER_DEATH } from "./minions";
 import {
@@ -143,6 +143,7 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
   };
 
   say(state, `Initiative: ${order.map((id) => units.get(id)!.name).join(" > ")}`);
+  fireEncounterStartTraits(state); // e.g. an Alchemist rolling the elixirs it brewed at its last long rest
 
   while (!state.ended && state.round < state.maxRounds) {
     state.round++;

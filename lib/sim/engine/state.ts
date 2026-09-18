@@ -1,7 +1,7 @@
 // Live combat state. The immutable stat block lives on `.ref`; everything that
 // changes during a fight lives here.
 
-import type { Combatant, Condition, DamageType, EffectMods } from "../schema";
+import type { Action, Combatant, Condition, DamageType, EffectMods } from "../schema";
 import type { Rng } from "./rng";
 
 export interface ActiveEffect {
@@ -51,6 +51,9 @@ export interface CombatantState {
   onceFired: Set<string>; // trait.once ids, "undyingReturn", "bloodied"
   markedTargetId?: string;
   summonerId?: string;     // set on spawned minions -> the combatant that summoned them
+  /** last round the summoner spent a bonus action commanding this minion (Steel Defender, Eldritch
+   *  Cannon) — a commanded minion's own turn is skipped that round; an uncommanded one just Dodges */
+  commandedRound?: number;
   lastSangRound?: number;  // last round this combatant used a "song" action
   d20SwapsLeft?: number;   // d20Replacement — uses left this round
   meleeHitSinceMyTurn?: boolean; // a melee PC has connected -> a keep-distance monster will withdraw (provoking)
@@ -125,6 +128,16 @@ export interface CombatState {
    * auto-heuristic in that case.
    */
   askReaction?: (p: ReactionAsk) => boolean;
+  /** Battle-mode geometry seam: real feet between two units on the grid. Undefined in the
+   *  Monte-Carlo engine, which has only the abstract "melee"/"ranged" zone. */
+  distanceFt?: (a: CombatantState, b: CombatantState) => number;
+  /** Battle-mode seam: put a freshly summoned minion on the grid next to its summoner. Undefined in
+   *  the Monte-Carlo engine (no positions). */
+  placeSummon?: (summoner: CombatantState, minion: CombatantState) => void;
+  /** Battle-mode seam: a summoner's bonus-action command to one of its minions — the minion
+   *  steps toward its target on the grid, then takes `action` with real geometry. Undefined in
+   *  the Monte-Carlo engine, where the action just runs against the abstract target pool. */
+  commandMinion?: (minion: CombatantState, action: Action) => void;
   /** what-if knobs for this run */
   tuning?: CombatTuning;
   /** round the first party member dropped to 0, and who */
@@ -144,7 +157,7 @@ export interface CombatState {
 /** the question `state.askReaction` is handed at a reaction decision point */
 export interface ReactionAsk {
   unitId: string;
-  kind: "shield" | "counterspell" | "riposte" | "uncannyDodge" | "absorbElements" | "retaliate" | "cuttingWords";
+  kind: "shield" | "counterspell" | "riposte" | "uncannyDodge" | "absorbElements" | "retaliate" | "cuttingWords" | "deflectAttack" | "flashOfGenius";
   /** one human sentence describing the trigger and what the reaction would do */
   prompt: string;
   /** button label for spending the reaction / for declining it */

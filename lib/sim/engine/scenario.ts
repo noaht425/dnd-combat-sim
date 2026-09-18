@@ -7,6 +7,8 @@ import { MINIONS } from "./minions";
 import { applyLoadout, makeTemplate, type Loadout } from "./templates";
 import { applyRace, applyFeats, applyItems, applyWeapon } from "./pc-extras";
 import { applyPickedSpells } from "../spells/pick";
+import { elixirDrinkActions } from "../spells/casterTemplates";
+import { abilityMod } from "../math";
 import { runCombat, summarise, type CombatResult, type RunOptions } from "./loop";
 import { monteCarlo, type MonteCarloResult } from "./montecarlo";
 import { sweep, type SweepDimension, type SweepResult } from "./sweep";
@@ -52,6 +54,13 @@ export function buildParty(specs: PartyMemberSpec[]): Combatant[] {
     for (const p of party) {
       if (!isPaladin(p)) p.saveBonusAll = Math.max(p.saveBonusAll, auraBonus);
     }
+  }
+  // Experimental Elixir (Alchemist): every party member can spend their own action to drink one of the
+  // Alchemist's flasks — the stock lives on the Alchemist, the drinking actions on everyone
+  const alchemist = party.find((p) => p.templateId === "alchemist-artificer" && (p.level ?? 1) >= 3);
+  if (alchemist) {
+    const drinks = elixirDrinkActions(alchemist.level ?? 3, abilityMod(alchemist.abilities.int));
+    for (let i = 0; i < party.length; i++) party[i] = { ...party[i], actions: [...party[i].actions, ...drinks] };
   }
   return party;
 }

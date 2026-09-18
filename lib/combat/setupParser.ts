@@ -27,6 +27,8 @@ function mentionedDifferentSubclass(classText: string, match: ClassAlias): strin
   const typed = normalize(classText);
   const bareClass = normalize(match.className);
   if (!typed || typed === bareClass) return undefined;
+  // the player typed one of this template's own registered names — nothing was substituted
+  if (match.aliases.some((a) => normalize(a) === typed)) return undefined;
   const extra = typed.replace(new RegExp(`\\b${bareClass}\\b`), "").replace(/\s+/g, " ").trim();
   if (!extra) return undefined;
   if (similarity(extra, normalize(match.subclassName)) >= 0.9) return undefined;

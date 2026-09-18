@@ -5,6 +5,7 @@
 
 import type { Action, AutomationNode } from "../schema";
 import { chooseBest } from "../engine/ai";
+import { runAction } from "../engine/interpreter";
 import { provokeOpportunityAttacks } from "../engine/reactions";
 import { isIncapacitated, livingEnemies, say, type CombatantState } from "../engine/state";
 import {
@@ -116,7 +117,8 @@ function planTemplate(
   };
 
   let best: { hitIds: string[]; cells: string[]; s: number } = { hitIds: [], cells: [], s: -Infinity };
-  const centres = foes.map((f) => posOf(state, f.id));
+  // an emanation (a cannon's detonation) is centred on the caster itself, not aimed at a foe
+  const centres = shape === "emanation" ? [me] : foes.map((f) => posOf(state, f.id));
   for (const c of centres) {
     let cells: Set<string>;
     if (shape === "cone") cells = coneCells(state.grid, me.x, me.y, c.x, c.y, size);
@@ -140,6 +142,11 @@ function boxCellsIn(b: Box, cells: Set<string>): boolean {
 
 export function planTurn(state: BattleState, u: CombatantState): BattleIntentPlan {
   const action = chooseBest(state, u) ?? u.ref.actions.find((a) => a.id === "attack");
+  return planForAction(state, u, action);
+}
+
+/** the spatial plan (target, AoE template, melee-or-not) for taking a specific `action` */
+export function planForAction(state: BattleState, u: CombatantState, action: Action | undefined): BattleIntentPlan {
   const target = pickTarget(state, u);
   const plan: BattleIntentPlan = { action, targetId: target?.id, needsMelee: false };
   if (!action) return plan;
@@ -246,6 +253,42 @@ function minEnemyGap(state: BattleState, u: CombatantState, box: Box): number {
     g = Math.min(g, feetBetweenBoxes(box, boxOfUnit(state, e)));
   }
   return g;
+}
+
+// ------------------------------------------------------------- summons & commands
+
+/** put a freshly summoned minion on the free squares nearest its summoner (a summon has no
+ *  position of its own, and `posOf` would otherwise drop it in the top-left corner) */
+export function placeSummon(state: BattleState, summoner: CombatantState, minion: CombatantState): void {
+  const fp = footprint(minion.ref.size);
+  const ctx: MoveContext = { grid: state.grid, size: minion.ref.size, blocked: occupiedByOthers(state, minion.id), flying: canFly(minion) };
+  const home = boxOfUnit(state, summoner);
+  let best: { x: number; y: number; gap: number } | undefined;
+  for (let y = 0; y < state.grid.height; y++) {
+    for (let x = 0; x < state.grid.width; x++) {
+      if (!canOccupy(ctx, x, y, fp)) continue;
+      const gap = feetBetweenBoxes(boxOf(x, y, fp), home);
+      if (!best || gap < best.gap) best = { x, y, gap };
+    }
+  }
+  if (!best) return;
+  state.pos.set(minion.id, { x: best.x, y: best.y });
+  state.glyphs.set(minion.id, (state.glyphs.get(summoner.id) ?? "?").toLowerCase());
+  deriveZones(state);
+}
+
+/** a summoner's bonus-action command: the minion steps up if the action is a melee one, then takes
+ *  `action` against real geometry (cones/emanations from where the minion actually stands) */
+export function commandMinionAction(state: BattleState, m: CombatantState, action: Action): void {
+  if (!m.alive || isIncapacitated(m)) return;
+  const plan = planForAction(state, m, action);
+  if (plan.needsMelee) {
+    reposition(state, m, plan);
+    if (!m.alive || isIncapacitated(m)) return;
+  }
+  deriveZones(state);
+  const geo = { geoTargets: geoTargetsFor(state, m, plan), attackMods: attackModsFor(state, m, plan.needsMelee) };
+  runAction(state, m, action, { asReaction: true, verb: "(commanded) ", geo });
 }
 
 // ----------------------------------------------------- interpreter geometry seams

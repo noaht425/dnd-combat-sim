@@ -40,7 +40,7 @@ function fmtWho(who: TargetSpec): string | undefined {
     case "eachEnemy":
       return "every enemy";
     case "eachAlly":
-      return "every ally";
+      return who.withinFt ? `every ally within ${who.withinFt} ft` : "every ally";
     case "lowestHpAlly":
       return "the most-hurt ally";
     case "chosenEnemies":
@@ -106,6 +106,8 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return "marks the target";
     case "summon":
       return `summons ${n.count} ${n.statBlock}`;
+    case "commandSummon":
+      return "commands its companion to act";
     case "randomEffect":
       return "unpredictable — a random effect";
     case "note":

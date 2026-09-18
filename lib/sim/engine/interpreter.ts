@@ -3,7 +3,7 @@
 import type { Action, AutomationNode, Condition, DamageType } from "../schema";
 
 import { applyDamage, critRangeFor, rollAttack, rollSave, type AttackResult } from "./resolve";
-import { MINIONS } from "./minions";
+import { MINIONS, PC_SUMMONS } from "./minions";
 import { isSpell, mayCounterspell, provokeOpportunityAttacks, reactToAttackResolved } from "./reactions";
 import {
   CombatantState,
@@ -64,6 +64,8 @@ interface RunCtx {
 export interface RunActionOpts {
   asLegendary?: boolean;
   asReaction?: boolean;
+  /** overrides the "(reaction) " / "(legendary) " tag in the play-by-play line */
+  verb?: string;
   geo?: Pick<RunCtx, "geoTargets" | "attackMods">;
   /** a death-burst trait fires on the creature's own dying breath — `isIncapacitated`
    *  (which treats "!alive" as incapacitated) would otherwise always block it. */
@@ -176,6 +178,24 @@ function fireOnHitTraits(state: CombatState, hitTarget: CombatantState, attacker
   }
 }
 
+/** the first living party member holding at least one of `resource` (see `spendResource.from`) */
+function partyResourceOwner(state: CombatState, viewer: CombatantState, resource: string): CombatantState | undefined {
+  return livingAllies(state, viewer).find((u) => (u.resources.get(resource) ?? 0) > 0);
+}
+
+/** Fires every `encounterStart` trait once, right after initiative is rolled (an Alchemist
+ *  rolling the effects of the elixirs it brewed at its last long rest). Uses the fight's own
+ *  seeded dice, so replays stay deterministic. */
+export function fireEncounterStartTraits(state: CombatState): void {
+  for (const u of [...state.units.values()]) {
+    for (const trait of u.ref.traits) {
+      if (trait.trigger !== "encounterStart" || !trait.automation.length) continue;
+      // straight to the automation (no "uses X" summary line) — the nodes narrate themselves
+      runAutomation(trait.automation, { state, source: u, scope: [], last: {}, depth: 0 });
+    }
+  }
+}
+
 /** very small expression evaluator for branch.if — best-effort, defaults to true on anything unknown */
 function evalExpr(expr: string, ctx: RunCtx): boolean {
   const s = ctx.source;
@@ -191,6 +211,9 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
       const n = Number(RegExp.$3);
       return RegExp.$2 === ">=" ? cur >= n : cur > n;
     }],
+    // a resource held by whichever living party member owns it (an Alchemist's elixir stock,
+    // read by the ally who is about to drink one)
+    [/party\.resource\('([^']+)'\)\s*>\s*0/i, () => partyResourceOwner(st, s, RegExp.$1) !== undefined],
     // A caster can walk in mid-song and sustain a charm-song as a bonus action —
     // so it counts as "singing" from round 1 until it drops.
     [/self\.(is_?singing|singing)/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
@@ -219,7 +242,11 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
   const who = node.who;
   switch (who.who) {
     case "self": return [source];
-    case "eachAlly": return allies;
+    case "eachAlly": {
+      const r = who.withinFt;
+      if (!r || !state.distanceFt) return allies;
+      return allies.filter((a) => a.id === source.id || state.distanceFt!(source, a) <= r + 0.001);
+    }
     case "lowestHpAlly": {
       const hurt = allies.slice().sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
       return hurt ? [hurt] : [source];
@@ -456,8 +483,35 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       }
 
       case "spendResource": {
-        const cur = source.resources.get(node.resource) ?? 0;
-        source.resources.set(node.resource, Math.max(0, cur - (node.amount ?? 1)));
+        // gaining (negative amount) always lands on the caster; spending from the party pool draws
+        // from whichever living ally holds the resource
+        const gaining = (node.amount ?? 1) < 0;
+        const holder = node.from === "party" && !gaining ? partyResourceOwner(state, source, node.resource) : source;
+        if (!holder) break;
+        const cur = holder.resources.get(node.resource) ?? 0;
+        holder.resources.set(node.resource, Math.max(0, cur - (node.amount ?? 1)));
+        break;
+      }
+
+      case "commandSummon": {
+        let commanded = 0;
+        for (const m of [...state.units.values()]) {
+          if (node.limit !== undefined && commanded >= node.limit) break;
+          if (!m.alive || m.summonerId !== source.id) continue;
+          const act = findAction(m.ref.actions, node.action);
+          if (!act) continue;
+          // "if you are within 60 feet of it" — real feet in battle mode; no distances in Monte-Carlo
+          if (node.rangeFt !== undefined && state.distanceFt && state.distanceFt(source, m) > node.rangeFt + 0.001) continue;
+          if (act.limitedUse) {
+            const left = m.resources.get(act.limitedUse.resource) ?? 0;
+            if (left < act.limitedUse.amount) continue;
+            m.resources.set(act.limitedUse.resource, left - act.limitedUse.amount);
+          }
+          m.commandedRound = state.round;
+          commanded++;
+          if (state.commandMinion) state.commandMinion(m, act);
+          else runAction(state, m, act, { asReaction: true, verb: "(commanded) " });
+        }
         break;
       }
 
@@ -476,7 +530,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       }
 
       case "summon": {
-        const ref = state.summonRegistry?.[node.statBlock] ?? MINIONS[node.statBlock];
+        const ref = state.summonRegistry?.[node.statBlock] ?? MINIONS[node.statBlock] ?? PC_SUMMONS[node.statBlock];
         if (!ref) { say(state, `${source.name} would summon ${node.statBlock} (no stat block)`, source.id); break; }
         const rolled = Math.max(0, Math.round(rollDamage(state, node.count)));
         const existing = [...state.units.values()].filter(
@@ -491,6 +545,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           ms.summonerId = source.id;
           state.units.set(ms.id, ms);
           state.order.push(ms.id); // acts at the tail of the round order
+          state.placeSummon?.(source, ms); // battle mode: put it on the grid next to the summoner
         }
         if (n > 0) say(state, `${source.name} raises ${n}× ${ref.name}`, source.id);
         break;
@@ -554,6 +609,9 @@ export function runAction(
     return;
   }
 
+  // a pure "command your companion" action: the companion's own line narrates what it did, so this
+  // one doesn't repeat the same HP changes
+  const onlyCommands = action.automation.length > 0 && action.automation.every((n) => n.type === "commandSummon");
   const before = hpSnapshot(state);
   const condsBefore = new Map([...state.units.values()].map((u) => [u.id, new Set(u.conditions.keys())]));
   const fxBefore = new Map([...state.units.values()].map((u) => [u.id, new Set(u.effects.map((e) => e.name))]));
@@ -566,7 +624,7 @@ export function runAction(
   }
 
   const parts: string[] = [];
-  for (const u of state.units.values()) {
+  for (const u of onlyCommands ? [] : state.units.values()) {
     const delta = (before.get(u.id) ?? 0) - (u.hp + u.tempHp);
     // an ally *losing* HP during my action is always reaction / aura
     // collateral (a triggered breath, a damaging aura) — that reaction logs
@@ -588,10 +646,12 @@ export function runAction(
     if (newFx.length) bits.push(newFx.map(humanize).join(","));
     if (bits.length) parts.push(`${u.name} ${bits.join(" ")}`);
   }
-  const verb = opts.asLegendary ? "(legendary) " : opts.asReaction ? "(reaction) " : "";
+  const verb = opts.verb ?? (opts.asLegendary ? "(legendary) " : opts.asReaction ? "(reaction) " : "");
   const tail = parts.length
     ? " -> " + parts.join("; ")
-    : attackTally.unreachable && attackTally.rolled === 0
+    : onlyCommands
+      ? ""
+      : attackTally.unreachable && attackTally.rolled === 0
       ? " (can't reach)"
       : attackTally.rolled > 0
         ? attackTally.rolled === 1 ? " (misses)" : " (all miss)"
