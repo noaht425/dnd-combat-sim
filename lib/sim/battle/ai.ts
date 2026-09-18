@@ -298,6 +298,7 @@ export function geoTargetsFor(state: BattleState, u: CombatantState, plan: Battl
   return (node: Extract<AutomationNode, { type: "target" }>, source: CombatantState): CombatantState[] | null => {
     const who = node.who.who;
     if (who === "self" || who === "eachAlly" || who === "lowestHpAlly" || who === "chosenEnemies") return null;
+    if (who === "eachEnemy" && node.who.withinFt) return null; // resolved by real distance in selectTargets
     const foes = livingEnemies(state, source);
     if (!foes.length) return [];
     const me = boxOfUnit(state, source);

@@ -252,6 +252,9 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
       return hurt ? [hurt] : [source];
     }
     case "eachEnemy": {
+      if (who.withinFt && state.distanceFt) {
+        return enemies.filter((e) => state.distanceFt!(source, e) <= who.withinFt! + 0.001);
+      }
       // The party ganging a solo hits it regardless of position. A monster's
       // burst / aura / presence realistically only catches the front line — a
       // real party spreads out against a solo caster. Same abstraction as `area`.
@@ -360,7 +363,9 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const t = ctx.scope[0];
         if (!t) break;
         const dc = typeof node.dc === "number" ? node.dc : 18;
-        const sr = rollSave(state, t, node.ability, dc, { magical: true, stakes: saveStakes(node.onFail) });
+        // the conditions this save is against (Psychic Defenses: advantage vs charmed/frightened)
+        const conditions = node.onFail.flatMap((n) => (n.type === "applyCondition" ? [n.condition] : []));
+        const sr = rollSave(state, t, node.ability, dc, { magical: true, stakes: saveStakes(node.onFail), conditions });
         if (ctx.saveLog) ctx.saveLog.set(t.id, sr.passed);
         const next: RunCtx = { ...ctx, last: { ...ctx.last, savePassed: sr.passed }, depth: ctx.depth + 1 };
         if (!sr.passed) {
@@ -399,6 +404,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           sourceId: source.id,
           viaAttack: ctx.inAttack,
           viaSpell: ctx.spell,
+          crit: ctx.crit,
         });
         source.damageDealt += dealt;
         if (wasUp && (!t.alive || t.downed)) {
@@ -489,7 +495,28 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const holder = node.from === "party" && !gaining ? partyResourceOwner(state, source, node.resource) : source;
         if (!holder) break;
         const cur = holder.resources.get(node.resource) ?? 0;
-        holder.resources.set(node.resource, Math.max(0, cur - (node.amount ?? 1)));
+        let next = Math.max(0, cur - (node.amount ?? 1));
+        // gaining never overfills the pool
+        const cap = holder.ref.resources[node.resource]?.max;
+        if (gaining && typeof cap === "number") next = Math.min(cap, next);
+        holder.resources.set(node.resource, next);
+        break;
+      }
+
+      case "ward": {
+        const t = ctx.scope[0] ?? source;
+        for (const u of state.units.values()) if (u.ward?.sourceId === source.id) u.ward = undefined; // "until you use this feature again"
+        t.ward = { dice: node.dice, sourceId: source.id };
+        break;
+      }
+
+      case "restoreSlot": {
+        for (let lvl = 1; lvl <= 9; lvl++) {
+          const cap = source.ref.resources[`slot${lvl}`]?.max;
+          if (typeof cap !== "number" || cap <= 0) continue;
+          const cur = source.resources.get(`slot${lvl}`) ?? 0;
+          if (cur < cap) { source.resources.set(`slot${lvl}`, cur + 1); break; }
+        }
         break;
       }
 
@@ -543,6 +570,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           const ms = initCombatant(ref, source.side, suffix);
           ms.name = `${ref.name} ${existing + i + 1}`;
           ms.summonerId = source.id;
+          if (node.tempHp) ms.tempHp = Math.max(0, Math.round(rollDamage(state, node.tempHp)));
           state.units.set(ms.id, ms);
           state.order.push(ms.id); // acts at the tail of the round order
           state.placeSummon?.(source, ms); // battle mode: put it on the grid next to the summoner

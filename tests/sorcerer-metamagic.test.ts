@@ -36,9 +36,22 @@ describe("Sorcerer Metamagic", () => {
     expect(names).toContain("Fire Bolt (Quickened)");
   });
 
-  it("sorcery points resource is tracked (level 2+)", () => {
+  it("Font of Magic gives sorcery points equal to your level from 2nd; Metamagic (Twinned/Quickened) starts at 3rd", () => {
     expect(makeTemplate("draconic-sorcerer", 5).resources.sorcery_points).toEqual({ max: 5, recharge: "longRest" });
-    expect(makeTemplate("draconic-sorcerer", 1).resources.sorcery_points).toEqual({ max: 0, recharge: "longRest" });
+    expect(makeTemplate("draconic-sorcerer", 1).resources.sorcery_points).toBeUndefined();
+    expect(makeTemplate("draconic-sorcerer", 2).resources.sorcery_points).toEqual({ max: 2, recharge: "longRest" });
+    const names = (lvl: number) => makeTemplate("draconic-sorcerer", lvl).actions.map((a) => a.name);
+    expect(names(2).some((n) => /Twinned|Quickened/.test(n))).toBe(false);
+    expect(names(3).some((n) => /Twinned/.test(n))).toBe(true);
+  });
+
+  it("Twinned Spell is only offered for spells that target one creature and can't target more (not Magic Missile / Scorching Ray)", () => {
+    const names = makeTemplate("wild-magic-sorcerer", 9).actions.map((a) => a.name);
+    expect(names.some((n) => /^Magic Missile.*\(Twinned\)/.test(n))).toBe(false);
+    expect(names.some((n) => /^Scorching Ray.*\(Twinned\)/.test(n))).toBe(false);
+    expect(names).toContain("Fire Bolt (Twinned)");
+    // ...while Magic Missile and Scorching Ray themselves are still known and castable
+    expect(names).toContain("Magic Missile");
   });
 
   it("Twinned Chill Touch hits two separate targets in one cast", () => {

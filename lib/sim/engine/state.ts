@@ -54,6 +54,9 @@ export interface CombatantState {
   /** last round the summoner spent a bonus action commanding this minion (Steel Defender, Eldritch
    *  Cannon) — a commanded minion's own turn is skipped that round; an uncommanded one just Dodges */
   commandedRound?: number;
+  /** Bastion of Law — a pool of d8s that reduce damage the warded creature takes, until a long rest
+   *  or until the artificer creates a new ward */
+  ward?: { dice: number; sourceId: string };
   lastSangRound?: number;  // last round this combatant used a "song" action
   d20SwapsLeft?: number;   // d20Replacement — uses left this round
   meleeHitSinceMyTurn?: boolean; // a melee PC has connected -> a keep-distance monster will withdraw (provoking)

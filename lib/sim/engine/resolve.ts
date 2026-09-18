@@ -2,7 +2,7 @@
 // saving throw, and applying damage. Each folds in conditions, active-effect
 // mods, Magic Resistance, and the Legendary Resistance budget.
 
-import type { Ability, AdvMode, DamageType } from "../schema";
+import type { Ability, AdvMode, Condition, DamageType } from "../schema";
 import { abilityMod } from "../math";
 import {
   CombatantState,
@@ -17,6 +17,7 @@ import {
   reactToDrop,
   reactToElementalDamage,
   deflectAttack,
+  restoreBalance,
   reactToFailedSave,
   reactToIncomingAttack,
   reduceIncomingDamage,
@@ -172,6 +173,8 @@ function rollAttackImpl(
 
   // a bodyguard companion (Steel Defender) may impose disadvantage on this roll before it's made
   if (deflectAttack(state, attacker, target, adv)) adv = combineAdv(adv, "dis");
+  // Restore Balance: a Clockwork Soul sorcerer cancels advantage on an enemy's roll / disadvantage on an ally's
+  if (adv !== "flat" && restoreBalance(state, attacker, adv)) adv = "flat";
 
   const { used } = state.rng.d20mode(adv);
   let ac = effectiveAc(target) + extraTargetAc;
@@ -241,7 +244,7 @@ export function rollSave(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[] } = {},
 ): SaveResult {
   const result = rollSaveImpl(state, target, ability, dc, opts);
   (state.saveLog ??= []).push({ round: state.round, unitId: target.id, ability, passed: result.passed });
@@ -253,7 +256,7 @@ function rollSaveImpl(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[] } = {},
 ): SaveResult {
   const magical = opts.magical ?? true;
 
@@ -277,6 +280,12 @@ function rollSaveImpl(
   }
   // restrained imposes disadvantage on Dexterity saving throws
   if (ability === "dex" && hasCondition(target, "restrained")) adv = combineAdv(adv, "dis");
+  // advantage on saves against effects that would impose certain conditions (Psychic Defenses)
+  const advVs = target.ref.specialRules.find((r) => r.rule === "advantageOnSavesAgainst");
+  if (advVs && advVs.rule === "advantageOnSavesAgainst" && opts.conditions?.some((c) => advVs.conditions.includes(c))) {
+    adv = combineAdv(adv, "adv");
+  }
+  if (adv !== "flat" && restoreBalance(state, target, adv)) adv = "flat";
 
   const { used } = state.rng.d20mode(adv);
   let mod = saveModifierOf(target, ability);
@@ -354,6 +363,8 @@ export function applyDamage(
     sourceId?: string;
     viaAttack?: boolean;
     viaSpell?: boolean;
+    /** the damage came from a critical hit (Strength of the Grave can't save against one) */
+    crit?: boolean;
   } = {},
 ): number {
   if (rawAmount <= 0 || !target.alive) return 0;
@@ -424,6 +435,21 @@ export function applyDamage(
   dmg = Math.max(0, Math.floor(dmg));
   if (dmg === 0) return 0;
 
+  // Bastion of Law — the warded creature expends d8s from its ward, rolling each and reducing the
+  // damage by the total (used one at a time until the damage is gone or the ward runs dry)
+  if (target.ward && target.ward.dice > 0) {
+    let soaked = 0;
+    let spent = 0;
+    while (target.ward.dice > 0 && dmg - soaked > 0) {
+      soaked += state.rng.dice(1, 8);
+      target.ward.dice--;
+      spent++;
+    }
+    dmg = Math.max(0, dmg - soaked);
+    say(state, `${target.name}'s ward absorbs ${soaked} (${spent} d8${spent === 1 ? "" : "s"})`, target.id);
+    if (dmg === 0) return 0;
+  }
+
   // temp HP soaks first
   if (target.tempHp > 0) {
     const soak = Math.min(target.tempHp, dmg);
@@ -467,6 +493,22 @@ export function applyDamage(
     const dc = Math.max(10, Math.floor(dmg / 2));
     const s = rollSave(state, target, "con", dc, { magical: false, stakes: "damage", allowLegendaryResistance: false });
     if (!s.passed) breakConcentration(state, target, "damage");
+  }
+
+  // Strength of the Grave (Shadow Magic) — a Charisma save (DC 5 + the damage taken) to drop to 1 HP
+  // instead of 0; not against radiant damage or a critical hit; only a success spends the use
+  if (target.hp <= 0) {
+    const sd = target.ref.specialRules.find((r) => r.rule === "surviveDrop");
+    if (sd && sd.rule === "surviveDrop" && (target.resources.get(sd.resource) ?? 0) > 0 &&
+        !sd.excludeTypes.includes(type) && !(sd.excludeCrit && opts.crit)) {
+      const s = rollSave(state, target, sd.ability, sd.baseDc + dmg, { magical: false, allowLegendaryResistance: false });
+      if (s.passed) {
+        target.resources.set(sd.resource, (target.resources.get(sd.resource) ?? 0) - 1);
+        target.hp = 1;
+        say(state, `${target.name} clings to life (Strength of the Grave, 1 HP)`, target.id);
+        return dmg;
+      }
+    }
   }
 
   if (target.hp <= 0) {

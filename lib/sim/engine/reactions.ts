@@ -48,6 +48,7 @@ type RKind =
   | "halveDamage"    // Uncanny Dodge — halve one attack's damage
   | "retaliateOnHit" // riposte — hit back when hit
   | "retaliateOnMiss"// riposte — hit back when a melee attack misses
+  | "retaliateOnMeleeHit" // Storm's Fury — lightning back at whoever hit you with a MELEE attack
   | "counterspell"   // negate an enemy spell
   | "absorbElements" // Absorb Elements — resist the triggering element until your next turn
   | "onBloodied"     // recharge + re-use a breath the first time it is bloodied
@@ -68,6 +69,7 @@ function classify(r: Action): RKind {
   if (id.includes("absorb-elements") || id.includes("absorbelements") || tr.includes("tookelementaldamage")) return "absorbElements";
   if (id.includes("hellish-rebuke") || id.includes("hellishrebuke")) return "onDamaged";
   if (id.includes("riposte")) return tr.includes("missed") ? "retaliateOnMiss" : "retaliateOnHit";
+  if (id.includes("storms-fury")) return "retaliateOnMeleeHit";
   if (id.includes("deflect-attack")) return "deflectAttack";
   if (id.includes("cutting-words") || id.includes("cuttingwords")) return "protectAllyAttackRoll";
   if (tr.includes("belowhalf") || tr.includes("reducedtohalf")) return "onBloodied";
@@ -154,14 +156,29 @@ export function deflectAttack(
 // ------------------------------------------------------- a saving throw failed
 
 /**
- * Flash of Genius (Artificer, 7th level): "When you or another creature you can see within 30 feet
- * of you makes an ability check or a saving throw, you can use your reaction to add your
- * Intelligence modifier to the roll." Only spent when it actually turns a failed save into a
- * success. Saving throws only — the sim rolls no ability checks. Range is real feet in battle mode;
- * the Monte-Carlo engine has no distances, so anyone on the side counts as within range.
+ * Something that adds to a saving throw the moment it fails, if that is enough to turn it around:
+ *   - Favored by the Gods (Divine Soul) / Dark One's Own Luck (Fiend): a die added to your OWN save;
+ *     no reaction; the use is spent only if it works.
+ *   - Flash of Genius (Artificer, 7th level): "When you or another creature you can see within 30
+ *     feet of you makes an ability check or a saving throw, you can use your reaction to add your
+ *     Intelligence modifier to the roll."
+ * Saving throws only — the sim rolls no ability checks. Range is real feet in battle mode; the
+ * Monte-Carlo engine has no distances, so anyone on the side counts as within range.
  */
 export function reactToFailedSave(state: CombatState, target: CombatantState, rollTotal: number, dc: number): boolean {
   if (state.inReaction) return false;
+
+  const boost = target.ref.specialRules.find((r) => r.rule === "boostFailedSave");
+  if (boost && boost.rule === "boostFailedSave" && (target.resources.get(boost.resource) ?? 0) > 0) {
+    const m = boost.bonusDice.match(/(\d+)d(\d+)/);
+    const bonus = m ? state.rng.dice(Number(m[1]), Number(m[2])) : 0;
+    if (rollTotal + bonus >= dc) {
+      target.resources.set(boost.resource, (target.resources.get(boost.resource) ?? 0) - 1);
+      say(state, `${target.name} turns the save around (+${bonus})`, target.id);
+      return true;
+    }
+  }
+
   for (const a of livingAllies(state, target)) {
     const rule = a.ref.specialRules.find((r) => r.rule === "flashOfGenius");
     if (!rule || rule.rule !== "flashOfGenius") continue;
@@ -185,6 +202,29 @@ export function reactToFailedSave(state: CombatState, target: CombatantState, ro
   return false;
 }
 
+/**
+ * Restore Balance (Clockwork Soul, 1st level): "When a creature you can see within 60 feet of you is
+ * about to roll a d20 with advantage or disadvantage, you can use your reaction to prevent the roll
+ * from being affected by advantage and disadvantage." Spent to deny an enemy's advantage or an ally's
+ * disadvantage. Returns true if the roll should be made flat.
+ */
+export function restoreBalance(state: CombatState, roller: CombatantState, adv: "adv" | "dis" | "flat"): boolean {
+  if (state.inReaction || adv === "flat") return false;
+  for (const u of state.units.values()) {
+    const rule = u.ref.specialRules.find((r) => r.rule === "restoreBalance");
+    if (!rule || rule.rule !== "restoreBalance") continue;
+    if (!u.alive || u.downed || u.reactionUsed || !canTakeReactions(u) || (u.resources.get(rule.resource) ?? 0) <= 0) continue;
+    // worth it only when it helps the reactor's side: deny a foe advantage, or an ally disadvantage
+    const helps = (roller.side !== u.side && adv === "adv") || (roller.side === u.side && adv === "dis");
+    if (!helps) continue;
+    if (u.id !== roller.id && state.distanceFt && state.distanceFt(u, roller) > rule.rangeFt + 0.001) continue;
+    u.reactionUsed = true;
+    u.resources.set(rule.resource, (u.resources.get(rule.resource) ?? 0) - 1);
+    say(state, `${u.name} uses Restore Balance on ${roller.name}'s roll`, u.id);
+    return true;
+  }
+  return false;
+}
 // ------------------------------------------------ attack about to be finalised
 
 /**
@@ -327,7 +367,9 @@ export function reactToAttackResolved(
     if (!ready(state, t, r)) continue;
     const k = classify(r);
     const wants =
-      (k === "retaliateOnHit" && p.hit) || (k === "retaliateOnMiss" && !p.hit && p.melee);
+      (k === "retaliateOnHit" && p.hit) ||
+      (k === "retaliateOnMiss" && !p.hit && p.melee) ||
+      (k === "retaliateOnMeleeHit" && p.hit && p.melee);
     if (!wants) continue;
     const ok = decideReaction(
       state,

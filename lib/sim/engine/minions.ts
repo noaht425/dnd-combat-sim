@@ -8,6 +8,7 @@
 
 import type { Action, Combatant } from "../schema";
 import { parseCombatant } from "../schema";
+import { FIXTURES_BY_ID } from "../fixtures";
 
 const AI = {
   targetPriority: "squishiest" as const,
@@ -371,6 +372,18 @@ export function steelDefenderFor(level: number, int: number, pb: number): string
         : [{ type: "note", text: "imposes disadvantage on the attack roll (engine hook)" }],
     }],
   });
+  return id;
+}
+
+/** Shadow Magic's Hound of Ill Omen: "uses the dire wolf's statistics" but Medium instead of Large (and
+ *  a monstrosity, not a beast — no mechanical effect here). The temporary hit points come from the
+ *  summon node. Its forced target and the save-disadvantage aura are not simulated. */
+export function houndOfIllOmenFor(level: number): string {
+  const id = `hound-of-ill-omen-L${level}`;
+  if (PC_SUMMONS[id]) return id;
+  const wolf = FIXTURES_BY_ID["dire-wolf"];
+  if (!wolf) throw new Error("houndOfIllOmenFor needs the SRD dire wolf fixture");
+  PC_SUMMONS[id] = parseCombatant({ ...wolf, id, name: "Hound of Ill Omen", size: "medium" });
   return id;
 }
 

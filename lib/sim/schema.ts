@@ -70,7 +70,9 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   z.object({ who: z.literal("self") }),
   z.object({ who: z.literal("aiChoice") }),         // let this combatant's ai.targetPriority pick
   z.object({ who: z.literal("marked") }),           // the creature this combatant has sworn vengeance on / chosen
-  z.object({ who: z.literal("eachEnemy") }),
+  // `withinFt` narrows to enemies within that many feet of the caster (battle mode's real grid only —
+  // the Monte-Carlo engine has no distances, so there it keeps its abstract "who's caught" pick)
+  z.object({ who: z.literal("eachEnemy"), withinFt: z.number().positive().optional() }),
   // `withinFt` narrows to allies within that many feet of the caster (battle mode's real grid
   // only — the Monte-Carlo engine has no distances, so there it still means the whole side)
   z.object({ who: z.literal("eachAlly"), withinFt: z.number().positive().optional() }),
@@ -147,10 +149,15 @@ export type AutomationNode =
   | { type: "spendResource"; resource: string; amount?: number; from?: "party" }
   | { type: "rechargeRoll"; resource: string }
   | { type: "useAction"; action: string; times?: number }
-  | { type: "summon"; statBlock: string; count: string; max?: number; note?: string }
+  | { type: "summon"; statBlock: string; count: string; max?: number; note?: string; tempHp?: string }
+  /** put a damage-absorbing ward on the target: `dice` d8s it can expend, one at a time, to reduce damage
+   *  it takes (Clockwork Soul's Bastion of Law); replaces any ward this caster gave someone else */
+  | { type: "ward"; dice: number }
   /** the summoner spends a bonus action to make each of its living summons that has an action
    *  with this id take it now (Steel Defender's Rend/Repair, an Eldritch Cannon's activation) */
   | { type: "commandSummon"; action: string; limit?: number; rangeFt?: number }
+  /** regain the lowest-level expended spell slot (Wild Magic Surge) */
+  | { type: "restoreSlot" }
   /** weighted random pick, one branch fires (Wild Magic Surge and similar
    *  chaotic-magic tables) — weights don't need to sum to anything in
    *  particular, they're relative. A no-op option (empty `then`, a big
@@ -223,6 +230,7 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       else: z.array(automationNodeSchema).optional(),
     }),
     z.object({ type: z.literal("spendResource"), resource: z.string(), amount: z.number().int().optional(), from: z.literal("party").optional() }),
+    z.object({ type: z.literal("restoreSlot") }),
     z.object({ type: z.literal("commandSummon"), action: z.string(), limit: z.number().int().positive().optional(), rangeFt: z.number().positive().optional() }),
     z.object({ type: z.literal("rechargeRoll"), resource: z.string() }),
     z.object({ type: z.literal("useAction"), action: z.string(), times: z.number().int().positive().optional() }),
@@ -232,7 +240,9 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       count: diceSchema,
       max: z.number().int().positive().optional(), // total of this stat block the summoner may control at once
       note: z.string().optional(),
+      tempHp: diceSchema.optional(),               // temporary hit points each summon appears with
     }),
+    z.object({ type: z.literal("ward"), dice: z.number().int().positive() }),
     z.object({
       type: z.literal("randomEffect"),
       options: z.array(z.object({
@@ -275,7 +285,15 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("noReactionsAfter"), damageType: damageTypeSchema }),                   // a damage type that strips the target's reactions for a round
   z.object({ rule: z.literal("ambush") }),                                                          // acts first on round 1; its round-1 hits have advantage and auto-crit (Assassinate)
   z.object({ rule: z.literal("flashOfGenius"), resource: z.string(), bonus: z.number().int(), rangeFt: z.number().positive() }), // Artificer, 7th level: reaction, add INT to a save of yourself or a creature within range
-  z.object({ rule: z.literal("boostMissedAttack"), bonusDice: z.string(), resource: z.string() }),   // Favored by the Gods — once/rest, add a bonus die to a roll that would miss and recheck
+  z.object({ rule: z.literal("boostMissedAttack"), bonusDice: z.string(), resource: z.string() }),
+  // add a die to a save you just failed (Favored by the Gods, Dark One's Own Luck) — self only, no reaction; `consumeOnlyOnSuccess` = the use is spent only if it turns the save around
+  z.object({ rule: z.literal("boostFailedSave"), bonusDice: z.string(), resource: z.string() }),
+  // Shadow Magic's Strength of the Grave: when damage would reduce you to 0, a save (DC = baseDc + damage taken) to stay at 1 HP instead; not vs the excluded damage types or on a crit; the use is spent only on success
+  z.object({ rule: z.literal("surviveDrop"), ability: abilitySchema, baseDc: z.number().int(), resource: z.string(), excludeTypes: z.array(damageTypeSchema).default([]), excludeCrit: z.boolean().default(true) }),
+  // Clockwork Soul's Restore Balance: reaction, cancel advantage/disadvantage on a d20 rolled by a creature within range
+  z.object({ rule: z.literal("restoreBalance"), resource: z.string(), rangeFt: z.number().positive() }),
+  // advantage on saving throws against effects that would impose these conditions (Aberrant Mind's Psychic Defenses)
+  z.object({ rule: z.literal("advantageOnSavesAgainst"), conditions: z.array(conditionSchema) }),   // Favored by the Gods — once/rest, add a bonus die to a roll that would miss and recheck
 ]);
 export type SpecialRule = z.infer<typeof specialRuleSchema>;
 

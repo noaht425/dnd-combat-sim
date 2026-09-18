@@ -3,7 +3,7 @@
 // resources, and expands every prepared spell into its upcast Action variants.
 
 import type { Action, Combatant } from "../schema";
-import { eldritchCannonFor, steelDefenderFor, type CannonVariant } from "../engine/minions";
+import { eldritchCannonFor, houndOfIllOmenFor, steelDefenderFor, type CannonVariant } from "../engine/minions";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
@@ -606,33 +606,41 @@ export function alchemistArtificer(level: number): Combatant {
   return withFlashOfGenius(withAlchemicalSavant(withKit, level, p.int), level, p.int);
 }
 
-// Metamagic: sorcery points (level 2+, one per sorcerer level) spent on top
-// of the normal spell-slot cost. Twinned and Quickened are the two most
-// mechanically distinct options (retargeting and action economy — visibly
-// different from a plain cast, unlike e.g. Subtle/Distant which this engine
-// has no way to make observable) so those are what's built; Empowered would
-// need a new "reroll low dice" schema field this doesn't have yet.
+// ============================================================================ Sorcerer
+// Every sorcerer feature below is built from the printed text of the Sorcerer class page and each
+// Sorcerous Origin page (PHB / Xanathar's / Tasha's) on dnd5e.wikidot.com, read directly. Features
+// the engine can't express are listed in the comment on each subclass (and in the commit message).
+
+/** Font of Magic (2nd level): sorcery points equal to your sorcerer level. Metamagic (3rd level, two
+ *  options; more at 10th and 17th): Twinned and Quickened are the two built — the two whose effects
+ *  (a second target, a bonus-action cast) are visible in this engine. */
 function withMetamagic(c: Combatant, level: number): Combatant {
+  if (level < 2) return c;
+  const resources = { ...c.resources, sorcery_points: { max: level, recharge: "longRest" as const } };
+  if (level < 3) return { ...c, resources };
   const extra: Combatant["actions"] = [];
   for (const a of c.actions) {
     if (!a.isSpell) continue;
-    // cantrips have no slot suffix in their id (level 0) — Twinned/Quickened
-    // both work on cantrips too (RAW), and "Twinned Fire Bolt" every turn at
-    // 1 sorcery point is the single most iconic sorcerer combo, so this
-    // can't skip them the way the Wild Magic Surge check correctly does
-    // (surge is genuinely leveled-spell-only).
+    // cantrips have no slot suffix in their id (level 0) — Twinned/Quickened both work on cantrips too
     const slotMatch = a.id.match(/-(\d+)$/);
     const slot = slotMatch ? Number(slotMatch[1]) : 0;
-    extra.push({
-      ...a,
-      id: `${a.id}-quickened`, name: `${a.name} (Quickened)`, cost: { bonus: 1 },
-      automation: [{
-        type: "branch", if: "self.resource('sorcery_points') >= 2",
-        then: [{ type: "spendResource", resource: "sorcery_points", amount: 2 }, ...a.automation],
-      }],
-    });
+    // Quickened Spell: a spell with a casting time of 1 action becomes a bonus action, 2 sorcery points
+    if ((a.cost.action ?? 0) > 0) {
+      extra.push({
+        ...a,
+        id: `${a.id}-quickened`, name: `${a.name} (Quickened)`, cost: { bonus: 1 },
+        automation: [{
+          type: "branch", if: "self.resource('sorcery_points') >= 2",
+          then: [{ type: "spendResource", resource: "sorcery_points", amount: 2 }, ...a.automation],
+        }],
+      });
+    }
+    // Twinned Spell: "a spell that targets only one creature and doesn't have a range of self ... a
+    // spell must be incapable of targeting more than one creature at the spell's current level (magic
+    // missile and scorching ray aren't eligible)". Costs the spell's level in sorcery points (1 for a cantrip).
     const top = a.automation[0];
-    if (top?.type === "target" && top.who.who === "aiChoice") {
+    const beams = top?.type === "target" ? top.effects.filter((n) => n.type === "attack" || n.type === "damage").length : 0;
+    if (top?.type === "target" && top.who.who === "aiChoice" && beams <= 1) {
       const cost = Math.max(1, slot);
       extra.push({
         ...a,
@@ -647,18 +655,59 @@ function withMetamagic(c: Combatant, level: number): Combatant {
       });
     }
   }
-  return {
-    ...c,
-    actions: [...c.actions, ...extra],
-    resources: { ...c.resources, sorcery_points: { max: level >= 2 ? level : 0, recharge: "longRest" } },
-  };
+  return { ...c, actions: [...c.actions, ...extra], resources };
 }
 
-// Elemental Affinity: fire is the pick (a red dragon ancestry, matching the
-// app's own placeholder text elsewhere) — add CHA to one damage roll of a
-// spell dealing that type, same cross-reference-the-catalog approach as
-// Empowered Evocation, just filtered by damage type instead of school.
-function withElementalAffinity(c: Combatant, cha: number): Combatant {
+/** the spells + cantrips a sorcerer gets: the class's own picks plus the origin's always-known spells
+ *  (they "don't count against the number of sorcerer spells you know"). Ids missing from the spell
+ *  catalog are skipped, not replaced. */
+function sorcererSpells(level: number, cha: number, always: [number, string[]][] = []) {
+  const base = autoPrepare("sorcerer", "full", level, cha, "blaster");
+  const extra = always.filter(([l]) => level >= l).flatMap(([, ids]) => ids).filter((id) => SPELLS_BY_ID[id]);
+  return { cantrips: base.cantrips, prepared: [...new Set([...extra, ...base.spells])] };
+}
+
+interface SorcererSpec {
+  id: string;
+  level: number;
+  always?: [number, string[]][];
+  ac?: number;
+  hpBonus?: number;
+  extraActions?: Combatant["actions"];
+  extraReactions?: Combatant["reactions"];
+  extraTraits?: Combatant["traits"];
+  /** applied to the built spell list BEFORE Metamagic copies it, so Quickened/Twinned casts carry it too */
+  pre?: (c: Combatant) => Combatant;
+}
+
+/** the shared sorcerer chassis (CHA casting, CON/CHA saves, Font of Magic + Metamagic) every origin builds on */
+function sorcererBase(spec: SorcererSpec): { c: Combatant; pb: number; cha: number; dc: number } {
+  const { level } = spec;
+  const pb = pbFor(level);
+  const cha = pb === 6 ? 5 : 4;
+  const sp = sorcererSpells(level, cha, spec.always);
+  const built = makeCaster({
+    id: spec.id, name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
+    ac: spec.ac ?? 14, hp: between(level, 9, 7 * 20 + 12) + (spec.hpBonus ?? 0),
+    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
+    proficientSaves: ["con", "cha"], focus: "blaster",
+    prepared: sp.prepared, cantrips: sp.cantrips,
+    extraActions: [...stub(`1d10`, pb + cha), ...(spec.extraActions ?? [])],
+    extraReactions: spec.extraReactions, extraTraits: spec.extraTraits,
+    keepDistance: true, targetPriority: "lowestHp",
+  });
+  const c = withMetamagic(spec.pre ? spec.pre(built) : built, level);
+  return { c, pb, cha, dc: 8 + pb + cha };
+}
+
+// ---- Draconic Bloodline (PHB) -----------------------------------------------------------------
+// Draconic Resilience (1st): +1 HP per sorcerer level, and AC 13 + DEX without armor. Elemental
+// Affinity (6th): +CHA to one damage roll of a spell of the ancestry's damage type, and 1 sorcery
+// point buys resistance to that type for an hour (taken as paid, at the start). The ancestry is a
+// choice; this build is a red dragon's (fire) — the app's own placeholder text elsewhere.
+// NOT modeled: Dragon Wings (14th), Draconic Presence (18th).
+function withElementalAffinity(c: Combatant, level: number, cha: number): Combatant {
+  if (level < 6) return c;
   return {
     ...c,
     actions: c.actions.map((a) => {
@@ -670,42 +719,118 @@ function withElementalAffinity(c: Combatant, cha: number): Combatant {
 }
 
 export function draconicSorcerer(level: number): Combatant {
-  const pb = pbFor(level);
   const dex = 2;
-  const cha = pb === 6 ? 5 : 4;
-  return withElementalAffinity(withMetamagic(makeCaster({
-    id: "draconic-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
-    ac: 13 + dex, hp: between(level, 9, 7 * 20 + 12), // Draconic Resilience: natural armor 13+DEX
-    abilities: { str: score(-1), dex: score(dex), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
-    proficientSaves: ["con", "cha"], focus: "blaster",
-    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-  }), level), cha);
+  const cha = pbFor(level) === 6 ? 5 : 4;
+  const { c } = sorcererBase({ id: "draconic-sorcerer", level, ac: 13 + dex, hpBonus: level, pre: (b) => withElementalAffinity(b, level, cha) });
+  return level >= 6
+    ? { ...c, resistances: [...c.resistances, "fire"], resources: { ...c.resources, sorcery_points: { max: level, recharge: "longRest", start: level - 1 } } }
+    : c;
 }
 
-// Wild Magic Surge: RAW is a natural 1 on a d20 after casting a sorcerer
-// spell of 1st level or higher (~5%, rare enough to rarely show up in a
-// short simulated fight) — weighted up to ~18% here for visibility/testing,
-// noted so it's not mistaken for a mechanics error. The "nothing happens"
-// branch carries the rest of the weight, same as most of the real d100
-// table's harmless/flavor-only entries.
-const WILD_MAGIC_TABLE: { weight: number; then: import("../schema").AutomationNode[]; note?: string }[] = [
-  { weight: 82, then: [] },
-  { weight: 4, then: [{ type: "target", who: { who: "self" }, effects: [{ type: "damage", amount: "2d10", damageType: "force" }] }], note: "wild magic surge — force energy crackles wildly" },
-  { weight: 4, then: [{ type: "target", who: { who: "self" }, effects: [{ type: "heal", amount: "3d6" }] }], note: "wild magic surge — restorative light washes over you" },
-  { weight: 4, then: [{ type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: "2d6" }] }], note: "wild magic surge — a shimmering ward flickers into being" },
-  { weight: 3, then: [{ type: "target", who: { who: "nearestEnemy" }, effects: [{ type: "applyCondition", condition: "frightened", durationRounds: 1 }] }], note: "wild magic surge — a wave of dread rolls outward" },
-  { weight: 3, then: [{ type: "target", who: { who: "lowestHpAlly" }, effects: [{ type: "heal", amount: "2d8" }] }], note: "wild magic surge — healing energy leaps to whoever needs it most" },
+// ---- Wild Magic (PHB) -------------------------------------------------------------------------
+// Wild Magic Surge: "immediately after you cast a sorcerer spell of 1st level or higher. If you roll a
+// 1 [on a d20], roll on the Wild Magic Surge table" — 1 in 20, once per turn, then the real d100 table
+// (50 entries, each 2%). Entries the engine can model are; the rest announce themselves and do nothing
+// (cosmetic ones — hair, beard, skin — need nothing). NOT modeled: Tides of Chaos (1st), Bend Luck (6th),
+// Controlled Chaos (14th), Spell Bombardment (18th), and the surge entries flagged "not modeled".
+const SURGE_TEXT = [
+  "Roll on this table at the start of each of your turns for the next minute, ignoring this result on subsequent rolls.",
+  "For the next minute, you can see any invisible creature if you have line of sight to it.",
+  "A modron chosen and controlled by the DM appears in an unoccupied space within 5 feet of you, then disappears 1 minute later.",
+  "You cast Fireball as a 3rd-level spell centered on yourself.",
+  "You cast Magic Missile as a 5th-level spell.",
+  "Roll a d10. Your height changes by a number of inches equal to the roll. If the roll is odd, you shrink. If the roll is even, you grow.",
+  "You cast Confusion centered on yourself.",
+  "For the next minute, you regain 5 hit points at the start of each of your turns.",
+  "You grow a long beard made of feathers that remains until you sneeze, at which point the feathers explode out from your face.",
+  "You cast Grease centered on yourself.",
+  "Creatures have disadvantage on saving throws against the next spell you cast in the next minute that involves a saving throw.",
+  "Your skin turns a vibrant shade of blue. A Remove Curse spell can end this effect.",
+  "An eye appears on your forehead for the next minute. During that time, you have advantage on Wisdom (Perception) checks that rely on sight.",
+  "For the next minute, all your spells with a casting time of 1 action have a casting time of 1 bonus action.",
+  "You teleport up to 60 feet to an unoccupied space of your choice that you can see.",
+  "You are transported to the Astral Plane until the end of your next turn, after which time you return to the space you previously occupied or the nearest unoccupied space if that space is occupied.",
+  "Maximize the damage of the next damaging spell you cast within the next minute.",
+  "Roll a d10. Your age changes by a number of years equal to the roll. If the roll is odd, you get younger (minimum 1 year old). If the roll is even, you get older.",
+  "1d6 flumphs controlled by the DM appear in unoccupied spaces within 60 feet of you and are frightened of you. They vanish after 1 minute.",
+  "You regain 2d10 hit points.",
+  "You turn into a potted plant until the start of your next turn. While a plant, you are incapacitated and have vulnerability to all damage. If you drop to 0 hit points, your pot breaks, and your form reverts.",
+  "For the next minute, you can teleport up to 20 feet as a bonus action on each of your turns.",
+  "You cast Levitate on yourself.",
+  "A unicorn controlled by the DM appears in a space within 5 feet of you, then disappears 1 minute later.",
+  "You can't speak for the next minute. Whenever you try, pink bubbles float out of your mouth.",
+  "A spectral shield hovers near you for the next minute, granting you a +2 bonus to AC and immunity to Magic Missile.",
+  "You are immune to being intoxicated by alcohol for the next 5d6 days.",
+  "Your hair falls out but grows back within 24 hours.",
+  "For the next minute, any flammable object you touch that isn't being worn or carried by another creature bursts into flame.",
+  "You regain your lowest-level expended spell slot.",
+  "For the next minute, you must shout when you speak.",
+  "You cast Fog Cloud centered on yourself.",
+  "Up to three creatures you choose within 30 feet of you take 4d10 lightning damage.",
+  "You are frightened by the nearest creature until the end of your next turn.",
+  "Each creature within 30 feet of you becomes invisible for the next minute. The invisibility ends on a creature when it attacks or casts a spell.",
+  "You gain resistance to all damage for the next minute.",
+  "A random creature within 60 feet of you becomes poisoned for 1d4 hours.",
+  "You glow with bright light in a 30-foot radius for the next minute. Any creature that ends its turn within 5 feet of you is blinded until the end of its next turn.",
+  "You cast Polymorph on yourself. If you fail the saving throw, you turn into a sheep for the spell's duration.",
+  "Illusory butterflies and flower petals flutter in the air within 10 feet of you for the next minute.",
+  "You can take one additional action immediately.",
+  "Each creature within 30 feet of you takes 1d10 necrotic damage. You regain hit points equal to the sum of the necrotic damage dealt.",
+  "You cast Mirror Image.",
+  "You cast Fly on a random creature within 60 feet of you.",
+  "You become invisible for the next minute. During that time, other creatures can't hear you. The invisibility ends if you attack or cast a spell.",
+  "If you die within the next minute, you immediately come back to life as if by the Reincarnate spell.",
+  "Your size increases by one size category for the next minute.",
+  "You and all creatures within 30 feet of you gain vulnerability to piercing damage for the next minute.",
+  "You are surrounded by faint, ethereal music for the next minute.",
+  "You regain all expended sorcery points.",
 ];
 
-/** appends a Wild Magic Surge check after every leveled spell-cast action.
- *  cast.ts ids leveled spells "cast-<id>-<slot>" (slot >= 1) and cantrips
- *  bare "cast-<id>" with no slot suffix — cantrips don't trigger a surge. */
-function withWildMagicSurge(c: Combatant): Combatant {
+function wildMagicSurgeTable(level: number, cha: number, pb: number): { weight: number; then: import("../schema").AutomationNode[]; note: string }[] {
+  const dc = 8 + pb + cha;
+  type N = import("../schema").AutomationNode;
+  const fireball = (who: "eachEnemy" | "eachAlly"): N => ({
+    type: "target", who: { who, withinFt: 20 }, effects: [{
+      type: "save", ability: "dex", dc,
+      onFail: [{ type: "damage", amount: "8d6", damageType: "fire" }],
+      onSuccess: [{ type: "damage", amount: "8d6", damageType: "fire", half: true }],
+    }],
+  });
+  const self = (...effects: N[]): N => ({ type: "target", who: { who: "self" }, effects });
+  const mirror = SPELLS_BY_ID["mirror-image"]?.build?.({ slotLevel: 2, casterLevel: level, spellMod: cha, dc, toHit: pb + cha, pb }) ?? [];
+  // 0-based index i covers d100 rolls 2i+1 .. 2i+2
+  const modeled: Record<number, N[]> = {
+    3: [fireball("eachEnemy"), fireball("eachAlly")], // 07-08: Fireball as a 3rd-level spell centered on yourself
+    4: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: 7 }, () => ({ type: "damage" as const, amount: "1d4+1", damageType: "force" as const })) }], // 09-10: Magic Missile as a 5th-level spell
+    7: [self({ type: "applyEffect", name: "wild-regeneration", durationRounds: 10, tick: [{ type: "heal", amount: "5" }] })], // 15-16
+    19: [self({ type: "heal", amount: "2d10" })], // 39-40
+    20: [self({ type: "applyCondition", condition: "incapacitated", durationRounds: 1 }, { type: "applyEffect", name: "potted-plant", durationRounds: 1, mods: { damageTakenMultiplier: 2 } })], // 41-42
+    25: [self({ type: "applyEffect", name: "spectral-shield", durationRounds: 10, mods: { acBonus: 2 } })], // 51-52
+    29: [{ type: "restoreSlot" }], // 59-60
+    32: [{ type: "target", who: { who: "chosenEnemies", upTo: 3 }, effects: [{ type: "damage", amount: "4d10", damageType: "lightning" }] }], // 65-66
+    33: [self({ type: "applyCondition", condition: "frightened", durationRounds: 1 })], // 67-68
+    35: [self({ type: "applyEffect", name: "wild-resistance", durationRounds: 10, mods: { damageTakenMultiplier: 0.5 } })], // 71-72
+    42: mirror, // 85-86
+    49: [{ type: "spendResource", resource: "sorcery_points", amount: -level }], // 99-00: regain all expended sorcery points
+  };
+  return SURGE_TEXT.map((text, i) => ({
+    weight: 2,
+    then: modeled[i] ?? [],
+    note: modeled[i] && !(i === 42 && !mirror.length) ? `wild magic surge — ${text}` : `wild magic surge — ${text} (not modeled)`,
+  }));
+}
+
+function withWildMagicSurge(c: Combatant, level: number, cha: number, pb: number): Combatant {
+  const table = wildMagicSurgeTable(level, cha, pb);
   return {
     ...c,
+    // cast.ts ids leveled spells "cast-<id>-<slot>" and cantrips bare — only leveled spells surge
     actions: c.actions.map((a) => {
       if (!a.isSpell || !/-\d+$/.test(a.id)) return a;
-      return { ...a, automation: [...a.automation, { type: "randomEffect", options: WILD_MAGIC_TABLE }] };
+      return { ...a, automation: [...a.automation, {
+        type: "randomEffect" as const,
+        options: [{ weight: 19, then: [] }, { weight: 1, then: [{ type: "randomEffect" as const, options: table }] }],
+      }] };
     }),
   };
 }
@@ -713,144 +838,196 @@ function withWildMagicSurge(c: Combatant): Combatant {
 export function wildMagicSorcerer(level: number): Combatant {
   const pb = pbFor(level);
   const cha = pb === 6 ? 5 : 4;
-  // Wild Magic Surge first, Metamagic second — withMetamagic derives its
-  // Quickened/Twinned variants from whatever automation is already on each
-  // base spell action, so this order makes those variants surge too
-  // (correct: RAW surges on casting any leveled spell, however augmented).
-  // The reverse order would miss them — their ids end in a word, not a
-  // slot number, so withWildMagicSurge's own id filter wouldn't match them.
-  return withMetamagic(withWildMagicSurge(makeCaster({
-    id: "wild-magic-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
-    ac: 14, hp: between(level, 9, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
-    proficientSaves: ["con", "cha"], focus: "blaster",
-    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-  })), level);
+  return sorcererBase({ id: "wild-magic-sorcerer", level, pre: (b) => withWildMagicSurge(b, level, cha, pb) }).c;
 }
 
-// Favored by the Gods (Divine Soul, 1st level): once per long rest, add a
-// fixed bonus die to a roll that would otherwise miss and recheck it — the
-// actual reroll/boost logic lives in resolve.ts's rollAttackImpl (reads the
-// `boostMissedAttack` specialRule and spends the resource it names); this
-// just declares both. RAW also covers saving throws and ability checks —
-// scoped to attack rolls only here, the one this combat sim actually models.
+// ---- Divine Soul (Xanathar's) -----------------------------------------------------------------
+// Favored by the Gods (1st): "If you fail a saving throw or miss with an attack roll, you can roll
+// 2d4 and add it to the total ... until you finish a short or long rest." Unearthly Recovery (18th):
+// bonus action below half HP, regain half your HP maximum, once per long rest. NOT modeled: Divine
+// Magic (the cleric spell list and affinity spell), Empowered Healing (6th), Angelic Form (14th).
 export function divineSoulSorcerer(level: number): Combatant {
-  const pb = pbFor(level);
-  const cha = pb === 6 ? 5 : 4;
-  const c = withMetamagic(makeCaster({
-    id: "divine-soul-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
-    ac: 14, hp: between(level, 9, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
-    proficientSaves: ["con", "cha"], focus: "blaster",
-    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-  }), level);
+  const hp = between(level, 9, 7 * 20 + 12);
+  const recovery: Combatant["actions"] = level >= 18 ? [{
+    id: "unearthly-recovery", name: "Unearthly Recovery", cost: { bonus: 1 }, recharge: "none",
+    limitedUse: { resource: "unearthly_recovery", amount: 1 },
+    text: "Bonus action, below half your hit points: regain half your hit point maximum (once per long rest).",
+    automation: [{ type: "branch", if: "self.hp <= self.maxhp / 2", then: [{ type: "target", who: { who: "self" }, effects: [{ type: "heal", amount: String(Math.floor(hp / 2)) }] }] }],
+  }] : [];
+  const { c } = sorcererBase({ id: "divine-soul-sorcerer", level, extraActions: recovery });
   return {
     ...c,
-    specialRules: [...c.specialRules, { rule: "boostMissedAttack", bonusDice: "2d4", resource: "favored_by_gods" }],
-    resources: { ...c.resources, favored_by_gods: { max: 1, recharge: "longRest" } },
+    specialRules: [
+      ...c.specialRules,
+      { rule: "boostMissedAttack", bonusDice: "2d4", resource: "favored_by_gods" },
+      { rule: "boostFailedSave", bonusDice: "2d4", resource: "favored_by_gods" },
+    ],
+    resources: {
+      ...c.resources,
+      favored_by_gods: { max: 1, recharge: "shortRest" },
+      ...(level >= 18 ? { unearthly_recovery: { max: 1, recharge: "longRest" as const } } : {}),
+    },
+    ai: { ...c.ai, bonusRoutine: level >= 18 ? ["unearthly-recovery"] : [] },
   };
 }
 
-// Strength of the Grave (Shadow Magic, 1st level): once per long rest, a hit
-// that would drop the sorcerer to 0 HP instead leaves them at 1 — reuses the
-// engine's existing undyingReturn specialRule verbatim (already dispatched
-// by handleDropToZero in resolve.ts for monster "refuses to die" traits).
-// RAW gates this behind a CHA save the engine has no generic hook for;
-// treating it as unconditional matches every other undyingReturn user here.
+// ---- Shadow Magic (Xanathar's) ----------------------------------------------------------------
+// Strength of the Grave (1st): when damage reduces you to 0, a Charisma save (DC 5 + the damage
+// taken) to drop to 1 HP instead — not against radiant damage or a critical hit; only a success
+// spends the once-per-long-rest use. Hound of Ill Omen (6th): a bonus action and 3 sorcery points
+// summon a Medium hound (dire wolf statistics) with temporary HP equal to half your level.
+// NOT modeled: the hound's forced target and its "target has disadvantage on saves against your
+// spells while the hound is within 5 feet" aura, Eyes of the Dark's Darkness spell (3rd), Shadow
+// Walk (14th), Umbral Form (18th). The hound can be raised once per fight here.
 export function shadowMagicSorcerer(level: number): Combatant {
-  const pb = pbFor(level);
-  const cha = pb === 6 ? 5 : 4;
-  const c = withMetamagic(makeCaster({
-    id: "shadow-magic-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
-    ac: 14, hp: between(level, 9, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
-    proficientSaves: ["con", "cha"], focus: "blaster",
-    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-  }), level);
-  return { ...c, specialRules: [...c.specialRules, { rule: "undyingReturn", returnHp: 1, oncePer: "encounter" }] };
+  const hound: Combatant["actions"] = level >= 6 ? [{
+    id: "hound-of-ill-omen", name: "Hound of Ill Omen", cost: { bonus: 1 }, recharge: "none",
+    limitedUse: { resource: "hound_of_ill_omen", amount: 1 },
+    text: "Bonus action, 3 sorcery points: a hound of ill omen (dire wolf statistics, Medium) harries a foe. It has temporary hit points equal to half your sorcerer level.",
+    automation: [{
+      type: "branch", if: "self.resource('sorcery_points') >= 3",
+      then: [
+        { type: "spendResource", resource: "sorcery_points", amount: 3 },
+        { type: "summon", statBlock: houndOfIllOmenFor(level), count: "1", max: 1, tempHp: String(Math.floor(level / 2)) },
+      ],
+    }],
+  }] : [];
+  const { c } = sorcererBase({ id: "shadow-magic-sorcerer", level, extraActions: hound });
+  return {
+    ...c,
+    specialRules: [...c.specialRules, { rule: "surviveDrop", ability: "cha", baseDc: 5, resource: "strength_of_the_grave", excludeTypes: ["radiant"], excludeCrit: true }],
+    resources: {
+      ...c.resources,
+      strength_of_the_grave: { max: 1, recharge: "longRest" },
+      ...(level >= 6 ? { hound_of_ill_omen: { max: 1, recharge: "longRest" as const } } : {}),
+    },
+    ai: { ...c.ai, bonusRoutine: level >= 6 ? ["hound-of-ill-omen"] : [] },
+  };
 }
 
-// Heart of the Storm (Storm Sorcery, 6th level): casting a lightning- or
-// thunder-damage spell of 1st level+ also deals thunder damage to nearby
-// creatures equal to half your sorcerer level (rounded up) — simplified,
-// like Elemental Affinity, into a flat bonus folded onto the spell's own
-// roll rather than a separate near-caster burst (the engine has no
-// positional "creatures near me, distinct from my target" targeting).
+// ---- Storm Sorcery (Sword Coast Adventurer's Guide / Xanathar's) ------------------------------
+// Heart of the Storm (6th): resistance to lightning and thunder, and whenever you START casting a spell
+// of 1st level or higher that deals lightning or thunder damage, creatures of your choice within 10
+// feet of you take lightning or thunder damage equal to half your sorcerer level (rounded down).
+// Storm's Fury (14th): reaction when hit by a MELEE attack — lightning damage to the attacker equal to
+// your sorcerer level (the Strength save and 20-foot push are not simulated). Wind Soul (18th):
+// immunity to lightning and thunder. NOT modeled: Tempestuous Magic, Storm Guide, the rest of Wind Soul.
 function withHeartOfTheStorm(c: Combatant, level: number): Combatant {
   if (level < 6) return c;
-  const bonus = Math.ceil(level / 2);
+  const burst = Math.floor(level / 2);
+  const findType = (nodes: import("../schema").AutomationNode[]): "lightning" | "thunder" | undefined => {
+    for (const n of nodes) {
+      if (n.type === "damage" && (n.damageType === "lightning" || n.damageType === "thunder")) return n.damageType;
+      const inner = n.type === "target" ? n.effects : n.type === "attack" ? n.onHit : n.type === "save" ? [...n.onFail, ...(n.onSuccess ?? [])] : n.type === "branch" ? n.then : [];
+      const found = findType(inner);
+      if (found) return found;
+    }
+    return undefined;
+  };
   return {
     ...c,
     actions: c.actions.map((a) => {
       if (!a.isSpell || !/-\d+$/.test(a.id)) return a;
-      const lightning = injectFirstDamageBonus(a.automation, bonus, "lightning");
-      if (lightning.applied) return { ...a, automation: lightning.nodes };
-      const thunder = injectFirstDamageBonus(a.automation, bonus, "thunder");
-      return thunder.applied ? { ...a, automation: thunder.nodes } : a;
+      const type = findType(a.automation);
+      if (!type) return a;
+      const eruption: import("../schema").AutomationNode = {
+        type: "target", who: { who: "eachEnemy", withinFt: 10 }, effects: [{ type: "damage", amount: String(burst), damageType: type }],
+      };
+      return { ...a, automation: [eruption, ...a.automation] };
     }),
+    resistances: [...c.resistances, "lightning", "thunder"],
+    immunities: level >= 18 ? [...c.immunities, "lightning", "thunder"] : c.immunities,
   };
 }
 
 export function stormSorcerer(level: number): Combatant {
-  const pb = pbFor(level);
-  const cha = pb === 6 ? 5 : 4;
-  // Storm's Fury (18th level): retaliate with lightning when hit in melee —
-  // reuses the same whenHitByAttack trait dispatch as monster "hits back"
-  // traits (Corrosive Form), scoped onto the attacker via forceScope.
-  return withHeartOfTheStorm(withMetamagic(makeCaster({
-    id: "storm-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
-    ac: 14, hp: between(level, 9, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
-    proficientSaves: ["con", "cha"], focus: "blaster",
-    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-    extraTraits: level >= 18 ? [{
-      id: "storms-fury", name: "Storm's Fury", trigger: "whenHitByAttack",
-      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "damage", amount: "2d8", damageType: "lightning" }] }],
-    }] : [],
-  }), level), level);
+  const fury: Combatant["reactions"] = level >= 14 ? [{
+    id: "storms-fury", name: "Storm's Fury", cost: { reaction: 1 }, recharge: "none",
+    trigger: "self.wasHitByMeleeAttack",
+    text: "Reaction when hit by a melee attack: lightning damage to the attacker equal to your sorcerer level (it must also save against being pushed 20 feet — not simulated).",
+    automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "damage", amount: String(level), damageType: "lightning" }] }],
+  }] : [];
+  return sorcererBase({ id: "storm-sorcerer", level, extraReactions: fury, pre: (b) => withHeartOfTheStorm(b, level) }).c;
 }
 
-// Psychic Defenses (Aberrant Mind, 6th level): resistance to psychic damage,
-// immune to being frightened.
+// ---- Aberrant Mind (Tasha's) ------------------------------------------------------------------
+// Psionic Spells (1st+): always-known Arms of Hadar, Dissonant Whispers (1st); Calm Emotions,
+// Detect Thoughts (3rd); Hunger of Hadar, Sending (5th); Evard's Black Tentacles, Summon Aberration
+// (7th); Rary's Telepathic Bond, Telekinesis (9th) — Mind Sliver, Summon Aberration are missing from
+// the spell catalog. Psychic Defenses (6th): resistance to psychic damage, advantage on saves against
+// being charmed or frightened. Warping Implosion (18th): 3d10 force to creatures within 30 feet
+// (Strength save for half), once per long rest or for 5 sorcery points — the teleport and the pull are
+// not simulated. NOT modeled: Telepathic Speech, Psionic Sorcery (6th), Revelation in Flesh (14th).
+const ABERRANT_SPELLS: [number, string[]][] = [
+  [1, ["arms-of-hadar", "dissonant-whispers", "mind-sliver"]], [3, ["calm-emotions", "detect-thoughts"]],
+  [5, ["hunger-of-hadar", "sending"]], [7, ["evards-black-tentacles", "summon-aberration"]],
+  [9, ["rarys-telepathic-bond", "telekinesis"]],
+];
 export function aberrantMindSorcerer(level: number): Combatant {
   const pb = pbFor(level);
   const cha = pb === 6 ? 5 : 4;
-  const c = withMetamagic(makeCaster({
-    id: "aberrant-mind-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
-    ac: 14, hp: between(level, 9, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
-    proficientSaves: ["con", "cha"], focus: "blaster",
-    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-  }), level);
-  if (level < 6) return c;
-  return { ...c, resistances: [...c.resistances, "psychic"], conditionImmunities: [...c.conditionImmunities, "frightened"] };
+  const dc = 8 + pb + cha;
+  const burst: import("../schema").AutomationNode = {
+    type: "target", who: { who: "eachEnemy", withinFt: 30 }, effects: [{
+      type: "save", ability: "str", dc,
+      onFail: [{ type: "damage", amount: "3d10", damageType: "force" }],
+      onSuccess: [{ type: "damage", amount: "3d10", damageType: "force", half: true }],
+    }],
+  };
+  const text = "You teleport, then creatures within 30 feet of where you were make a Strength save or take 3d10 force damage (half on a success) and are pulled toward it — the teleport and pull aren't simulated.";
+  const warping: Combatant["actions"] = level >= 18 ? [
+    { id: "warping-implosion", name: "Warping Implosion", cost: { action: 1 }, recharge: "none", limitedUse: { resource: "warping_implosion", amount: 1 }, text, automation: [burst] },
+    {
+      id: "warping-implosion-sp", name: "Warping Implosion (5 sorcery points)", cost: { action: 1 }, recharge: "none", text,
+      automation: [{ type: "branch", if: "self.resource('sorcery_points') >= 5", then: [{ type: "spendResource", resource: "sorcery_points", amount: 5 }, burst] }],
+    },
+  ] : [];
+  const { c } = sorcererBase({ id: "aberrant-mind-sorcerer", level, always: ABERRANT_SPELLS, extraActions: warping });
+  if (level < 6) return { ...c, resources: level >= 18 ? { ...c.resources, warping_implosion: { max: 1, recharge: "longRest" } } : c.resources };
+  return {
+    ...c,
+    resistances: [...c.resistances, "psychic"],
+    specialRules: [...c.specialRules, { rule: "advantageOnSavesAgainst", conditions: ["charmed", "frightened"] }],
+    resources: level >= 18 ? { ...c.resources, warping_implosion: { max: 1, recharge: "longRest" } } : c.resources,
+  };
 }
 
-// Bastion of Law (Clockwork Soul, 6th level): bonus action, spend sorcery
-// points (up to CHA mod) to grant temp HP = 2x points spent to an ally —
-// simplified to always spending the full CHA-mod amount on the lowest-HP
-// ally, the same "spend a resource, grant tempHp to lowestHpAlly" shape as
-// Battle Master's Rally.
+// ---- Clockwork Soul (Tasha's) -----------------------------------------------------------------
+// Clockwork Magic (1st+): always-known Alarm, Protection from Evil and Good (1st); Aid, Lesser
+// Restoration (3rd); Dispel Magic, Protection from Energy (5th); Freedom of Movement, Summon Construct
+// (7th); Greater Restoration, Wall of Force (9th) — Summon Construct is missing from the catalog.
+// Restore Balance (1st): reaction, PB uses per long rest, cancel advantage/disadvantage on a d20 rolled by
+// a creature within 60 feet. Bastion of Law (6th): an ACTION spending 1-5 sorcery points to ward a
+// creature within 30 feet with that many d8s; when the warded creature takes damage it expends dice,
+// rolls them, and reduces the damage by the total (until a long rest or a new ward). Built as three
+// buttons (1, 3, 5 points). NOT modeled: Trance of Order (14th), Clockwork Cavalcade (18th).
+const CLOCKWORK_SPELLS: [number, string[]][] = [
+  [1, ["alarm", "protection-from-evil-and-good"]], [3, ["aid", "lesser-restoration"]],
+  [5, ["dispel-magic", "protection-from-energy"]], [7, ["freedom-of-movement", "summon-construct"]],
+  [9, ["greater-restoration", "wall-of-force"]],
+];
 export function clockworkSoulSorcerer(level: number): Combatant {
   const pb = pbFor(level);
-  const cha = pb === 6 ? 5 : 4;
-  const bastion: Combatant["actions"] = level >= 6 ? [{
-    id: "bastion-of-law", name: "Bastion of Law", cost: { bonus: 1 }, recharge: "none",
+  const bastion = (points: number): Combatant["actions"][number] => ({
+    id: `bastion-of-law-${points}`, name: `Bastion of Law (${points} sorcery point${points === 1 ? "" : "s"})`, cost: { action: 1 }, recharge: "none",
+    text: `Action: spend ${points} sorcery point${points === 1 ? "" : "s"} to ward yourself or a creature within 30 feet with ${points}d8 that reduce damage it takes (until a long rest or a new ward).`,
     automation: [{
-      type: "branch", if: `self.resource('sorcery_points') >= ${cha}`,
+      type: "branch", if: `self.resource('sorcery_points') >= ${points}`,
       then: [
-        { type: "spendResource", resource: "sorcery_points", amount: cha },
-        { type: "target", who: { who: "lowestHpAlly" }, effects: [{ type: "tempHp", amount: `${2 * cha}` }] },
+        { type: "spendResource", resource: "sorcery_points", amount: points },
+        { type: "target", who: { who: "lowestHpAlly" }, effects: [{ type: "ward", dice: points }] },
       ],
     }],
-  }] : [];
-  return withMetamagic(makeCaster({
-    id: "clockwork-soul-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
-    ac: 14, hp: between(level, 9, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
-    proficientSaves: ["con", "cha"], focus: "blaster",
-    extraActions: [...stub(`1d10`, pb + cha), ...bastion], keepDistance: true, targetPriority: "lowestHp",
-  }), level);
+  });
+  const { c } = sorcererBase({
+    id: "clockwork-soul-sorcerer", level, always: CLOCKWORK_SPELLS,
+    extraActions: level >= 6 ? [bastion(1), bastion(3), bastion(5)] : [],
+  });
+  return {
+    ...c,
+    specialRules: [...c.specialRules, { rule: "restoreBalance", resource: "restore_balance", rangeFt: 60 }],
+    resources: { ...c.resources, restore_balance: { max: pb, recharge: "longRest" } },
+  };
 }
 
 // Arcane Trickster: a third-caster rogue (spell slots at Eldritch Knight's

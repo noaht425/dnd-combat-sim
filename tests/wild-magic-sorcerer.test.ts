@@ -22,10 +22,24 @@ describe("Wild Magic Sorcerer — Wild Magic Surge", () => {
     }
   });
 
-  it("fires across many seeds, and narrates the self-damage case correctly", () => {
+  it("uses the real d100 Wild Magic Surge table: 50 entries at 2% each, triggered by a 1 on a d20 (5%)", () => {
+    const a = makeTemplate("wild-magic-sorcerer", 5).actions.find((x) => x.id === spellAction.id)!;
+    const trigger = a.automation.at(-1);
+    if (trigger?.type !== "randomEffect") throw new Error("no surge check on the spell action");
+    // 19 parts nothing, 1 part surge — the natural-1-on-a-d20 chance
+    expect(trigger.options.map((o) => o.weight)).toEqual([19, 1]);
+    const table = trigger.options[1].then[0];
+    if (table.type !== "randomEffect") throw new Error("surge doesn't roll on a table");
+    expect(table.options.length).toBe(50);
+    expect(table.options.reduce((sum, o) => sum + o.weight, 0)).toBe(100);
+    // an entry straight from the printed table
+    expect(table.options.some((o) => /Fireball as a 3rd-level spell centered on yourself/.test(o.note ?? ""))).toBe(true);
+  });
+
+  it("fires at roughly the printed 5% rate across many casts, and narrates a real table entry", () => {
     let sawSurge = 0;
-    let sawSelfDamageLine = false;
-    for (let seed = 1; seed <= 200; seed++) {
+    const seen = new Set<string>();
+    for (let seed = 1; seed <= 400; seed++) {
       const out = runBattle({
         party: [{ template: "wild-magic-sorcerer", level: 5 }],
         enemies: ["kobold"],
@@ -35,18 +49,12 @@ describe("Wild Magic Sorcerer — Wild Magic Surge", () => {
         decisions: [{ round: 1, unitId: "pc-1-wild-magic-sorcerer", actionId: spellAction.id, targetId: "monster-1-kobold" }],
       } as never);
       const text = out.frames.map((f) => f.text ?? "").join("\n");
-      if (/wild magic surge/i.test(text)) {
-        sawSurge++;
-        // the self-damage variant must show a real HP delta, not just the
-        // flavor note with no mechanical effect visible
-        if (/force energy crackles wildly/.test(text)) {
-          expect(text).toMatch(/Sorcerer 5 uses Misty Step -> Sorcerer 5 -\d+/);
-          sawSelfDamageLine = true;
-        }
-      }
+      const m = text.match(/wild magic surge — ([^\n]+)/i);
+      if (m) { sawSurge++; seen.add(m[1]); }
     }
-    // ~18% designed rate over 200 rolls — a wide but real floor
-    expect(sawSurge).toBeGreaterThan(10);
-    expect(sawSelfDamageLine).toBe(true);
+    // 400 casts at 5% ~ 20 surges; a wide but real window, and well below the old inflated ~18%
+    expect(sawSurge).toBeGreaterThan(8);
+    expect(sawSurge).toBeLessThan(45);
+    expect(seen.size).toBeGreaterThan(3);
   });
 });

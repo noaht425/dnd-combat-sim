@@ -284,6 +284,7 @@ export function applyDecision(state: BattleState, u: CombatantState, d: BattleDe
       geoTargets: (node, source) => {
         const who = node.who.who;
         if (who === "self" || who === "eachAlly" || who === "lowestHpAlly" || who === "chosenEnemies") return null;
+    if (who === "eachEnemy" && node.who.withinFt) return null; // resolved by real distance in selectTargets
         if (who === "area" || who === "eachEnemy") {
           // templateHitIds is only ever set when real geometry was actually
           // computed (an "area" node with an aoeOrigin) — an EMPTY result

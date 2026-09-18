@@ -108,9 +108,12 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return `summons ${n.count} ${n.statBlock}`;
     case "commandSummon":
       return "commands its companion to act";
+    case "ward":
+      return `${n.dice}d8 damage ward`;
     case "randomEffect":
       return "unpredictable — a random effect";
     case "note":
+    case "restoreSlot":
     case "removeEffect":
     case "spendResource":
     case "rechargeRoll":
