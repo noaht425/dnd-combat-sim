@@ -95,6 +95,29 @@ export function hunterRanger(level: number): Combatant {
   });
 }
 
+export function battleSmithArtificer(level: number): Combatant {
+  // a Steel Defender companion isn't modeled as a separate combatant (same
+  // simplification as other half-casters here skipping subclass-specific
+  // summons/companions) — the infused weapon carries the build instead
+  const pb = pbFor(level);
+  const int = pb === 6 ? 5 : 4;
+  const attacks = level >= 5 ? 2 : 1;
+  return makeCaster({
+    id: "battlesmith-artificer", name: `Artificer ${level}`, level, spellClass: "artificer", casterKind: "half", spellAbility: "int",
+    ac: 18, hp: between(level, 11, 7 * 20 + 14),
+    abilities: { str: score(1), dex: score(1), con: score(2), int: score(int), wis: score(0), cha: score(0) },
+    proficientSaves: ["con", "int"], focus: "balanced",
+    extraActions: [{
+      id: "attack", name: "Infused Weapon Attack", cost: { action: 1 }, recharge: "none",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks }, () => (
+        // +1 infusion folded into to-hit/damage, per the "Infuse an item" note elsewhere
+        { type: "attack" as const, bonus: pb + int + 1, onHit: [{ type: "damage" as const, amount: `1d8+${int + 1}`, damageType: "piercing" as const }] }
+      )) }],
+    }],
+    keepDistance: false, opener: ["attack"], targetPriority: "lowestHp",
+  });
+}
+
 export function draconicSorcerer(level: number): Combatant {
   const pb = pbFor(level);
   const cha = pb === 6 ? 5 : 4;
@@ -156,6 +179,7 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "life-cleric": lifeCleric,
   "vengeance-paladin": vengeancePaladin,
   "hunter-ranger": hunterRanger,
+  "battlesmith-artificer": battleSmithArtificer,
   "draconic-sorcerer": draconicSorcerer,
   "moon-druid": moonDruid,
   "lore-bard": loreBard,

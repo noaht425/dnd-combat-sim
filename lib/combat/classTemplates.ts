@@ -40,6 +40,8 @@ export const CLASS_TEMPLATES: ClassAlias[] = [
     aliases: ["bard", "lore bard", "college of lore bard"] },
   { templateId: "warlock", className: "warlock", subclassName: "Fiend Patron",
     aliases: ["warlock", "fiend warlock", "fiend patron warlock"] },
+  { templateId: "battlesmith-artificer", className: "artificer", subclassName: "Battle Smith",
+    aliases: ["artificer", "battle smith", "battlesmith artificer", "battle smith artificer"] },
 ];
 
 // sanity check: every templateId here must exist in the engine's builder table

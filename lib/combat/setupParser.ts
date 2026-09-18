@@ -14,7 +14,24 @@ import { abilityMod } from "../sim/math";
 import { findClassTemplate, type ClassAlias } from "./classTemplates";
 import { findMonster } from "./monsters";
 import { parseDetails, type DetailParse } from "./detailParser";
-import { normalize } from "./fuzzy";
+import { normalize, similarity } from "./fuzzy";
+
+// There's exactly one built-in subclass per class (see classTemplates.ts's
+// header) — if the player named a different one, say so instead of silently
+// building the wrong subclass with no indication beyond the summary line's
+// subclass name. Compares only the text left over after the bare class name
+// against the subclass we actually used, since e.g. "circle of the land"
+// vs "circle of the moon" still scores ~0.8 on whole-phrase similarity
+// (they share 3 of 4 words) — high enough to hide a real mismatch.
+function mentionedDifferentSubclass(classText: string, match: ClassAlias): string | undefined {
+  const typed = normalize(classText);
+  const bareClass = normalize(match.className);
+  if (!typed || typed === bareClass) return undefined;
+  const extra = typed.replace(new RegExp(`\\b${bareClass}\\b`), "").replace(/\s+/g, " ").trim();
+  if (!extra) return undefined;
+  if (similarity(extra, normalize(match.subclassName)) >= 0.9) return undefined;
+  return `only ${match.subclassName} ${match.className} is built right now — used that instead`;
+}
 
 const NUMBER_WORDS: Record<string, number> = {
   a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8,
@@ -40,6 +57,9 @@ export interface PartyMemberParse {
   details?: DetailParse;
   /** text that didn't parse as anything (unrecognized segments + seen-but-unapplied ability scores) */
   ignoredDetail?: string;
+  /** set when the player named a subclass other than the one built-in template
+   *  for this class — there's exactly one per class today (classTemplates.ts) */
+  subclassNote?: string;
   error?: string;
   suggestions?: ClassAlias[];
 }
@@ -80,6 +100,7 @@ export function parsePartyMember(text: string): PartyMemberParse {
     spells: details?.spells.length ? details.spells : undefined,
   };
 
+  const subclassNote = mentionedDifferentSubclass(classText, match);
   const ignoredParts = [
     ...(details?.unrecognized ?? []),
     ...(details?.abilityNotes.map((a) => `${a} (ability score overrides aren't wired up yet)`) ?? []),
@@ -93,6 +114,7 @@ export function parsePartyMember(text: string): PartyMemberParse {
     levelAssumed: level === undefined,
     details,
     ignoredDetail: ignoredParts.length ? ignoredParts.join("; ") : undefined,
+    subclassNote,
   };
 }
 
@@ -168,6 +190,7 @@ export function buildSummaryLine(p: PartyMemberParse): string {
   const highlightNote = highlights.length ? ` — ${highlights.join(", ")}` : ", a standard build";
 
   const ignored = p.ignoredDetail ? ` (heads up: "${p.ignoredDetail}" wasn't applied)` : "";
+  const subclass = p.subclassNote ? ` (heads up: ${p.subclassNote})` : "";
 
-  return `${name}${p.classInfo.subclassName} ${p.classInfo.className} ${p.level}${lvlNote} · ${stats.join(", ")}${highlightNote}.${ignored}`;
+  return `${name}${p.classInfo.subclassName} ${p.classInfo.className} ${p.level}${lvlNote} · ${stats.join(", ")}${highlightNote}.${subclass}${ignored}`;
 }
