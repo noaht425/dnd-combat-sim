@@ -1,12 +1,14 @@
-// Class/subclass names the setup builder recognizes, mapped to the one
-// PartyMemberSpec template that currently exists for that class. There's
-// exactly one subclass per class today, so "draconic sorcerer" and "sorcerer"
-// resolve to the same template — the subclass word is accepted (and steers
-// theming text) without yet changing the build. Add aliases here as new
+// Class/subclass names the setup builder recognizes, mapped to the
+// PartyMemberSpec template that exists for that class+subclass combo. Most
+// classes still have only one built subclass, so e.g. "draconic sorcerer"
+// and "sorcerer" resolve to the same template — only the class's DEFAULT
+// subclass (listed first among its siblings below) carries the bare class
+// name as an alias; a second subclass (Battle Master, Beast Master, Wild
+// Magic) needs its own more specific words. Add aliases here as new
 // templates land in engine/templates.ts / spells/casterTemplates.ts.
 
 import { TEMPLATE_IDS } from "../sim/engine/templates";
-import { bestMatch, type Candidate } from "./fuzzy";
+import { bestMatch, normalize, type Candidate } from "./fuzzy";
 
 export interface ClassAlias {
   templateId: string;
@@ -73,6 +75,21 @@ export interface ClassMatch {
 export function findClassTemplate(text: string): ClassMatch {
   const r = bestMatch(text, CANDIDATES);
   if (r.best && r.bestScore >= 0.6) return { match: r.best.value, suggestions: [] };
+
+  // The token-overlap score divides by the QUERY's word count, so pairing a
+  // real class with an unbuilt subclass we have no alias for ("soul-knife
+  // rogue", "shadow monk") drags the whole phrase below the 0.6 threshold
+  // even though "rogue"/"monk" itself is an exact, unambiguous word in it.
+  // Fall back to a literal whole-word class-name hit so that still resolves
+  // to the one subclass we DO have, instead of a bare parse failure —
+  // mentionedDifferentSubclass() (setupParser.ts) then explains the swap.
+  // CLASS_TEMPLATES lists each class's default subclass first among its
+  // siblings (only the default's own aliases include the bare class word),
+  // so `.find` naturally picks that one.
+  const words = new Set(normalize(text).split(" "));
+  const byBareClass = CLASS_TEMPLATES.find((c) => words.has(c.className));
+  if (byBareClass) return { match: byBareClass, suggestions: [] };
+
   const seen = new Set<string>();
   const suggestions = r.runnersUp.map((c) => c.value).filter((c) => (seen.has(c.templateId) ? false : (seen.add(c.templateId), true)));
   return { match: undefined, suggestions };
