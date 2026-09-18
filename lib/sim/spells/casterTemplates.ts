@@ -521,6 +521,47 @@ export function clockworkSoulSorcerer(level: number): Combatant {
   }), level);
 }
 
+// Arcane Trickster: a third-caster rogue (spell slots at Eldritch Knight's
+// rate) whose spell list is mostly illusion/enchantment off the wizard list
+// (Mage Hand Legerdemain, Shield, Invisibility) — `spellClass: "wizard"` just
+// borrows the wizard spell-list plumbing already built (this sim has no
+// separate "rogue" spell list of its own), with an explicit `prepared` list
+// so autoPrepare's per-class scoring never has to know what a rogue caster
+// is. The Sneak Attack chassis (attack action, Evasion, Uncanny Dodge) is
+// bolted on the same way the martial-only rogues build it in templates.ts —
+// duplicated rather than imported, since templates.ts already imports THIS
+// file (importing back would be circular).
+export function arcaneTricksterRogue(level: number): Combatant {
+  const pb = pbFor(level);
+  const dex = pb === 6 ? 5 : 4;
+  const int = pb === 6 ? 3 : 2;
+  const sneak = `${Math.ceil(level / 2)}d6`;
+  return makeCaster({
+    id: "arcane-trickster-rogue", name: `Rogue ${level}`, level, spellClass: "wizard", casterKind: "third", spellAbility: "int",
+    ac: 18, hp: between(level, 10, 7 * 20 + 12),
+    abilities: { str: score(-1), dex: score(dex), con: score(2), int: score(int), wis: score(1), cha: score(1) },
+    proficientSaves: ["dex", "int"], focus: "balanced",
+    cantrips: ["mage-hand", "minor-illusion"],
+    prepared: ["shield", "invisibility"],
+    extraTraits: [{ id: "evasion", name: "Evasion", trigger: "always", automation: [], text: "half on a failed Dex save, none on a success (engine hook)" }],
+    extraReactions: [{
+      id: "uncanny-dodge", name: "Uncanny Dodge", cost: { reaction: 1 }, recharge: "none",
+      trigger: "self.wasHitByAttack", automation: [{ type: "note", text: "halves the triggering attack's damage (engine hook)" }],
+    }],
+    extraActions: [{
+      id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
+      automation: [{ type: "target", who: { who: "squishiestEnemy" }, effects: [
+        { type: "attack", bonus: pb + dex, onHit: [
+          { type: "damage", amount: `1d8+${dex}`, damageType: "piercing" },
+          { type: "damage", amount: sneak, damageType: "piercing", requiresSneakAttack: true },
+        ] },
+        { type: "attack", bonus: pb + dex, onHit: [{ type: "damage", amount: `1d8+${dex}`, damageType: "piercing" }] },
+      ] }],
+    }],
+    keepDistance: true, opener: [], targetPriority: "squishiest",
+  });
+}
+
 export function moonDruid(level: number): Combatant {
   const pb = pbFor(level);
   const wis = pb === 6 ? 5 : 4;
@@ -611,6 +652,7 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "hunter-ranger": hunterRanger,
   "beastmaster-ranger": beastMasterRanger,
   "battlesmith-artificer": battleSmithArtificer,
+  "arcane-trickster-rogue": arcaneTricksterRogue,
   "draconic-sorcerer": draconicSorcerer,
   "wild-magic-sorcerer": wildMagicSorcerer,
   "divine-soul-sorcerer": divineSoulSorcerer,

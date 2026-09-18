@@ -199,6 +199,170 @@ function assassinRogue(level: number): Combatant {
   });
 }
 
+// Shared chassis every rogue subclass below builds on: the same base stats,
+// Evasion, Uncanny Dodge, and an "Attack + Sneak Attack" action (main-hand +
+// offhand, Two-Weapon Fighting folded into one action like the GWM fighter's
+// bonus swing) — only what's genuinely subclass-specific differs per rogue.
+function rogueBase(level: number) {
+  const pb = pbFor(level);
+  const dex = pb === 6 ? 5 : 4;
+  const sneak = `${Math.ceil(level / 2)}d6`;
+  return {
+    pb, dex, sneak,
+    ac: 18, hp: between(level, 10, 7 * 20 + 12),
+    abilities: { str: score(0), dex: score(dex), con: score(2), int: score(2), wis: score(2), cha: score(1) } as Combatant["abilities"],
+    proficientSaves: ["dex", "int"] as Ability[],
+    evasion: { id: "evasion", name: "Evasion", trigger: "always" as const, automation: [], text: "half on a failed Dex save, none on a success (engine hook)" },
+    uncannyDodge: {
+      id: "uncanny-dodge", name: "Uncanny Dodge", cost: { reaction: 1 }, recharge: "none" as const,
+      trigger: "self.wasHitByAttack", automation: [{ type: "note" as const, text: "halves the triggering attack's damage (engine hook)" }],
+    },
+    /** the base "Attack + Sneak Attack" automation; `sneakAlways` drops the
+     *  advantage/ally-adjacent requirement (Swashbuckler's Rakish Audacity);
+     *  `damageType` lets Soulknife reskin it to psychic (Psychic Blades). */
+    attack: (opts?: { sneakAlways?: boolean; damageType?: import("../schema").DamageType }): Combatant["actions"][number] => ({
+      id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
+      automation: [{ type: "target", who: { who: "squishiestEnemy" }, effects: [
+        { type: "attack", bonus: pb + dex, onHit: [
+          { type: "damage", amount: `1d8+${dex}`, damageType: opts?.damageType ?? "piercing" },
+          { type: "damage", amount: sneak, damageType: opts?.damageType ?? "piercing", ...(opts?.sneakAlways ? {} : { requiresSneakAttack: true }) },
+        ] },
+        { type: "attack", bonus: pb + dex, onHit: [{ type: "damage", amount: `1d8+${dex}`, damageType: opts?.damageType ?? "piercing" }] },
+      ] }],
+    }),
+  };
+}
+
+function thiefRogue(level: number): Combatant {
+  const b = rogueBase(level);
+  return pc({
+    id: "thief-rogue", name: `Rogue ${level}`, level,
+    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
+    traits: [b.evasion],
+    // Thief's Reflexes (17th level) is the class's one real extra-COMBAT
+    // feature (everything earlier — Fast Hands, Second-Story Work, Supreme
+    // Sneak — is utility/exploration, not damage) — modeled as a once-per-
+    // fight bonus action that repeats the Attack action, standing in for the
+    // "act again at initiative -10" turn the engine's fixed turn order can't
+    // literally insert.
+    resources: level >= 17 ? { thiefs_reflexes: { max: 1, recharge: "longRest" } } : {},
+    actions: [
+      b.attack(),
+      ...(level >= 17 ? [{
+        id: "thiefs-reflexes", name: "Thief's Reflexes", cost: { bonus: 1 }, recharge: "none" as const,
+        limitedUse: { resource: "thiefs_reflexes", amount: 1 },
+        automation: [{ type: "useAction" as const, action: "attack", times: 1 }],
+      }] : []),
+    ],
+    reactions: [b.uncannyDodge],
+    keepDistance: true, targetPriority: "squishiest",
+  });
+}
+
+function swashbucklerRogue(level: number): Combatant {
+  const b = rogueBase(level);
+  return pc({
+    id: "swashbuckler-rogue", name: `Rogue ${level}`, level,
+    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
+    traits: [b.evasion],
+    // Rakish Audacity: Sneak Attack no longer needs advantage or an ally
+    // adjacent to the target, just that no OTHER creature is within 5 ft of
+    // it — the engine has no positional "who else is adjacent" check beyond
+    // the existing ally-adjacent one, so this is simplified to "always on",
+    // the honest limit of what's modelable here.
+    actions: [b.attack({ sneakAlways: true })],
+    reactions: [b.uncannyDodge],
+    keepDistance: true, targetPriority: "squishiest",
+  });
+}
+
+function mastermindRogue(level: number): Combatant {
+  const b = rogueBase(level);
+  return pc({
+    id: "mastermind-rogue", name: `Rogue ${level}`, level,
+    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
+    traits: [b.evasion],
+    actions: [
+      b.attack(),
+      // Master of Tactics: the Help action at range. RAW just grants
+      // advantage on the ally's next attack — that's exactly what a
+      // short-lived attackAdvantage effect already does here.
+      {
+        id: "master-of-tactics", name: "Master of Tactics", cost: { bonus: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "lowestHpAlly" }, effects: [
+          { type: "applyEffect", name: "master-of-tactics", durationRounds: 1, mods: { attackAdvantage: "adv" } },
+        ] }],
+      },
+    ],
+    reactions: [b.uncannyDodge],
+    keepDistance: true, targetPriority: "squishiest",
+  });
+}
+
+function inquisitiveRogue(level: number): Combatant {
+  const b = rogueBase(level);
+  return pc({
+    id: "inquisitive-rogue", name: `Rogue ${level}`, level,
+    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
+    traits: [b.evasion],
+    actions: [
+      b.attack(),
+      // Insightful Fighting: bonus action, size up a target so Sneak Attack
+      // lands on them without needing advantage — modeled as a short
+      // self-advantage buff, which already satisfies the engine's sneak-
+      // attack "had advantage" check without a second bespoke flag.
+      {
+        id: "insightful-fighting", name: "Insightful Fighting", cost: { bonus: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "self" }, effects: [
+          { type: "applyEffect", name: "insightful-fighting", durationRounds: 1, mods: { attackAdvantage: "adv" } },
+        ] }],
+      },
+    ],
+    reactions: [b.uncannyDodge],
+    keepDistance: true, targetPriority: "squishiest",
+  });
+}
+
+function scoutRogue(level: number): Combatant {
+  const b = rogueBase(level);
+  return pc({
+    id: "scout-rogue", name: `Rogue ${level}`, level,
+    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
+    traits: [b.evasion],
+    actions: [
+      b.attack(),
+      // Sudden Strike (9th level): a second attack as a bonus action, which
+      // can carry Sneak Attack if the first swing didn't (the "once per
+      // turn" cap is already enforced by requiresSneakAttack's own check).
+      ...(level >= 9 ? [{
+        id: "sudden-strike", name: "Sudden Strike", cost: { bonus: 1 }, recharge: "none" as const,
+        automation: [{ type: "useAction" as const, action: "attack", times: 1 }],
+      }] : []),
+    ],
+    reactions: [b.uncannyDodge],
+    keepDistance: true, targetPriority: "squishiest",
+  });
+}
+
+function soulknifeRogue(level: number): Combatant {
+  const b = rogueBase(level);
+  return pc({
+    id: "soulknife-rogue", name: `Rogue ${level}`, level,
+    ac: b.ac, hp: b.hp, abilities: b.abilities, proficientSaves: b.proficientSaves,
+    traits: [b.evasion],
+    // Homing Strikes (9th level): expend a psi die to reroll a missed
+    // Psychic Blades attack — reuses the exact boostMissedAttack specialRule
+    // built for Divine Soul Sorcerer's Favored by the Gods (same shape: add
+    // a bonus die to a roll that would miss, recheck).
+    specialRules: level >= 9 ? [{ rule: "boostMissedAttack", bonusDice: "1d6", resource: "psi_die" }] : [],
+    resources: level >= 9 ? { psi_die: { max: 1, recharge: "longRest" } } : {},
+    // Psychic Blades: the same attack, reskinned to psychic damage.
+    actions: [b.attack({ damageType: "psychic" })],
+    reactions: [b.uncannyDodge],
+    keepDistance: true, targetPriority: "squishiest",
+  });
+}
+
 function totemBarbarian(level: number): Combatant {
   const pb = pbFor(level);
   const str = pb === 6 ? 5 : 4;
@@ -338,6 +502,12 @@ const BUILDERS: Record<string, (level: number) => Combatant> = {
   "gwm-fighter": gwmFighter,
   "battlemaster-fighter": battleMasterFighter,
   "assassin-rogue": assassinRogue,
+  "thief-rogue": thiefRogue,
+  "swashbuckler-rogue": swashbucklerRogue,
+  "mastermind-rogue": mastermindRogue,
+  "inquisitive-rogue": inquisitiveRogue,
+  "scout-rogue": scoutRogue,
+  "soulknife-rogue": soulknifeRogue,
   "totem-barbarian": totemBarbarian,
   "open-hand-monk": openHandMonk,
   ...CASTER_BUILDERS,
