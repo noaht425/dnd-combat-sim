@@ -134,7 +134,12 @@ export type AutomationNode =
   | { type: "spendResource"; resource: string; amount?: number }
   | { type: "rechargeRoll"; resource: string }
   | { type: "useAction"; action: string; times?: number }
-  | { type: "summon"; statBlock: string; count: string; max?: number; note?: string };
+  | { type: "summon"; statBlock: string; count: string; max?: number; note?: string }
+  /** weighted random pick, one branch fires (Wild Magic Surge and similar
+   *  chaotic-magic tables) — weights don't need to sum to anything in
+   *  particular, they're relative. A no-op option (empty `then`, a big
+   *  weight) is how "usually nothing happens" is expressed. */
+  | { type: "randomEffect"; options: { weight: number; then: AutomationNode[]; note?: string }[] };
 
 export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
   z.union([
@@ -210,6 +215,14 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       count: diceSchema,
       max: z.number().int().positive().optional(), // total of this stat block the summoner may control at once
       note: z.string().optional(),
+    }),
+    z.object({
+      type: z.literal("randomEffect"),
+      options: z.array(z.object({
+        weight: z.number().positive(),
+        then: z.array(automationNodeSchema),
+        note: z.string().optional(),
+      })).min(1),
     }),
   ]),
 );

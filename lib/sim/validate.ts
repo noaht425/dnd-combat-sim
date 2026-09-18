@@ -43,6 +43,9 @@ function walk(nodes: AutomationNode[] | undefined, visit: (n: AutomationNode) =>
       case "applyEffect":
         walk(n.tick, visit);
         break;
+      case "randomEffect":
+        for (const o of n.options) walk(o.then, visit);
+        break;
     }
   }
 }

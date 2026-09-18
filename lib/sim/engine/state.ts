@@ -109,6 +109,14 @@ export interface CombatState {
   summonRegistry?: Record<string, Combatant>;
   /** set while a reaction is resolving, so reactions don't trigger reactions */
   inReaction?: boolean;
+  /** set true the moment any reaction fires during the current top-level
+   *  action's resolution (reset at the start of each top-level runAction) —
+   *  unlike `inReaction`, this stays true afterward, so the action's own
+   *  narration diff can tell "the source's own HP moved because a reaction
+   *  retaliated against it" (already narrated by the reaction's own line)
+   *  apart from "the source's own effects genuinely damaged itself"
+   *  (Wild Magic Surge and the like, which has no other line to show it). */
+  reactionFiredThisAction?: boolean;
   /**
    * Battle mode seam: decide whether a unit spends its reaction. Returns
    * true = take it, false = decline. May throw to unwind the stack when it

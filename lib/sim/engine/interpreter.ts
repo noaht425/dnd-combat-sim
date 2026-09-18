@@ -471,6 +471,15 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         break;
       }
 
+      case "randomEffect": {
+        const total = node.options.reduce((sum, o) => sum + o.weight, 0);
+        let roll = state.rng.next() * total;
+        const chosen = node.options.find((o) => (roll -= o.weight) < 0) ?? node.options.at(-1)!;
+        if (chosen.note) say(state, `${source.name} — ${chosen.note}`, source.id);
+        runAutomation(chosen.then, { ...ctx, depth: ctx.depth + 1 });
+        break;
+      }
+
       default:
         break;
     }
@@ -497,6 +506,7 @@ export function runAction(
   opts: RunActionOpts = {},
 ): void {
   if (isIncapacitated(source) && !opts.skipIncapacitatedCheck) return;
+  if (!opts.asReaction) state.reactionFiredThisAction = false;
   const geo = opts.geo ?? {};
 
   // track "is it singing?" for summon gates (a song-driven raise-minions ability)
@@ -533,12 +543,15 @@ export function runAction(
   const parts: string[] = [];
   for (const u of state.units.values()) {
     const delta = (before.get(u.id) ?? 0) - (u.hp + u.tempHp);
-    // a same-side unit *losing* HP during my action — including me — is
-    // reaction / aura collateral (Riposte striking back, a damaging aura):
-    // that reaction logs its own line, so don't double-count it here. No
-    // action currently deals intentional self-damage, so excluding the
-    // source too costs nothing. Healing still shows either way.
-    if (u.side === source.side && delta > 0) continue;
+    // an ally *losing* HP during my action is always reaction / aura
+    // collateral (a triggered breath, a damaging aura) — that reaction logs
+    // its own line, so don't double-count it here. The source's own HP loss
+    // is only the same story if a reaction actually fired this action
+    // (Riposte striking back at me, already narrated separately) — some
+    // effects (Wild Magic Surge) genuinely damage the source as their own
+    // direct effect, with no other line that would show it, so that case
+    // stays visible. Healing still shows either way.
+    if (u.side === source.side && delta > 0 && (u.id !== source.id || state.reactionFiredThisAction)) continue;
     const newConds = [...u.conditions.keys()].filter((c) => !condsBefore.get(u.id)?.has(c));
     const newFx = u.effects.map((e) => e.name).filter((n) => !fxBefore.get(u.id)?.has(n));
     const bits: string[] = [];

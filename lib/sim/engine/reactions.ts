@@ -86,6 +86,7 @@ function consume(u: CombatantState, r: Action): void {
 function fire(state: CombatState, u: CombatantState, r: Action, forceTarget?: CombatantState): void {
   consume(u, r);
   state.inReaction = true;
+  state.reactionFiredThisAction = true;
   try {
     runAction(state, u, r, { asReaction: true, forceScope: forceTarget ? [forceTarget] : undefined });
   } finally {

@@ -130,6 +130,46 @@ export function draconicSorcerer(level: number): Combatant {
   });
 }
 
+// Wild Magic Surge: RAW is a natural 1 on a d20 after casting a sorcerer
+// spell of 1st level or higher (~5%, rare enough to rarely show up in a
+// short simulated fight) — weighted up to ~18% here for visibility/testing,
+// noted so it's not mistaken for a mechanics error. The "nothing happens"
+// branch carries the rest of the weight, same as most of the real d100
+// table's harmless/flavor-only entries.
+const WILD_MAGIC_TABLE: { weight: number; then: import("../schema").AutomationNode[]; note?: string }[] = [
+  { weight: 82, then: [] },
+  { weight: 4, then: [{ type: "target", who: { who: "self" }, effects: [{ type: "damage", amount: "2d10", damageType: "force" }] }], note: "wild magic surge — force energy crackles wildly" },
+  { weight: 4, then: [{ type: "target", who: { who: "self" }, effects: [{ type: "heal", amount: "3d6" }] }], note: "wild magic surge — restorative light washes over you" },
+  { weight: 4, then: [{ type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: "2d6" }] }], note: "wild magic surge — a shimmering ward flickers into being" },
+  { weight: 3, then: [{ type: "target", who: { who: "nearestEnemy" }, effects: [{ type: "applyCondition", condition: "frightened", durationRounds: 1 }] }], note: "wild magic surge — a wave of dread rolls outward" },
+  { weight: 3, then: [{ type: "target", who: { who: "lowestHpAlly" }, effects: [{ type: "heal", amount: "2d8" }] }], note: "wild magic surge — healing energy leaps to whoever needs it most" },
+];
+
+/** appends a Wild Magic Surge check after every leveled spell-cast action.
+ *  cast.ts ids leveled spells "cast-<id>-<slot>" (slot >= 1) and cantrips
+ *  bare "cast-<id>" with no slot suffix — cantrips don't trigger a surge. */
+function withWildMagicSurge(c: Combatant): Combatant {
+  return {
+    ...c,
+    actions: c.actions.map((a) => {
+      if (!a.isSpell || !/-\d+$/.test(a.id)) return a;
+      return { ...a, automation: [...a.automation, { type: "randomEffect", options: WILD_MAGIC_TABLE }] };
+    }),
+  };
+}
+
+export function wildMagicSorcerer(level: number): Combatant {
+  const pb = pbFor(level);
+  const cha = pb === 6 ? 5 : 4;
+  return withWildMagicSurge(makeCaster({
+    id: "wild-magic-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
+    ac: 14, hp: between(level, 9, 7 * 20 + 12),
+    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
+    proficientSaves: ["con", "cha"], focus: "blaster",
+    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
+  }));
+}
+
 export function moonDruid(level: number): Combatant {
   const pb = pbFor(level);
   const wis = pb === 6 ? 5 : 4;
@@ -181,6 +221,7 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "hunter-ranger": hunterRanger,
   "battlesmith-artificer": battleSmithArtificer,
   "draconic-sorcerer": draconicSorcerer,
+  "wild-magic-sorcerer": wildMagicSorcerer,
   "moon-druid": moonDruid,
   "lore-bard": loreBard,
   "warlock": warlock,

@@ -106,6 +106,8 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return "marks the target";
     case "summon":
       return `summons ${n.count} ${n.statBlock}`;
+    case "randomEffect":
+      return "unpredictable — a random effect";
     case "note":
     case "removeEffect":
     case "spendResource":
