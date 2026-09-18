@@ -172,6 +172,11 @@ function assassinRogue(level: number): Combatant {
     ac: 18, hp: between(level, 10, 7 * 20 + 12),
     abilities: { str: score(0), dex: score(pb === 6 ? 5 : 4), con: score(2), int: score(2), wis: score(2), cha: score(1) },
     proficientSaves: ["dex", "int"],
+    // Assassinate — the mechanism (advantage + auto-crit on round-1 hits,
+    // priority to act first) already existed in the engine (resolve.ts,
+    // loop.ts) gated on this "ambush" special rule; nothing actually set it
+    // for the one rogue template that's meant to have it.
+    specialRules: [{ rule: "ambush" }],
     traits: [{ id: "evasion", name: "Evasion", trigger: "always", automation: [], text: "half on a failed Dex save, none on a success (engine hook)" }],
     actions: [{
       id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
@@ -203,7 +208,7 @@ function totemBarbarian(level: number): Combatant {
     ac: 16, hp: between(level, 15, 10 * 20 + 20), // d12 + Con + Tough-ish
     abilities: { str: score(str), dex: score(2), con: score(pb === 6 ? 5 : 4), int: score(-1), wis: score(1), cha: score(0) },
     proficientSaves: ["str", "con"],
-    // Danger Sense — advantage on Dex saves; Rage soak modelled as a 25% cut to all incoming
+    // Danger Sense — advantage on Dex saves.
     specialRules: [{ rule: "advantageOnSaves", abilities: ["dex"] }],
     resources: { rage: { max: level >= 17 ? 6 : level >= 12 ? 5 : 4, recharge: "longRest" } },
     actions: [
@@ -211,7 +216,11 @@ function totemBarbarian(level: number): Combatant {
         id: "rage", name: "Rage", cost: { bonus: 1 }, recharge: "none",
         limitedUse: { resource: "rage", amount: 1 },
         automation: [{ type: "target", who: { who: "self" }, effects: [
-          { type: "applyEffect", name: "rage", durationRounds: 10, mods: { damageTakenMultiplier: 0.75 } },
+          // Totem Spirit: Bear (3rd level) upgrades bare Rage's resistance to
+          // physical damage only into resistance to everything but psychic —
+          // modeled as a flat multiplier since EffectMods has no per-type
+          // resistance list, reasonable since it only applies while raging.
+          { type: "applyEffect", name: "rage", durationRounds: 10, mods: { damageTakenMultiplier: level >= 3 ? 0.5 : 0.75 } },
         ] }],
       },
       {
@@ -231,7 +240,7 @@ function openHandMonk(level: number): Combatant {
   const dc = 8 + pb + (pb === 6 ? 3 : 3); // Wis
   const die = level >= 17 ? 10 : level >= 11 ? 8 : level >= 5 ? 6 : 4;
   const baseAttacks = level >= 5 ? 2 : 1; // Extra Attack from level 5
-  const mkSwing = (stunAttempt: boolean): AutomationNode => ({
+  const mkSwing = (stunAttempt: boolean, openHand = false): AutomationNode => ({
     type: "attack", bonus: pb + dex, onHit: [
       { type: "damage", amount: `1d${die}+${dex}`, damageType: "bludgeoning" },
       // spends ki to try a Stunning Strike — only on the variant that asks for it
@@ -243,6 +252,13 @@ function openHandMonk(level: number): Combatant {
               { type: "save" as const, ability: "con" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "stunned" as const, durationRounds: 1, saveEnds: { ability: "con" as const, dc, at: "endOfTurn" as const } }] },
             ],
           }]
+        : []),
+      // Open Hand Technique — Way of the Open Hand's actual signature feature,
+      // free on any Flurry of Blows hit (no ki cost): knock prone (picking
+      // one of the 3 real options — prone / push 15ft / no reactions — same
+      // simplification as Battle Master picking one save-or-effect per die)
+      ...(openHand
+        ? [{ type: "save" as const, ability: "dex" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "prone" as const, durationRounds: 1 }] }]
         : []),
     ],
   });
@@ -270,7 +286,7 @@ function openHandMonk(level: number): Combatant {
         // previously folded into every attack for free
         id: "flurry", name: "Flurry of Blows", cost: { bonus: 1 }, recharge: "none",
         limitedUse: { resource: "ki", amount: 1 },
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: 2 }, () => mkSwing(false)) }],
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: 2 }, (_, i) => mkSwing(false, i === 0)) }],
       },
     ],
     targetPriority: "lowestHp",

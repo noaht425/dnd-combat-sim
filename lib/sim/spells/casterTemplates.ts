@@ -29,10 +29,44 @@ export function blasterWizard(level: number): Combatant {
   });
 }
 
+/** recursively finds every "heal" node reachable from `nodes` and adds a
+ *  sibling "heal" node next to each one — Disciple of Life's flat bonus
+ *  applies to the same target the original heal already resolved to. */
+function injectHealBonus(nodes: import("../schema").AutomationNode[], amount: number): import("../schema").AutomationNode[] {
+  const out: import("../schema").AutomationNode[] = [];
+  for (const n of nodes) {
+    if (n.type === "heal") {
+      out.push(n, { type: "heal", amount: String(amount) });
+      continue;
+    }
+    if (n.type === "target") out.push({ ...n, effects: injectHealBonus(n.effects, amount) });
+    else if (n.type === "branch") out.push({ ...n, then: injectHealBonus(n.then, amount), else: n.else && injectHealBonus(n.else, amount) });
+    else out.push(n);
+  }
+  return out;
+}
+
+/** Disciple of Life: a healing spell of 1st level+ restores 2 + the spell's
+ *  slot level in additional HP. Applied per spell-slot variant (the bonus
+ *  scales with the slot actually used, matching RAW), skipping cantrips
+ *  (there are no healing cantrips, but the guard costs nothing). */
+function withDiscipleOfLife(c: Combatant): Combatant {
+  return {
+    ...c,
+    actions: c.actions.map((a) => {
+      const slotMatch = a.id.match(/-(\d+)$/);
+      if (!a.isSpell || !slotMatch) return a;
+      const slot = Number(slotMatch[1]);
+      const automation = injectHealBonus(a.automation, 2 + slot);
+      return automation === a.automation ? a : { ...a, automation };
+    }),
+  };
+}
+
 export function lifeCleric(level: number): Combatant {
   const pb = pbFor(level);
   const wis = pb === 6 ? 5 : 4;
-  return makeCaster({
+  return withDiscipleOfLife(makeCaster({
     id: "life-cleric", name: `Cleric ${level}`, level, spellClass: "cleric", casterKind: "full", spellAbility: "wis",
     ac: 19, hp: between(level, 10, 7 * 20 + 15),
     abilities: { str: score(1), dex: score(0), con: score(2), int: score(0), wis: score(wis), cha: score(1) },
@@ -43,7 +77,7 @@ export function lifeCleric(level: number): Combatant {
       ...stub(`1d8+${1}`, pb + 1),
     ],
     keepDistance: true, targetPriority: "lowestHp",
-  });
+  }));
 }
 
 export function vengeancePaladin(level: number): Combatant {
@@ -258,13 +292,33 @@ export function wildMagicSorcerer(level: number): Combatant {
 export function moonDruid(level: number): Combatant {
   const pb = pbFor(level);
   const wis = pb === 6 ? 5 : 4;
-  return makeCaster({
+  const beastDie = level >= 8 ? 10 : level >= 6 ? 8 : 6; // rough CR-appropriate beast form scaling
+  const c = makeCaster({
     id: "moon-druid", name: `Druid ${level}`, level, spellClass: "druid", casterKind: "full", spellAbility: "wis",
-    ac: 15, hp: between(level, 10, 8 * 20 + 16), // Wild Shape HP buffer folded in
+    ac: 15, hp: between(level, 10, 8 * 20 + 16), // a little extra cushion on top of Wild Shape's own temp HP
     abilities: { str: score(1), dex: score(1), con: score(3), int: score(0), wis: score(wis), cha: score(0) },
     proficientSaves: ["con", "int", "wis"], focus: "controller",
-    extraActions: stub(`2d6+3`, pb + 4), keepDistance: false, targetPriority: "lowestHp",
+    extraActions: [
+      {
+        // Combat Wild Shape — the actual signature feature; a bonus action
+        // (not the action cost non-Moon druids pay), matching RAW. This isn't
+        // a real transformation (the engine has no way to gate a follow-up
+        // action behind "currently wild-shaped," so an immediate claw swing
+        // is folded into the same activation instead of unlocking a separate
+        // beast-form action) — but it captures Wild Shape's real combat
+        // impact: a temp-HP buffer plus a hard-hitting extra attack.
+        id: "wild-shape", name: "Wild Shape (Bear)", cost: { bonus: 1 }, recharge: "none",
+        limitedUse: { resource: "wild_shape", amount: 1 },
+        automation: [
+          { type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: `4d${beastDie}` }] },
+          { type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: pb + 4, onHit: [{ type: "damage", amount: `2d${beastDie}+4`, damageType: "bludgeoning" }] }] },
+        ],
+      },
+      ...stub(`2d6+3`, pb + 4),
+    ],
+    keepDistance: false, opener: ["wild-shape"], targetPriority: "lowestHp",
   });
+  return { ...c, resources: { ...c.resources, wild_shape: { max: 2, recharge: "shortRest" } } };
 }
 
 export function loreBard(level: number): Combatant {
