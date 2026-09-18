@@ -42,6 +42,16 @@ export const CLASS_TEMPLATES: ClassAlias[] = [
     aliases: ["sorcerer", "draconic sorcerer", "dragon sorcerer", "draconic bloodline sorcerer"] },
   { templateId: "wild-magic-sorcerer", className: "sorcerer", subclassName: "Wild Magic",
     aliases: ["wild magic sorcerer", "wild sorcerer", "wild magic"] },
+  { templateId: "divine-soul-sorcerer", className: "sorcerer", subclassName: "Divine Soul",
+    aliases: ["divine soul sorcerer", "divine soul", "divine sorcerer"] },
+  { templateId: "shadow-magic-sorcerer", className: "sorcerer", subclassName: "Shadow Magic",
+    aliases: ["shadow magic sorcerer", "shadow sorcerer", "shadow magic"] },
+  { templateId: "storm-sorcerer", className: "sorcerer", subclassName: "Storm Sorcery",
+    aliases: ["storm sorcery sorcerer", "storm sorcerer", "storm sorcery"] },
+  { templateId: "aberrant-mind-sorcerer", className: "sorcerer", subclassName: "Aberrant Mind",
+    aliases: ["aberrant mind sorcerer", "aberrant mind", "aberrant sorcerer"] },
+  { templateId: "clockwork-soul-sorcerer", className: "sorcerer", subclassName: "Clockwork Soul",
+    aliases: ["clockwork soul sorcerer", "clockwork soul", "clockwork sorcerer"] },
   { templateId: "moon-druid", className: "druid", subclassName: "Circle of the Moon",
     aliases: ["druid", "moon druid", "circle of the moon druid"] },
   { templateId: "lore-bard", className: "bard", subclassName: "College of Lore",
@@ -74,7 +84,6 @@ export interface ClassMatch {
 
 export function findClassTemplate(text: string): ClassMatch {
   const r = bestMatch(text, CANDIDATES);
-  if (r.best && r.bestScore >= 0.6) return { match: r.best.value, suggestions: [] };
 
   // The token-overlap score divides by the QUERY's word count, so pairing a
   // real class with an unbuilt subclass we have no alias for ("soul-knife
@@ -88,6 +97,19 @@ export function findClassTemplate(text: string): ClassMatch {
   // so `.find` naturally picks that one.
   const words = new Set(normalize(text).split(" "));
   const byBareClass = CLASS_TEMPLATES.find((c) => words.has(c.className));
+
+  // An exact whole-word class name always outranks a fuzzy match that only
+  // won on partial/phonetic credit for a DIFFERENT class — "shadow monk"
+  // contains the literal word "monk", which shouldn't lose to some other
+  // class's subclass alias that happens to share a word ("Shadow Magic"
+  // sorcerer). Only overrides when the fuzzy winner is a different class
+  // than the exact word — same-class fuzzy wins (picking the right
+  // SUBCLASS, e.g. "wild magic sorcerer" over the bare-word default) still
+  // go through untouched.
+  if (byBareClass && r.best && r.bestScore >= 0.6 && r.best.value.className !== byBareClass.className) {
+    return { match: byBareClass, suggestions: [] };
+  }
+  if (r.best && r.bestScore >= 0.6) return { match: r.best.value, suggestions: [] };
   if (byBareClass) return { match: byBareClass, suggestions: [] };
 
   const seen = new Set<string>();

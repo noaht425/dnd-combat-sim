@@ -257,6 +257,7 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("acMeltOnHit"), amount: z.number().int().positive(), min: z.number().int() }), // each physical hit shaves the target's AC, stacking
   z.object({ rule: z.literal("noReactionsAfter"), damageType: damageTypeSchema }),                   // a damage type that strips the target's reactions for a round
   z.object({ rule: z.literal("ambush") }),                                                          // acts first on round 1; its round-1 hits have advantage and auto-crit (Assassinate)
+  z.object({ rule: z.literal("boostMissedAttack"), bonusDice: z.string(), resource: z.string() }),   // Favored by the Gods — once/rest, add a bonus die to a roll that would miss and recheck
 ]);
 export type SpecialRule = z.infer<typeof specialRuleSchema>;
 

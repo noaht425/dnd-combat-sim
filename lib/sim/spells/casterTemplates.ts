@@ -396,6 +396,131 @@ export function wildMagicSorcerer(level: number): Combatant {
   })), level);
 }
 
+// Favored by the Gods (Divine Soul, 1st level): once per long rest, add a
+// fixed bonus die to a roll that would otherwise miss and recheck it — the
+// actual reroll/boost logic lives in resolve.ts's rollAttackImpl (reads the
+// `boostMissedAttack` specialRule and spends the resource it names); this
+// just declares both. RAW also covers saving throws and ability checks —
+// scoped to attack rolls only here, the one this combat sim actually models.
+export function divineSoulSorcerer(level: number): Combatant {
+  const pb = pbFor(level);
+  const cha = pb === 6 ? 5 : 4;
+  const c = withMetamagic(makeCaster({
+    id: "divine-soul-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
+    ac: 14, hp: between(level, 9, 7 * 20 + 12),
+    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
+    proficientSaves: ["con", "cha"], focus: "blaster",
+    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
+  }), level);
+  return {
+    ...c,
+    specialRules: [...c.specialRules, { rule: "boostMissedAttack", bonusDice: "2d4", resource: "favored_by_gods" }],
+    resources: { ...c.resources, favored_by_gods: { max: 1, recharge: "longRest" } },
+  };
+}
+
+// Strength of the Grave (Shadow Magic, 1st level): once per long rest, a hit
+// that would drop the sorcerer to 0 HP instead leaves them at 1 — reuses the
+// engine's existing undyingReturn specialRule verbatim (already dispatched
+// by handleDropToZero in resolve.ts for monster "refuses to die" traits).
+// RAW gates this behind a CHA save the engine has no generic hook for;
+// treating it as unconditional matches every other undyingReturn user here.
+export function shadowMagicSorcerer(level: number): Combatant {
+  const pb = pbFor(level);
+  const cha = pb === 6 ? 5 : 4;
+  const c = withMetamagic(makeCaster({
+    id: "shadow-magic-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
+    ac: 14, hp: between(level, 9, 7 * 20 + 12),
+    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
+    proficientSaves: ["con", "cha"], focus: "blaster",
+    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
+  }), level);
+  return { ...c, specialRules: [...c.specialRules, { rule: "undyingReturn", returnHp: 1, oncePer: "encounter" }] };
+}
+
+// Heart of the Storm (Storm Sorcery, 6th level): casting a lightning- or
+// thunder-damage spell of 1st level+ also deals thunder damage to nearby
+// creatures equal to half your sorcerer level (rounded up) — simplified,
+// like Elemental Affinity, into a flat bonus folded onto the spell's own
+// roll rather than a separate near-caster burst (the engine has no
+// positional "creatures near me, distinct from my target" targeting).
+function withHeartOfTheStorm(c: Combatant, level: number): Combatant {
+  if (level < 6) return c;
+  const bonus = Math.ceil(level / 2);
+  return {
+    ...c,
+    actions: c.actions.map((a) => {
+      if (!a.isSpell || !/-\d+$/.test(a.id)) return a;
+      const lightning = injectFirstDamageBonus(a.automation, bonus, "lightning");
+      if (lightning.applied) return { ...a, automation: lightning.nodes };
+      const thunder = injectFirstDamageBonus(a.automation, bonus, "thunder");
+      return thunder.applied ? { ...a, automation: thunder.nodes } : a;
+    }),
+  };
+}
+
+export function stormSorcerer(level: number): Combatant {
+  const pb = pbFor(level);
+  const cha = pb === 6 ? 5 : 4;
+  // Storm's Fury (18th level): retaliate with lightning when hit in melee —
+  // reuses the same whenHitByAttack trait dispatch as monster "hits back"
+  // traits (Corrosive Form), scoped onto the attacker via forceScope.
+  return withHeartOfTheStorm(withMetamagic(makeCaster({
+    id: "storm-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
+    ac: 14, hp: between(level, 9, 7 * 20 + 12),
+    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
+    proficientSaves: ["con", "cha"], focus: "blaster",
+    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
+    extraTraits: level >= 18 ? [{
+      id: "storms-fury", name: "Storm's Fury", trigger: "whenHitByAttack",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "damage", amount: "2d8", damageType: "lightning" }] }],
+    }] : [],
+  }), level), level);
+}
+
+// Psychic Defenses (Aberrant Mind, 6th level): resistance to psychic damage,
+// immune to being frightened.
+export function aberrantMindSorcerer(level: number): Combatant {
+  const pb = pbFor(level);
+  const cha = pb === 6 ? 5 : 4;
+  const c = withMetamagic(makeCaster({
+    id: "aberrant-mind-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
+    ac: 14, hp: between(level, 9, 7 * 20 + 12),
+    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
+    proficientSaves: ["con", "cha"], focus: "blaster",
+    extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
+  }), level);
+  if (level < 6) return c;
+  return { ...c, resistances: [...c.resistances, "psychic"], conditionImmunities: [...c.conditionImmunities, "frightened"] };
+}
+
+// Bastion of Law (Clockwork Soul, 6th level): bonus action, spend sorcery
+// points (up to CHA mod) to grant temp HP = 2x points spent to an ally —
+// simplified to always spending the full CHA-mod amount on the lowest-HP
+// ally, the same "spend a resource, grant tempHp to lowestHpAlly" shape as
+// Battle Master's Rally.
+export function clockworkSoulSorcerer(level: number): Combatant {
+  const pb = pbFor(level);
+  const cha = pb === 6 ? 5 : 4;
+  const bastion: Combatant["actions"] = level >= 6 ? [{
+    id: "bastion-of-law", name: "Bastion of Law", cost: { bonus: 1 }, recharge: "none",
+    automation: [{
+      type: "branch", if: `self.resource('sorcery_points') >= ${cha}`,
+      then: [
+        { type: "spendResource", resource: "sorcery_points", amount: cha },
+        { type: "target", who: { who: "lowestHpAlly" }, effects: [{ type: "tempHp", amount: `${2 * cha}` }] },
+      ],
+    }],
+  }] : [];
+  return withMetamagic(makeCaster({
+    id: "clockwork-soul-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
+    ac: 14, hp: between(level, 9, 7 * 20 + 12),
+    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
+    proficientSaves: ["con", "cha"], focus: "blaster",
+    extraActions: [...stub(`1d10`, pb + cha), ...bastion], keepDistance: true, targetPriority: "lowestHp",
+  }), level);
+}
+
 export function moonDruid(level: number): Combatant {
   const pb = pbFor(level);
   const wis = pb === 6 ? 5 : 4;
@@ -488,6 +613,11 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "battlesmith-artificer": battleSmithArtificer,
   "draconic-sorcerer": draconicSorcerer,
   "wild-magic-sorcerer": wildMagicSorcerer,
+  "divine-soul-sorcerer": divineSoulSorcerer,
+  "shadow-magic-sorcerer": shadowMagicSorcerer,
+  "storm-sorcerer": stormSorcerer,
+  "aberrant-mind-sorcerer": aberrantMindSorcerer,
+  "clockwork-soul-sorcerer": clockworkSoulSorcerer,
   "moon-druid": moonDruid,
   "lore-bard": loreBard,
   "warlock": warlock,

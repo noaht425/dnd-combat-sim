@@ -163,6 +163,23 @@ function rollAttackImpl(
   const crit = face >= critRange;
   const autoMiss = face === 1;
 
+  // Favored by the Gods (Divine Soul) — once per rest, when the roll as-is
+  // would miss, add a fixed bonus die and recheck. A crit is decided by the
+  // natural die face, not the total, so this can never manufacture one —
+  // only ever turns a genuine miss into a plain hit.
+  if (!autoMiss && !crit && face + toHit < ac) {
+    const fbg = attacker.ref.specialRules.find((r) => r.rule === "boostMissedAttack");
+    if (fbg && fbg.rule === "boostMissedAttack" && (attacker.resources.get(fbg.resource) ?? 0) > 0) {
+      const m = fbg.bonusDice.match(/(\d+)d(\d+)/);
+      const bonus = m ? state.rng.dice(Number(m[1]), Number(m[2])) : 0;
+      if (face + toHit + bonus >= ac) {
+        attacker.resources.set(fbg.resource, (attacker.resources.get(fbg.resource) ?? 0) - 1);
+        toHit += bonus;
+        say(state, `${attacker.name} is Favored by the Gods (+${bonus})`, attacker.id);
+      }
+    }
+  }
+
   // the target may spend a reaction to change this outcome (Shield, Weight of Ages)
   if (!state.inReaction && !autoMiss) {
     const rr = reactToIncomingAttack(state, { target, hitMargin: face + toHit - ac, crit });
