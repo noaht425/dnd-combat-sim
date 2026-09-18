@@ -4,6 +4,89 @@
 
 import type { Combatant } from "../schema";
 import { makeCaster } from "./caster";
+import { SPELLS_BY_ID } from "./catalog";
+
+/** "cast-fireball-3" -> "fireball"; "cast-fire-bolt" -> "fire-bolt" (cantrips
+ *  have no trailing slot number) — the slot suffix is always a bare integer,
+ *  which no catalog spell id ends in, so stripping it is unambiguous. */
+function baseSpellId(actionId: string): string {
+  return actionId.replace(/^cast-/, "").replace(/-\d+$/, "");
+}
+
+/** merges `bonus` into a dice-notation amount's existing flat modifier rather
+ *  than appending a second one — the schema's amount regex allows only ONE
+ *  flat modifier right after the first dice term (e.g. "1d4+1"), so naively
+ *  producing "1d4+1+4" fails validation. A bare integer amount just adds. */
+function addFlatBonus(amount: string, bonus: number): string {
+  const pureNum = amount.match(/^\s*(\d+)\s*$/);
+  if (pureNum) return String(parseInt(pureNum[1], 10) + bonus);
+  const m = amount.match(/^(\s*-?\d*d\d+)([+-]\d+)?(.*)$/);
+  if (!m) return `${amount}+${bonus}`;
+  const [, dice, flatStr, rest] = m;
+  const newFlat = (flatStr ? parseInt(flatStr, 10) : 0) + bonus;
+  const flatPart = newFlat === 0 ? "" : newFlat > 0 ? `+${newFlat}` : `${newFlat}`;
+  return `${dice}${flatPart}${rest}`;
+}
+
+/** finds the FIRST damage node reachable from `nodes` (optionally restricted
+ *  to `damageType`) and adds `bonus` to its dice string — used for effects
+ *  that boost "one damage roll" of a spell (Empowered Evocation, Elemental
+ *  Affinity), which unlike Disciple of Life's flat-HP-node-per-heal only
+ *  ever touch a single roll per cast, not every matching node. */
+function injectFirstDamageBonus(nodes: import("../schema").AutomationNode[], bonus: number, damageType?: string): { nodes: import("../schema").AutomationNode[]; applied: boolean } {
+  type DamageNode = Extract<import("../schema").AutomationNode, { type: "damage" }>;
+  const matches = (n: import("../schema").AutomationNode): n is DamageNode => n.type === "damage" && (!damageType || n.damageType === damageType);
+  let applied = false;
+  const walk = (list: import("../schema").AutomationNode[]): import("../schema").AutomationNode[] => list.map((n) => {
+    if (applied) return n;
+    if (matches(n)) {
+      applied = true;
+      return { ...n, amount: addFlatBonus(n.amount, bonus) };
+    }
+    if (n.type === "target") return { ...n, effects: walk(n.effects) };
+    if (n.type === "attack") return { ...n, onHit: walk(n.onHit), onMiss: n.onMiss && walk(n.onMiss) };
+    if (n.type === "save") {
+      // onFail/onSuccess damage nodes for a save-for-half effect share one
+      // rolled value across every target hit by the same cast (a Fireball's
+      // sharedRolls cache keys on the exact amount string) — bumping only
+      // onFail's string would split that into two independent rolls (one
+      // pool for failed saves, a different one for halved successes).
+      // Keeping both strings identical preserves the shared roll.
+      const failIdx = n.onFail.findIndex(matches);
+      if (!applied && failIdx !== -1) {
+        applied = true;
+        const original = n.onFail[failIdx] as DamageNode;
+        const amount = addFlatBonus(original.amount, bonus);
+        const onFail = n.onFail.map((x, i) => (i === failIdx ? { ...original, amount } : x));
+        const onSuccess = n.onSuccess?.map((x) =>
+          matches(x) && x.amount === original.amount && x.damageType === original.damageType ? { ...x, amount } : x,
+        );
+        return { ...n, onFail, onSuccess };
+      }
+      return { ...n, onFail: walk(n.onFail), onSuccess: n.onSuccess && walk(n.onSuccess) };
+    }
+    if (n.type === "branch") return { ...n, then: walk(n.then), else: n.else && walk(n.else) };
+    return n;
+  });
+  return { nodes: walk(nodes), applied };
+}
+
+/** Empowered Evocation: add INT to the damage of one Evocation spell you
+ *  cast. Cross-references the catalog's own school tag, since the built
+ *  Action doesn't carry it — only spells actually rolled as "evocation" in
+ *  the catalog qualify, not a blanket bonus to every damage spell. */
+function withEmpoweredEvocation(c: Combatant, int: number): Combatant {
+  return {
+    ...c,
+    actions: c.actions.map((a) => {
+      if (!a.isSpell) return a;
+      const sp = SPELLS_BY_ID[baseSpellId(a.id)];
+      if (!sp || sp.school !== "evocation" || sp.role !== "damage") return a;
+      const { nodes, applied } = injectFirstDamageBonus(a.automation, int);
+      return applied ? { ...a, automation: nodes } : a;
+    }),
+  };
+}
 
 const score = (mod: number) => 10 + mod * 2;
 const between = (lvl: number, a: number, b: number) => Math.round(a + ((b - a) * (Math.max(1, Math.min(20, lvl)) - 1)) / 19);
@@ -20,13 +103,13 @@ function stub(dmg: string, bonus: number): Combatant["actions"] {
 export function blasterWizard(level: number): Combatant {
   const pb = pbFor(level);
   const int = pb === 6 ? 5 : 4;
-  return makeCaster({
+  return withEmpoweredEvocation(makeCaster({
     id: "blaster-wizard", name: `Wizard ${level}`, level, spellClass: "wizard", casterKind: "full", spellAbility: "int",
     ac: 15, hp: between(level, 8, 5 * 20 + 10),
     abilities: { str: score(-1), dex: score(2), con: score(2), int: score(int), wis: score(1), cha: score(0) },
     proficientSaves: ["con", "int", "wis"], focus: "blaster",
     extraActions: stub(`1d4+${1}`, pb + 2), keepDistance: true, targetPriority: "squishiest",
-  });
+  }), int);
 }
 
 /** recursively finds every "heal" node reachable from `nodes` and adds a
@@ -121,8 +204,16 @@ export function hunterRanger(level: number): Combatant {
     proficientSaves: ["str", "dex"], focus: "balanced",
     extraActions: [{
       id: "attack", name: "Multiattack (Longbow + Sharpshooter)", cost: { action: 1 }, recharge: "none",
-      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks }, () => (
-        { type: "attack" as const, bonus: pb + dex - 2, onHit: [{ type: "damage" as const, amount: `1d8+${dex + 10}`, damageType: "piercing" as const }] }
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks }, (_, i) => (
+        {
+          type: "attack" as const, bonus: pb + dex - 2, onHit: [
+            { type: "damage" as const, amount: `1d8+${dex + 10}`, damageType: "piercing" as const },
+            // Hunter's Prey: Colossus Slayer — once per turn (first hit
+            // only, same convention as this session's other once-per-turn
+            // riders), an extra 1d8 if the target is already wounded
+            ...(i === 0 ? [{ type: "branch" as const, if: "target.hp < target.maxhp", then: [{ type: "damage" as const, amount: "1d8", damageType: "piercing" as const }] }] : []),
+          ],
+        }
       )) }],
     }],
     keepDistance: true, opener: ["attack"], targetPriority: "lowestHp",
@@ -231,16 +322,32 @@ function withMetamagic(c: Combatant, level: number): Combatant {
   };
 }
 
+// Elemental Affinity: fire is the pick (a red dragon ancestry, matching the
+// app's own placeholder text elsewhere) — add CHA to one damage roll of a
+// spell dealing that type, same cross-reference-the-catalog approach as
+// Empowered Evocation, just filtered by damage type instead of school.
+function withElementalAffinity(c: Combatant, cha: number): Combatant {
+  return {
+    ...c,
+    actions: c.actions.map((a) => {
+      if (!a.isSpell) return a;
+      const { nodes, applied } = injectFirstDamageBonus(a.automation, cha, "fire");
+      return applied ? { ...a, automation: nodes } : a;
+    }),
+  };
+}
+
 export function draconicSorcerer(level: number): Combatant {
   const pb = pbFor(level);
+  const dex = 2;
   const cha = pb === 6 ? 5 : 4;
-  return withMetamagic(makeCaster({
+  return withElementalAffinity(withMetamagic(makeCaster({
     id: "draconic-sorcerer", name: `Sorcerer ${level}`, level, spellClass: "sorcerer", casterKind: "full", spellAbility: "cha",
-    ac: 14, hp: between(level, 9, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
+    ac: 13 + dex, hp: between(level, 9, 7 * 20 + 12), // Draconic Resilience: natural armor 13+DEX
+    abilities: { str: score(-1), dex: score(dex), con: score(2), int: score(0), wis: score(0), cha: score(cha) },
     proficientSaves: ["con", "cha"], focus: "blaster",
     extraActions: stub(`1d10`, pb + cha), keepDistance: true, targetPriority: "lowestHp",
-  }), level);
+  }), level), cha);
 }
 
 // Wild Magic Surge: RAW is a natural 1 on a d20 after casting a sorcerer
@@ -324,13 +431,24 @@ export function moonDruid(level: number): Combatant {
 export function loreBard(level: number): Combatant {
   const pb = pbFor(level);
   const cha = pb === 6 ? 5 : 4;
-  return makeCaster({
+  const c = makeCaster({
     id: "lore-bard", name: `Bard ${level}`, level, spellClass: "bard", casterKind: "full", spellAbility: "cha",
     ac: 16, hp: between(level, 9, 6 * 20 + 12),
     abilities: { str: score(0), dex: score(2), con: score(2), int: score(1), wis: score(1), cha: score(cha) },
     proficientSaves: ["con", "dex", "cha"], focus: "balanced",
+    // Cutting Words: when an attack roll against an ally is seen, spend a use
+    // of Bardic Inspiration to subtract the die from it — modeled at the
+    // reaction-decision point in reactions.ts (the only reaction here that
+    // reads from an ALLY's reaction list rather than the target's own).
+    extraReactions: [{
+      id: "cutting-words", name: "Cutting Words", cost: { reaction: 1 }, recharge: "none",
+      trigger: "ally.aboutToBeHitByAttack", limitedUse: { resource: "bardic_inspiration", amount: 1 },
+      automation: [{ type: "note", text: "subtracts a Bardic Inspiration die from the triggering attack roll (engine hook)" }],
+    }],
     extraActions: stub(`1d8+${2}`, pb + 2), keepDistance: true, targetPriority: "squishiest",
   });
+  // Bardic Inspiration uses = CHA mod (min 1), short-rest recharge.
+  return { ...c, resources: { ...c.resources, bardic_inspiration: { max: Math.max(1, cha), recharge: "shortRest" } } };
 }
 
 export function warlock(level: number): Combatant {
@@ -341,6 +459,14 @@ export function warlock(level: number): Combatant {
     ac: 16, hp: between(level, 9, 7 * 20 + 12),
     abilities: { str: score(-1), dex: score(2), con: score(2), int: score(1), wis: score(1), cha: score(cha) },
     proficientSaves: ["con", "wis", "cha"], focus: "blaster",
+    // Dark One's Blessing (Fiend Patron): temp HP = CHA mod + level (min 1)
+    // on reducing a hostile creature to 0 HP — the "onKill" trigger was
+    // declared in the schema from the start but never actually dispatched
+    // by the engine until now.
+    extraTraits: [{
+      id: "dark-ones-blessing", name: "Dark One's Blessing", trigger: "onKill",
+      automation: [{ type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: `${Math.max(1, cha + level)}` }] }],
+    }],
     // Eldritch Blast is the workhorse — make it the fallback `attack` too
     extraActions: [{
       id: "attack", name: "Eldritch Blast (Agonizing)", cost: { action: 1 }, recharge: "none", isSpell: true,

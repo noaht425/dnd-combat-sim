@@ -11,10 +11,18 @@
 
 import type { Action, AutomationNode, DamageType } from "../schema";
 import { runAction, runAutomation } from "./interpreter";
-import { CombatantState, CombatState, canTakeReactions, isIncapacitated, say, type ReactionAsk } from "./state";
+import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, say, type ReactionAsk } from "./state";
 
 /** the five damage types Absorb Elements answers */
 const ELEMENTAL: readonly DamageType[] = ["acid", "cold", "fire", "lightning", "thunder"];
+
+/** Bardic Inspiration die average by character level (d6 / d8 / d10 / d12) */
+function bardicDieAverage(level: number): number {
+  if (level >= 15) return 6.5;
+  if (level >= 10) return 5.5;
+  if (level >= 5) return 4.5;
+  return 3.5;
+}
 
 /**
  * At a reaction decision point, hand off to the Battle-mode seam if one is
@@ -46,6 +54,7 @@ type RKind =
   | "onDamaged"      // punish the source of any attack/spell damage (also Hellish Rebuke)
   | "onBigHit"       // react to 30+ damage from one source
   | "onDrop"         // react to a creature hitting 0 hp
+  | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
   | "unknown";
 
 function classify(r: Action): RKind {
@@ -58,6 +67,7 @@ function classify(r: Action): RKind {
   if (id.includes("absorb-elements") || id.includes("absorbelements") || tr.includes("tookelementaldamage")) return "absorbElements";
   if (id.includes("hellish-rebuke") || id.includes("hellishrebuke")) return "onDamaged";
   if (id.includes("riposte")) return tr.includes("missed") ? "retaliateOnMiss" : "retaliateOnHit";
+  if (id.includes("cutting-words") || id.includes("cuttingwords")) return "protectAllyAttackRoll";
   if (tr.includes("belowhalf") || tr.includes("reducedtohalf")) return "onBloodied";
   if (tr.includes("tookdamagefromattackorspell")) return "onDamaged";
   if (tr.includes("tookdamagefromonesource")) return "onBigHit";
@@ -132,6 +142,32 @@ export function reactToIncomingAttack(
       fire(state, t, r); // applies the +5 "shield" effect
       say(state, `${t.name} casts Shield`, t.id);
       return { negated: false, shielded: true };
+    }
+  }
+
+  // Cutting Words (College of Lore) — unlike every other reaction here, the
+  // reactor isn't the target: any conscious ally within earshot can spend
+  // Bardic Inspiration to subtract its die from the roll. A crit is decided
+  // by the natural 20, not the total, so it can't be talked into a miss.
+  if (!p.crit) {
+    for (const ally of livingAllies(state, t)) {
+      if (ally.id === t.id) continue;
+      for (const r of ally.ref.reactions) {
+        if (classify(r) !== "protectAllyAttackRoll" || !ready(state, ally, r)) continue;
+        if (p.hitMargin >= bardicDieAverage(ally.ref.level ?? 1)) continue;
+        const ok = decideReaction(
+          state,
+          ally,
+          "cuttingWords",
+          `An attack hits ${t.name} by ${p.hitMargin} — ${ally.name}'s Cutting Words (subtract a Bardic Inspiration die) can turn it into a miss.`,
+          "Use Cutting Words",
+          "Take the hit",
+        );
+        if (!ok) continue;
+        fire(state, ally, r);
+        say(state, `${ally.name} undercuts the blow with Cutting Words`, ally.id);
+        return { negated: true, shielded: false };
+      }
     }
   }
   return { negated: false, shielded: false };

@@ -144,7 +144,7 @@ export interface CombatState {
 /** the question `state.askReaction` is handed at a reaction decision point */
 export interface ReactionAsk {
   unitId: string;
-  kind: "shield" | "counterspell" | "riposte" | "uncannyDodge" | "absorbElements" | "retaliate";
+  kind: "shield" | "counterspell" | "riposte" | "uncannyDodge" | "absorbElements" | "retaliate" | "cuttingWords";
   /** one human sentence describing the trigger and what the reaction would do */
   prompt: string;
   /** button label for spending the reaction / for declining it */

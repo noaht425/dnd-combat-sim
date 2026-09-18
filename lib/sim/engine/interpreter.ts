@@ -146,6 +146,22 @@ function fireOnDeathTraits(state: CombatState, dying: CombatantState): void {
   }
 }
 
+/** a "you gain something when you land the killing blow" trait (Dark One's
+ *  Blessing, and the like) — fires on `source` (the one who dealt the
+ *  damage), not the victim, the moment the victim transitions from up to
+ *  downed/dead. The automation targets `who: "self"` (source gains the
+ *  benefit), so unlike fireOnHitTraits this needs no forceScope. Declared
+ *  in the schema's trigger enum from the start but never actually
+ *  dispatched anywhere until now. */
+function fireOnKillTraits(state: CombatState, source: CombatantState): void {
+  for (const trait of source.ref.traits) {
+    if (trait.trigger !== "onKill" || !trait.automation.length) continue;
+    runAction(state, source, {
+      id: trait.id, name: trait.name, cost: {}, recharge: "none", automation: trait.automation,
+    }, { asReaction: true, skipIncapacitatedCheck: true });
+  }
+}
+
 /** a "hurts you back" trait (Corrosive Form, Corrosive Hide, ...) — fires whenever
  *  `hitTarget` is struck by a landed attack, with `hitTarget` as the source (so
  *  the retaliation is its own effect) but pinned via forceScope onto `attacker`
@@ -180,6 +196,7 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/self\.(is_?singing|singing)/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
     [/self\.sang_?since_?last_?turn/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
     [/target\.has\('([^']+)'\)/i, () => !!tgt && (tgt.effects.some((e) => e.name === RegExp.$1) || hasCondition(tgt, RegExp.$1 as Condition))],
+    [/target\.hp\s*<\s*target\.maxhp/i, () => !!tgt && tgt.hp < tgt.maxHp],
     [/target\.hp\s*<=\s*(\d+)/i, () => !!tgt && tgt.hp <= Number(RegExp.$1)],
     [/target\.hp\s*<\s*(\d+)/i, () => !!tgt && tgt.hp < Number(RegExp.$1)],
     [/target\.grappledby\(self\)/i, () => !!tgt && hasCondition(tgt, "grappled")],
@@ -356,7 +373,10 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           viaSpell: ctx.spell,
         });
         source.damageDealt += dealt;
-        if (wasUp && (!t.alive || t.downed)) fireOnDeathTraits(state, t);
+        if (wasUp && (!t.alive || t.downed)) {
+          fireOnDeathTraits(state, t);
+          if (t.side !== source.side) fireOnKillTraits(state, source);
+        }
         break;
       }
 
