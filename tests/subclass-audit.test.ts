@@ -7,8 +7,10 @@ import { runBattle } from "../lib/sim/battle";
 import { makeTemplate } from "../lib/sim/engine/templates";
 
 describe("Subclass audit fixes", () => {
-  it("Assassin rogue: Assassinate (advantage + auto-crit round 1) — the mechanism already existed, just never flagged on the template", () => {
-    expect(makeTemplate("assassin-rogue", 5).specialRules).toContainEqual({ rule: "ambush" });
+  it("Assassin rogue: Assassinate from 3rd level (advantage against creatures that haven't taken a turn) — no initiative jump, no assumed surprise", () => {
+    expect(makeTemplate("assassin-rogue", 2).specialRules).toEqual([]);
+    expect(makeTemplate("assassin-rogue", 5).specialRules).toContainEqual({ rule: "assassinate" });
+    expect(makeTemplate("assassin-rogue", 5).specialRules).not.toContainEqual({ rule: "ambush" });
   });
 
   it("Path of the Totem Warrior (Bear): rage resistance upgrades to all-but-psychic at level 3+", () => {

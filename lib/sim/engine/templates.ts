@@ -53,30 +53,38 @@ function pc(base: {
 
 // ─────────────────────────────────────────────────────────────── the templates
 
-function gwmFighter(level: number): Combatant {
+// Fighter base (Player's Handbook): Fighting Style at 1st (Great Weapon Fighting here: a greatsword, so a 1 or 2 on
+// the weapon dice is rerolled), Second Wind (bonus action, 1d10 + fighter level, once per short rest), Action Surge
+// (one extra action; twice from 17th), Extra Attack at 5th / 11th / 20th. Action Surge is modeled as a bonus-cost
+// action that makes one more Attack action's worth of swings. Indomitable (9th) is not modeled.
+const fighterSecondWind = (level: number): Combatant["actions"][number] => ({
+  id: "second-wind", name: "Second Wind", cost: { bonus: 1 }, recharge: "none",
+  limitedUse: { resource: "second_wind", amount: 1 },
+  // the AI uses it once it is hurt (half HP or below)
+  automation: [{ type: "branch", if: "self.hp <= self.maxhp / 2", then: [
+    { type: "target", who: { who: "self" }, effects: [{ type: "heal", amount: `1d10+${level}` }] },
+  ] }],
+});
+
+// Champion (Player's Handbook): Improved Critical (3rd, 19-20), Remarkable Athlete (7th, checks), Additional
+// Fighting Style (10th, not modeled), Superior Critical (15th, 18-20), Survivor (18th). This is the template "fighter"
+// resolves to; a Great Weapon Master feat, when a custom PC has it, is applied separately (applyFeats).
+function championFighter(level: number): Combatant {
   const pb = pbFor(level);
-  // Extra Attack: 1 swing, 2 at L5, 3 at L11, 4 at L20
   const baseAttacks = level >= 20 ? 4 : level >= 11 ? 3 : level >= 5 ? 2 : 1;
-  // ...plus a GWM bonus-action attack once Extra Attack is online — folded into the main routine
-  const attacks = baseAttacks + (level >= 5 ? 1 : 0);
   const str = pb === 6 ? 5 : 4;
-  // Great Weapon Master: -5 to hit for +10 damage, roughly offset by a magic weapon
-  const toHit = pb + str - 2;
-  const dmgPerHit = `2d6+${str + 6}`; // 2d6 + STR + GWF + partial GWM
   const swing = () =>
-    ({ type: "attack" as const, bonus: toHit, onHit: [{ type: "damage" as const, amount: dmgPerHit, damageType: "slashing" as const }] });
+    ({ type: "attack" as const, bonus: pb + str, onHit: [{ type: "damage" as const, amount: `2d6+${str}`, damageType: "slashing" as const, weaponDice: true }] });
   return pc({
     id: "gwm-fighter", name: `Fighter ${level}`, level,
     ac: 19, hp: between(level, 13, 9 * 20 + 15),
-    abilities: { str: score(pb === 6 ? 5 : 4), dex: score(1), con: score(3), int: score(0), wis: score(1), cha: score(0) },
+    abilities: { str: score(str), dex: score(1), con: score(3), int: score(0), wis: score(1), cha: score(0) },
     proficientSaves: ["str", "con"],
     resources: { action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" }, second_wind: { max: 1, recharge: "shortRest" } },
-    // Champion (the subclass this build actually represents — a no-frills
-    // GWM-feat fighter with no maneuver-dice kit): Improved Critical (19-20)
-    // at 3rd level, Superior Critical (18-20) at 15th. The `critRange`
-    // specialRule existed in the schema from the start but nothing ever
-    // read it — wired into rollAttack's crit check via `critRangeFor`.
-    specialRules: level >= 3 ? [{ rule: "critRange", value: level >= 15 ? 18 : 19 }] : [],
+    specialRules: [
+      { rule: "greatWeaponFighting" },
+      ...(level >= 3 ? [{ rule: "critRange" as const, value: level >= 15 ? 18 : 19 }] : []),
+    ],
     // Survivor (18th): at the start of each of your turns, regain 5 + Con modifier HP if you have no more than half
     // your hit points left (Con +3 here). Applied as a standing effect whose tick fires at the start of the turn.
     traits: level >= 18 ? [{
@@ -89,18 +97,17 @@ function gwmFighter(level: number): Combatant {
     }] : [],
     actions: [
       {
-        id: "attack", name: "Multiattack (GWM)", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks }, swing) }],
+        id: "attack", name: "Attack", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, swing) }],
       },
       {
-        // Action Surge grants ONE extra action = one more Attack action: `baseAttacks`
-        // swings (1 at L3, 2 at L5, 3 at L11) — NOT the GWM bonus-action attack
         id: "action-surge", name: "Action Surge", cost: { bonus: 1 }, recharge: "none",
         limitedUse: { resource: "action_surge", amount: 1 },
         automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, swing) }],
       },
+      fighterSecondWind(level),
     ],
-    opener: ["action-surge"], targetPriority: "lowestHp",
+    opener: ["action-surge"], targetPriority: "lowestHp", bonusRoutine: ["second-wind"],
   });
 }
 
@@ -111,7 +118,7 @@ function gwmFighter(level: number): Combatant {
 // Disarming Attack (10th). Not modeled: Parry, Distracting Strike, Sweeping Attack and the rest — so a 10th-level
 // build has six of its seven maneuvers, and a 15th-level one six of nine. Relentless (15th) only matters when a
 // fight starts with the dice already spent, which a single encounter never does.
-// Simplifications worth knowing: a swing is a greatsword (2d6 + Str, no fighting-style reroll), and the maneuver
+// Simplifications worth knowing: a swing is a greatsword (2d6 + Str, Great Weapon Fighting), and the maneuver
 // variants of Attack spend their die on the FIRST swing only. Precision Attack adds the die to a roll that would
 // miss and is spent only if that turns it into a hit.
 const BM_LEARNED = ["precision-attack", "trip-attack", "riposte", "menacing-attack", "rally", "disarming-attack"];
@@ -130,7 +137,7 @@ function battleMasterFighter(level: number): Combatant {
   const has = (m: string) => sub && known.has(m);
   const mkSwing = (maneuver?: "trip" | "menacing" | "disarming"): AutomationNode => ({
     type: "attack", bonus: toHit, onHit: [
-      { type: "damage", amount: dmgPerHit, damageType: "slashing" },
+      { type: "damage", amount: dmgPerHit, damageType: "slashing", weaponDice: true },
       ...(maneuver
         ? [{
             type: "branch" as const, if: "self.resource('superiority') > 0",
@@ -159,7 +166,10 @@ function battleMasterFighter(level: number): Combatant {
     ac: 18, hp: between(level, 13, 9 * 20 + 15),
     abilities: { str: score(str), dex: score(1), con: score(3), int: score(0), wis: score(1), cha: score(cha) },
     proficientSaves: ["str", "con"],
-    specialRules: has("precision-attack") ? [{ rule: "boostMissedAttack", bonusDice: `1d${dieSize}`, resource: "superiority" }] : [],
+    specialRules: [
+      { rule: "greatWeaponFighting" },
+      ...(has("precision-attack") ? [{ rule: "boostMissedAttack" as const, bonusDice: `1d${dieSize}`, resource: "superiority" }] : []),
+    ],
     resources: {
       action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" },
       ...(sub ? { superiority: { max: level >= 15 ? 6 : level >= 7 ? 5 : 4, recharge: "shortRest" as const } } : {}),
@@ -180,6 +190,7 @@ function battleMasterFighter(level: number): Combatant {
       },
       // Rally: a bonus action, spend a die — a friendly creature gains temporary hit points equal to the die
       // roll + your Charisma modifier
+      fighterSecondWind(level),
       ...(has("rally") ? [{
         id: "rally", name: "Rally", cost: { bonus: 1 }, recharge: "none" as const,
         automation: [{
@@ -201,20 +212,22 @@ function battleMasterFighter(level: number): Combatant {
       trigger: "self.wasMissedByMeleeAttack", limitedUse: { resource: "superiority", amount: 1 },
       automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{
         type: "attack", bonus: toHit, onHit: [
-          { type: "damage", amount: dmgPerHit, damageType: "slashing" },
+          { type: "damage", amount: dmgPerHit, damageType: "slashing", weaponDice: true },
           { type: "damage", amount: `1d${dieSize}`, damageType: "slashing" },
         ],
       }] }],
     }] : [],
-    opener: ["action-surge"], targetPriority: "lowestHp",
+    opener: ["action-surge"], targetPriority: "lowestHp", bonusRoutine: ["second-wind"],
   });
 }
 
 // ────────────────────────────────────────────────────────────────────── rogues
 // Everything below is checked against the printed Rogue table and each subclass's text — see rogueKit.ts for
 // the shared base (Sneak Attack, Uncanny Dodge 5th, Evasion 7th, ..., the split main-hand / off-hand attacks).
-// Build assumptions the books don't decide: Dex 18 (20 from 17th), the rapier + shortsword loadout, and — for
-// the skill checks the subclasses lean on — proficiency in the skill (Insight, Persuasion).
+// Build assumptions the books don't decide: Dex 18 (20 from 17th); a weapon loadout per subclass — rapier +
+// shortsword up close (Swashbuckler, Thief, Inquisitive) or a shortbow from range (Assassin, Mastermind, Scout,
+// Arcane Trickster), chosen by what the subclass's features reward; and, for the skill checks a subclass leans on,
+// proficiency in that skill (Insight, Persuasion).
 
 /** the shared chassis, with a subclass's own bits layered on */
 function buildRogue(level: number, id: string, kit: RogueKit, o: {
@@ -233,20 +246,23 @@ function buildRogue(level: number, id: string, kit: RogueKit, o: {
     specialRules: [...kit.specialRules, ...(o.specialRules ?? [])],
     resources: { ...kit.resources, ...(o.resources ?? {}) },
     traits: kit.traits,
-    actions: [kit.attack, kit.offhand, ...(o.actions ?? [])],
+    actions: [kit.attack, ...(kit.offhand ? [kit.offhand] : []), ...(o.actions ?? [])],
     reactions: kit.reactions,
-    keepDistance: o.keepDistance ?? true, targetPriority: "squishiest",
+    // a bow build shoots from range; the melee loadout fights up close (each subclass picks — see its comment)
+    keepDistance: o.keepDistance ?? kit.ranged, targetPriority: "squishiest",
     speed: o.speed, initiativeBonus: o.initiativeBonus,
-    bonusRoutine: o.bonusRoutine, bonusAfterAttack: o.bonusAfterAttack ?? ["offhand"],
+    bonusRoutine: o.bonusRoutine, bonusAfterAttack: o.bonusAfterAttack ?? (kit.offhand ? ["offhand"] : []),
   });
 }
 
-// Assassin (Player's Handbook): Assassinate — advantage on attack rolls against any creature that hasn't taken a
-// turn yet, and any hit on a SURPRISED creature is a critical hit. The engine's `ambush` rule models an opening
-// ambush (the assassin strikes first, advantage + crit on round-1 hits); nothing else in this subclass is a
-// combat feature before 17th level's Death Strike, which is not modeled.
+// Assassin (Player's Handbook), a shortbow ambusher: Assassinate (3rd) — advantage on attack rolls against any
+// creature that hasn't taken a turn in the combat yet, and any hit on a SURPRISED creature is a critical hit.
+// It grants no initiative bonus, and the sim has no surprise, so there is no automatic crit. Infiltration Expertise
+// is utility; Impostor and Death Strike (17th) are not modeled.
 function assassinRogue(level: number): Combatant {
-  return buildRogue(level, "assassin-rogue", rogueKit(level), { specialRules: [{ rule: "ambush" }] });
+  return buildRogue(level, "assassin-rogue", rogueKit(level, { ranged: true }), {
+    specialRules: level >= 3 ? [{ rule: "assassinate" }] : [],
+  });
 }
 
 // Thief (Player's Handbook): Fast Hands, Second-Story Work, Supreme Sneak and Use Magic Device are utility. The
@@ -254,6 +270,7 @@ function assassinRogue(level: number): Combatant {
 // and initiative − 10 — unless you're surprised. The turn order really does get a second slot (see rollTurnOrder).
 function thiefRogue(level: number): Combatant {
   return buildRogue(level, "thief-rogue", rogueKit(level), {
+    keepDistance: false,
     specialRules: level >= 17 ? [{ rule: "extraFirstRoundTurn" }] : [],
   });
 }
@@ -294,7 +311,7 @@ function swashbucklerRogue(level: number): Combatant {
 // turn has advantage. Misdirection (13th) is a positional reaction and isn't modeled. The Help takes the bonus
 // action, so the off-hand swing is given up on turns the Mastermind helps someone.
 function mastermindRogue(level: number): Combatant {
-  const kit = rogueKit(level);
+  const kit = rogueKit(level, { ranged: true }); // Help reaches 30 ft, so the Mastermind stays back with a bow
   return buildRogue(level, "mastermind-rogue", kit, {
     actions: level >= 3 ? [{
       id: "master-of-tactics", name: "Master of Tactics (Help)", cost: { bonus: 1 }, recharge: "none" as const,
@@ -318,6 +335,7 @@ function inquisitiveRogue(level: number): Combatant {
     riders: level >= 17 ? [{ type: "branch", if: "lastattack.insightmarked", then: [{ type: "damage", amount: "3d6", damageType: type }] }] : [],
   });
   return buildRogue(level, "inquisitive-rogue", kit, {
+    keepDistance: false,
     actions: level >= 3 ? [{
       id: "insightful-fighting", name: "Insightful Fighting", cost: { bonus: 1 }, recharge: "none" as const,
       automation: [{ type: "branch" as const, if: "self.not_reading", then: [{ type: "target" as const, who: { who: "squishiestEnemy" as const }, effects: [
@@ -335,10 +353,9 @@ function inquisitiveRogue(level: number): Combatant {
 //   Ambush Master (13th) — advantage on initiative; the first creature you hit in round 1 can be hit with
 //     advantage by everyone until the start of your next turn.
 //   Sudden Strike (17th) — with the Attack action, one extra attack as a BONUS action that may Sneak Attack even
-//     if you already did this turn, but never against the same target twice. (It uses the bonus action, so
-//     the off-hand swing is given up.)
+//     if you already did this turn, but never against the same target twice.
 function scoutRogue(level: number): Combatant {
-  const kit = rogueKit(level);
+  const kit = rogueKit(level, { ranged: true }); // Skirmisher / Superior Mobility: a bow-armed skirmisher
   const sudden = level >= 17;
   const swing = (kit.attack.automation[0] as { type: "target"; who: { who: "squishiestEnemy" }; effects: AutomationNode[] });
   return buildRogue(level, "scout-rogue", kit, {
@@ -351,7 +368,7 @@ function scoutRogue(level: number): Combatant {
       id: "sudden-strike", name: "Sudden Strike", cost: { bonus: 1 }, recharge: "none" as const,
       automation: [{ type: "target" as const, who: { who: "squishiestEnemy" as const, preferFresh: true }, effects: swing.effects }],
     }] : [],
-    bonusAfterAttack: sudden ? ["sudden-strike", "offhand"] : ["offhand"],
+    bonusAfterAttack: sudden ? ["sudden-strike"] : [],
   });
 }
 
@@ -386,6 +403,7 @@ function soulknifeRogue(level: number): Combatant {
     riders: level >= 17 ? [rendMind] : [],
   } : {});
   return buildRogue(level, "soulknife-rogue", kit, {
+    keepDistance: true, // thrown blades (60 ft), or melee: it fights from range
     specialRules: level >= 9 ? [{ rule: "boostMissedAttack" as const, bonusDice: `1d${dieSize}`, resource: "psi_die" }] : [],
     resources: sub ? {
       psi_die: { max: 2 * pb0, recharge: "longRest" as const },
@@ -536,7 +554,7 @@ export function applyLoadout(c: Combatant, l: Loadout): Combatant {
 }
 
 const BUILDERS: Record<string, (level: number) => Combatant> = {
-  "gwm-fighter": gwmFighter,
+  "gwm-fighter": championFighter,
   "battlemaster-fighter": battleMasterFighter,
   "assassin-rogue": assassinRogue,
   "thief-rogue": thiefRogue,

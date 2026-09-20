@@ -18,8 +18,8 @@ export interface ClassAlias {
 }
 
 export const CLASS_TEMPLATES: ClassAlias[] = [
-  { templateId: "gwm-fighter", className: "fighter", subclassName: "Great Weapon Master",
-    aliases: ["fighter", "gwm fighter", "great weapon fighter", "champion fighter"] },
+  { templateId: "gwm-fighter", className: "fighter", subclassName: "Champion",
+    aliases: ["fighter", "champion fighter", "champion", "gwm fighter", "great weapon fighter"] },
   { templateId: "battlemaster-fighter", className: "fighter", subclassName: "Battle Master",
     aliases: ["battle master fighter", "battlemaster fighter", "battle master"] },
   { templateId: "assassin-rogue", className: "rogue", subclassName: "Assassin",

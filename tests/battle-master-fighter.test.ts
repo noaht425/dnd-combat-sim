@@ -10,6 +10,7 @@ import { runBattle } from "../lib/sim/battle";
 import { makeTemplate } from "../lib/sim/engine/templates";
 import { runAction } from "../lib/sim/engine/interpreter";
 import { rollAttack } from "../lib/sim/engine/resolve";
+import { spend } from "../lib/sim/engine/ai";
 import { initCombatant, type CombatState, type CombatantState } from "../lib/sim/engine/state";
 import { startOfTurn } from "../lib/sim/engine/loop";
 import { fireEncounterStartTraits } from "../lib/sim/engine/interpreter";
@@ -109,6 +110,47 @@ describe("Battle Master fighter — the printed maneuver list", () => {
     t.ac = 30;
     expect(rollAttack(s, f, t, 8, undefined).hit).toBe(false);
     expect(f.resources.get("superiority")).toBe(3);
+  });
+});
+
+describe("Fighter base (Player's Handbook): Fighting Style, Second Wind", () => {
+  it("Great Weapon Fighting: a 1 or 2 on the weapon's damage dice is rerolled once — but not other dice", () => {
+    for (const id of ["gwm-fighter", "battlemaster-fighter"]) {
+      const s = state(15);
+      const queue = [1, 6, 5]; // first weapon die: 1 -> rerolled to 6; second: 5 stays
+      s.rng.dice = (n, sides) => (n === 1 && queue.length ? queue.shift()! : n * sides);
+      const f = initCombatant(makeTemplate(id, 5), "party", "-p");
+      const t = foe();
+      put(s, f, t);
+      act(s, f, "attack");
+      // the first swing is 2d6+4 with the 1 rerolled to a 6: 6 + 5 + 4; the second swing (Extra Attack) rolls plain, at max: 12 + 4
+      expect(t.maxHp - t.hp, id).toBe(6 + 5 + 4 + (2 * 6 + 4));
+    }
+  });
+
+  it("the Champion has no Great Weapon Master effects: plain greatsword, +Str, no -5 / +10", () => {
+    const c = makeTemplate("gwm-fighter", 5); // Str +4, PB +3
+    const blob = JSON.stringify(c.actions.find((a) => a.id === "attack")!.automation);
+    expect(blob).toContain('"bonus":7');
+    expect(blob).toContain('"amount":"2d6+4"');
+    expect((blob.match(/"type":"attack"/g) ?? []).length).toBe(2); // Extra Attack at 5th, and no bonus-action swing
+  });
+
+  it("Second Wind: 1d10 + fighter level as a bonus action, once per short rest — used once hurt, not before", () => {
+    const heal = (hpFraction: number) => {
+      const s = state(15);
+      const f = initCombatant(makeTemplate("battlemaster-fighter", 5), "party", "-p");
+      put(s, f, foe());
+      f.hp = Math.floor(f.maxHp * hpFraction);
+      const before = f.hp;
+      spend(f, f.ref.actions.find((a) => a.id === "second-wind")!);
+      act(s, f, "second-wind");
+      return f.hp - before;
+    };
+    expect(heal(0.4)).toBe(10 + 5); // max of 1d10, + level 5
+    expect(heal(0.9)).toBe(0);
+    expect(makeTemplate("battlemaster-fighter", 5).ai.bonusRoutine).toEqual(["second-wind"]);
+    expect(makeTemplate("gwm-fighter", 5).ai.bonusRoutine).toEqual(["second-wind"]);
   });
 });
 

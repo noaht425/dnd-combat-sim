@@ -20,7 +20,8 @@ function stateForcingFace(face: number): CombatState {
 
 describe("Subclass audit fixes, round 3", () => {
   it("Champion (GWM) fighter: Improved/Superior Critical widens the crit range in the schema", () => {
-    expect(makeTemplate("gwm-fighter", 2).specialRules).toEqual([]);
+    // Great Weapon Fighting is the fighter's 1st-level style; Improved Critical only arrives at 3rd
+    expect(makeTemplate("gwm-fighter", 2).specialRules).toEqual([{ rule: "greatWeaponFighting" }]);
     expect(makeTemplate("gwm-fighter", 3).specialRules).toContainEqual({ rule: "critRange", value: 19 });
     expect(makeTemplate("gwm-fighter", 15).specialRules).toContainEqual({ rule: "critRange", value: 18 });
   });

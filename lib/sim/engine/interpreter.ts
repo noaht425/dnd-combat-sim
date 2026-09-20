@@ -99,7 +99,7 @@ function saveStakes(onFail: AutomationNode[]): "damage" | "control" | "lock" {
   return "damage";
 }
 
-function rollDamage(state: CombatState, amount: string, mult = 1, crit = false): number {
+function rollDamage(state: CombatState, amount: string, mult = 1, crit = false, rerollAtMost = 0): number {
   const cleaned = amount.replace(/\s+/g, "");
   if (/^-?\d+$/.test(cleaned)) return Number(cleaned) * mult;
   let total = 0;
@@ -110,7 +110,13 @@ function rollDamage(state: CombatState, amount: string, mult = 1, crit = false):
     if (dm) {
       let n = (dm[1] ? Number(dm[1]) : 1) * mult;
       if (crit) n *= 2;
-      total += sign * state.rng.dice(n, Number(dm[2]));
+      if (rerollAtMost > 0) { // Great Weapon Fighting: each die showing a 1 or 2 is rerolled once, keeping the new roll
+        for (let k = 0; k < n; k++) {
+          let r = state.rng.dice(1, Number(dm[2]));
+          if (r <= rerollAtMost) r = state.rng.dice(1, Number(dm[2]));
+          total += sign * r;
+        }
+      } else total += sign * state.rng.dice(n, Number(dm[2]));
     } else {
       total += sign * Number(body);
     }
@@ -474,7 +480,8 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           amt = ctx.sharedRolls.get(key) ?? rollDamage(state, node.amount, node.diceMultiplier ?? 1, false);
           ctx.sharedRolls.set(key, amt);
         } else {
-          amt = rollDamage(state, node.amount, node.diceMultiplier ?? 1, ctx.crit ?? false);
+          const gwf = node.weaponDice && source.ref.specialRules.some((r) => r.rule === "greatWeaponFighting") ? 2 : 0;
+          amt = rollDamage(state, node.amount, node.diceMultiplier ?? 1, ctx.crit ?? false, gwf);
         }
         if (ctx.halfMode || node.half) amt = Math.floor(amt / 2);
         const wasUp = t.alive && !t.downed;

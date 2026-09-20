@@ -68,6 +68,8 @@ export interface CombatantState {
   /** Inquisitive's Insightful Fighting — the creature currently read, and the round the minute runs out */
   insightTargetId?: string;
   insightUntilRound?: number;
+  /** has taken a turn in this combat (Assassinate: advantage against creatures that haven't) */
+  hasTakenTurn?: boolean;
   /** Fancy Footwork — the creatures it has made a melee attack against this turn (no opportunity attacks from them) */
   footwork?: { serial: number; ids: string[] };
   /** Scout's Ambush Master — already tagged the first creature it hit in round 1 */
@@ -191,6 +193,7 @@ export function startTurnEconomy(u: CombatantState): void {
  *  "until the start of your next turn" and was put out by this creature ends (Help, Ambush Master). */
 export function beginTurn(state: CombatState, u: CombatantState): void {
   state.turnSerial = (state.turnSerial ?? 0) + 1;
+  u.hasTakenTurn = true;
   for (const other of state.units.values()) {
     if (!other.effects.some((e) => e.sourceId === u.id && e.mods?.untilSourceNextTurn)) continue;
     other.effects = other.effects.filter((e) => !(e.sourceId === u.id && e.mods?.untilSourceNextTurn));

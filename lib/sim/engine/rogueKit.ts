@@ -14,7 +14,10 @@ import type { Action, AutomationNode, Combatant, DamageType, Trait } from "../sc
 export const rogueProf = (lvl: number) => 2 + Math.floor((lvl - 1) / 4);
 
 export interface StrikeOpts {
-  /** main-hand damage die (default the rapier's 1d8) */
+  /** a shortbow build: 1d6 + Dex at range and no off-hand attack (a bow is two-handed). Default is the melee
+   *  rapier (1d8) + shortsword (1d6 off-hand) loadout. */
+  ranged?: boolean;
+  /** main-hand damage die (default the rapier's 1d8, or the shortbow's 1d6) */
   die?: string;
   /** damage type of the weapon AND of the Sneak Attack dice riding on it (Psychic Blades: psychic) */
   type?: DamageType;
@@ -33,8 +36,9 @@ export interface RogueKit {
   sneak: string;
   /** the Attack action: one swing, carrying Sneak Attack if the hit qualifies */
   attack: Action;
-  /** the off-hand bonus attack, taken after the Attack action */
-  offhand: Action;
+  /** the off-hand bonus attack, taken after the Attack action (none for a bow build) */
+  offhand?: Action;
+  ranged: boolean;
   traits: Trait[];
   reactions: Combatant["reactions"];
   specialRules: Combatant["specialRules"];
@@ -61,9 +65,9 @@ export function rogueKit(level: number, o: StrikeOpts = {}): RogueKit {
 
   const attack: Action = {
     id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
-    automation: [{ ...at, effects: [swing(o.die ?? "1d8", true)] } as AutomationNode],
+    automation: [{ ...at, effects: [swing(o.die ?? (o.ranged ? "1d6" : "1d8"), true)] } as AutomationNode],
   };
-  const offhand: Action = {
+  const offhand: Action | undefined = o.ranged ? undefined : {
     id: "offhand", name: o.offhandName ?? "Off-hand attack", cost: { bonus: 1 }, recharge: "none",
     automation: [{ ...at, effects: [swing(o.offhandDie ?? "1d6", o.offhandMod ?? false)] } as AutomationNode],
   };
@@ -86,5 +90,5 @@ export function rogueKit(level: number, o: StrikeOpts = {}): RogueKit {
   }
   const proficientSaves: Combatant["proficientSaves"] = level >= 15 ? ["dex", "int", "wis"] : ["dex", "int"]; // Slippery Mind
 
-  return { pb, dex, sneak, attack, offhand, traits, reactions, specialRules, resources, proficientSaves };
+  return { pb, dex, sneak, attack, offhand, ranged: !!o.ranged, traits, reactions, specialRules, resources, proficientSaves };
 }

@@ -116,6 +116,63 @@ describe("the Rogue table: base-class features arrive at their printed levels", 
   });
 });
 
+describe("weapon loadout follows the subclass: melee up close, or a shortbow from range", () => {
+  it("Swashbuckler, Thief and Inquisitive fight in melee (rapier + shortsword); Assassin, Mastermind, Scout and Arcane Trickster shoot", () => {
+    for (const id of ["swashbuckler-rogue", "thief-rogue", "inquisitive-rogue"]) {
+      const c = makeTemplate(id, 5);
+      expect(c.ai.keepDistance, id).toBe(false);
+      expect(JSON.stringify(c.actions.find((a) => a.id === "attack")!.automation)).toContain('"amount":"1d8+4"');
+      expect(c.actions.some((a) => a.id === "offhand"), id).toBe(true);
+    }
+    for (const id of ["assassin-rogue", "mastermind-rogue", "scout-rogue", "arcane-trickster-rogue", "soulknife-rogue"]) {
+      const c = makeTemplate(id, 5);
+      expect(c.ai.keepDistance, id).toBe(true);
+    }
+    for (const id of ["assassin-rogue", "mastermind-rogue", "scout-rogue"]) {
+      const c = makeTemplate(id, 5); // a shortbow: 1d6 + Dex, and no off-hand attack
+      expect(JSON.stringify(c.actions.find((a) => a.id === "attack")!.automation)).toContain('"amount":"1d6+4"');
+      expect(c.actions.some((a) => a.id === "offhand"), id).toBe(false);
+      expect(c.ai.bonusAfterAttack).toEqual([]);
+    }
+  });
+});
+
+describe("Assassin: Assassinate (RAW)", () => {
+  it("advantage against a creature that hasn't taken a turn yet — not after it has, and not before 3rd level", () => {
+    const roll = (level: number, acted: boolean) => {
+      const modes: string[] = [];
+      const s = state(15, modes);
+      const rogue = party("assassin-rogue", level);
+      const foe = dummy();
+      foe.hasTakenTurn = acted;
+      put(s, rogue, foe);
+      rollAttack(s, rogue, foe, 0, undefined);
+      return modes[0];
+    };
+    expect(roll(5, false)).toBe("adv");
+    expect(roll(5, true)).toBe("flat");
+    expect(roll(2, false)).toBe("flat");
+  });
+
+  it("beginning a turn marks a creature as having acted", () => {
+    const s = state(15);
+    const foe = dummy();
+    put(s, foe);
+    expect(foe.hasTakenTurn).toBeUndefined();
+    beginTurn(s, foe);
+    expect(foe.hasTakenTurn).toBe(true);
+  });
+
+  it("gives no initiative jump and no automatic crit (nothing in the sim is surprised)", () => {
+    const rogue = party("assassin-rogue", 5);
+    expect(rogue.assassinateUntilRound).toBeUndefined();
+    const s = state(15);
+    const foe = dummy();
+    put(s, rogue, foe);
+    expect(rollAttack(s, rogue, foe, 0, undefined).crit).toBe(false);
+  });
+});
+
 describe("Sneak Attack — once per turn, and only with advantage or a flanking ally", () => {
   const setup = (faces = 15) => {
     const s = state(faces);
@@ -427,7 +484,7 @@ describe("Scout (Xanathar's)", () => {
   it("Sudden Strike (17th): a bonus-action attack that may Sneak Attack again — but never the same target twice", () => {
     expect(makeTemplate("scout-rogue", 16).actions.some((a) => a.id === "sudden-strike")).toBe(false);
     expect(makeTemplate("scout-rogue", 17).actions.find((a) => a.id === "sudden-strike")!.cost).toEqual({ bonus: 1 });
-    expect(makeTemplate("scout-rogue", 17).ai.bonusAfterAttack).toEqual(["sudden-strike", "offhand"]);
+    expect(makeTemplate("scout-rogue", 17).ai.bonusAfterAttack).toEqual(["sudden-strike"]);
 
     const two = (() => {
       const s = state(15);
@@ -600,7 +657,7 @@ describe("Arcane Trickster: the printed spell table", () => {
     expect(c.traits.some((t) => t.id === "evasion")).toBe(true);
     expect(c.reactions.some((r) => r.id === "uncanny-dodge")).toBe(true);
     expect(makeTemplate("arcane-trickster-rogue", 6).traits.some((t) => t.id === "evasion")).toBe(false);
-    expect(c.actions.some((a) => a.id === "offhand")).toBe(true);
+    expect(c.actions.some((a) => a.id === "offhand")).toBe(false); // it shoots a bow: no off-hand weapon
   });
 
   it("Versatile Trickster (13th): a bonus action giving advantage until your next turn, which lets Sneak Attack land", () => {

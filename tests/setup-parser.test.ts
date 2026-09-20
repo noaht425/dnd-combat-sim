@@ -21,7 +21,7 @@ describe("setup parser — unbuilt subclass regressions", () => {
     const p = parsePartyMember("eldritch knight fighter level 3");
     expect(p.ok).toBe(true);
     expect(p.classInfo?.templateId).toBe("gwm-fighter");
-    expect(p.subclassNote).toMatch(/Great Weapon Master fighter is built/);
+    expect(p.subclassNote).toMatch(/Champion fighter is built/);
   });
 
   it("findClassTemplate falls back to the bare class word when the full fuzzy score misses", () => {

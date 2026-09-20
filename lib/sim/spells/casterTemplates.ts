@@ -1060,7 +1060,7 @@ export const ARCANE_TRICKSTER_LEARNED: { level: number; spell: string }[] = [
 ];
 
 export function arcaneTricksterRogue(level: number): Combatant {
-  const kit = rogueKit(level);
+  const kit = rogueKit(level, { ranged: true }); // a caster who shoots and casts from range
   const int = kit.pb === 6 ? 3 : 2;
   const sub = level >= 3;
   const c = makeCaster({
@@ -1073,7 +1073,7 @@ export function arcaneTricksterRogue(level: number): Combatant {
     extraTraits: kit.traits,
     extraReactions: kit.reactions,
     extraActions: [
-      kit.attack, kit.offhand,
+      kit.attack,
       ...(level >= 13 ? [{
         id: "versatile-trickster", name: "Versatile Trickster", cost: { bonus: 1 }, recharge: "none" as const,
         automation: [{ type: "target" as const, who: { who: "self" as const }, effects: [
@@ -1087,7 +1087,7 @@ export function arcaneTricksterRogue(level: number): Combatant {
     ...c,
     specialRules: [...c.specialRules, ...kit.specialRules],
     resources: { ...c.resources, ...kit.resources },
-    ai: { ...c.ai, bonusAfterAttack: ["offhand"], ...(level >= 13 ? { bonusRoutine: ["versatile-trickster"] } : {}) },
+    ai: { ...c.ai, ...(level >= 13 ? { bonusRoutine: ["versatile-trickster"] } : {}) },
   };
 }
 

@@ -38,14 +38,26 @@ function playOut(seed: number, controlled: string, take: boolean) {
 }
 
 describe("battle reactions — surfaced to the player", () => {
+  // Whether the dragon actually hits the rogue (and so offers Uncanny Dodge) depends on the whole fight — a
+  // ranged Assassin is often out of its reach — so find a seed where the prompt does appear.
+  const dodgeSeed = (() => {
+    for (let seed = 1; seed <= 12; seed++) {
+      const setup = { party: party(), enemies: ["adult-red-dragon"] as string[], seed, controlled: ["pc-1-assassin-rogue"] };
+      const decisions: BattleDecision[] = [];
+      let run = runBattle({ ...setup, decisions });
+      let guard = 40;
+      while (!run.done && !run.awaitingReaction && guard-- > 0) {
+        decisions.push({ round: run.awaiting!.round, unitId: run.awaiting!.unitId, auto: true });
+        run = runBattle({ ...setup, decisions });
+      }
+      if (run.awaitingReaction) return seed;
+    }
+    return 0;
+  })();
+
   it("pauses on a controlled rogue's Uncanny Dodge instead of auto-halving", () => {
-    const setup = {
-      party: party(),
-      enemies: ["adult-red-dragon"] as string[],
-      seed: 2,
-      controlled: ["pc-1-assassin-rogue"],
-      decisions: [{ round: 2, unitId: "pc-1-assassin-rogue", auto: true } as BattleDecision],
-    };
+    expect(dodgeSeed).toBeGreaterThan(0);
+    const setup = { party: party(), enemies: ["adult-red-dragon"] as string[], seed: dodgeSeed, controlled: ["pc-1-assassin-rogue"] };
     // feed auto turn decisions until the first reaction prompt appears
     const decisions: BattleDecision[] = [];
     let run = runBattle({ ...setup, decisions });
@@ -69,8 +81,8 @@ describe("battle reactions — surfaced to the player", () => {
   });
 
   it("a recorded reaction answer is replayed and the fight finishes", () => {
-    const taken = playOut(2, "pc-1-assassin-rogue", true);
-    const declined = playOut(2, "pc-1-assassin-rogue", false);
+    const taken = playOut(dodgeSeed, "pc-1-assassin-rogue", true);
+    const declined = playOut(dodgeSeed, "pc-1-assassin-rogue", false);
     expect(taken.run.done).toBe(true);
     expect(declined.run.done).toBe(true);
     expect(taken.prompts.length).toBeGreaterThan(0);

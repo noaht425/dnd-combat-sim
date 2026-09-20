@@ -173,6 +173,8 @@ function rollAttackImpl(
     if (e.mods?.disadvantageUnlessTargetingSource && e.sourceId !== target.id) adv = combineAdv(adv, "dis");
     if (e.mods?.disadvantageOnlyTargetingSource && e.sourceId === target.id) adv = combineAdv(adv, "dis");
   }
+  // Assassin's Assassinate: advantage against a creature that hasn't taken a turn yet
+  if (!target.hasTakenTurn && attacker.ref.specialRules.some((r) => r.rule === "assassinate")) adv = combineAdv(adv, "adv");
   // Ambush / Assassinate — advantage on round 1 vs foes that haven't acted
   const assassinating = !!attacker.assassinateUntilRound && state.round <= attacker.assassinateUntilRound;
   if (assassinating) adv = combineAdv(adv, "adv");

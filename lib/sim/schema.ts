@@ -142,7 +142,7 @@ export type AutomationNode =
   | { type: "target"; who: TargetSpec; effects: AutomationNode[] }
   | { type: "attack"; bonus: number | string; adv?: AdvMode; critRange?: number; onHit: AutomationNode[]; onMiss?: AutomationNode[] }
   | { type: "save"; ability: Ability; dc: number | string; adv?: AdvMode; onFail: AutomationNode[]; onSuccess?: AutomationNode[] }
-  | { type: "damage"; amount: string; damageType: DamageType; half?: boolean; ignoreResistances?: boolean; diceMultiplier?: number; requiresSneakAttack?: boolean }
+  | { type: "damage"; amount: string; damageType: DamageType; half?: boolean; ignoreResistances?: boolean; diceMultiplier?: number; requiresSneakAttack?: boolean; weaponDice?: boolean }
   | { type: "heal"; amount: string }
   | { type: "tempHp"; amount: string }
   | { type: "applyCondition"; condition: Condition; durationRounds?: number; saveEnds?: z.infer<typeof saveEndsSchema> }
@@ -210,6 +210,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
        *  against the attack that's currently resolving, not baked in at
        *  build time (the attack itself doesn't need forced advantage). */
       requiresSneakAttack: z.boolean().optional(),
+      /** these are the weapon's own damage dice (Great Weapon Fighting may reroll a 1 or 2 on them) */
+      weaponDice: z.boolean().optional(),
     }),
     z.object({ type: z.literal("heal"), amount: diceSchema }),
     z.object({ type: z.literal("tempHp"), amount: diceSchema }),
@@ -308,6 +310,10 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("surviveDrop"), ability: abilitySchema, baseDc: z.number().int(), resource: z.string(), excludeTypes: z.array(damageTypeSchema).default([]), excludeCrit: z.boolean().default(true) }),
   // Clockwork Soul's Restore Balance: reaction, cancel advantage/disadvantage on a d20 rolled by a creature within range
   z.object({ rule: z.literal("restoreBalance"), resource: z.string(), rangeFt: z.number().positive() }),
+  // Assassin's Assassinate: advantage on attack rolls against any creature that hasn't taken a turn in the combat yet
+  z.object({ rule: z.literal("assassinate") }),
+  // Fighting Style: Great Weapon Fighting — a 1 or 2 on the weapon's damage dice is rerolled once
+  z.object({ rule: z.literal("greatWeaponFighting") }),
   // Swashbuckler's Fancy Footwork: a creature this one made a melee attack against can't make opportunity attacks against it for the rest of that turn
   z.object({ rule: z.literal("fancyFootwork") }),
   // Thief's Reflexes: a second turn in round 1, at initiative − 10 (not if the party is surprised)
