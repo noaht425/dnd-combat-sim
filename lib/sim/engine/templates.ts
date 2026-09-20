@@ -77,6 +77,16 @@ function gwmFighter(level: number): Combatant {
     // specialRule existed in the schema from the start but nothing ever
     // read it — wired into rollAttack's crit check via `critRangeFor`.
     specialRules: level >= 3 ? [{ rule: "critRange", value: level >= 15 ? 18 : 19 }] : [],
+    // Survivor (18th): at the start of each of your turns, regain 5 + Con modifier HP if you have no more than half
+    // your hit points left (Con +3 here). Applied as a standing effect whose tick fires at the start of the turn.
+    traits: level >= 18 ? [{
+      id: "survivor", name: "Survivor", trigger: "encounterStart",
+      automation: [{ type: "target", who: { who: "self" }, effects: [{
+        type: "applyEffect", name: "survivor",
+        tick: [{ type: "branch", if: "self.hp <= self.maxhp / 2", then: [{ type: "heal", amount: "8" }] }],
+      }] }],
+      text: "start of turn: regain 5 + Con HP while at half HP or below",
+    }] : [],
     actions: [
       {
         id: "attack", name: "Multiattack (GWM)", cost: { action: 1 }, recharge: "none",
@@ -94,14 +104,30 @@ function gwmFighter(level: number): Combatant {
   });
 }
 
+// Battle Master (Player's Handbook): superiority dice — four d8s, a fifth at 7th, a sixth at 15th; d10s at 10th,
+// d12s at 18th; maneuver save DC 8 + PB + Str. Three maneuvers known at 3rd, two more at 7th, 10th and 15th
+// (3 / 5 / 7 / 9). Which maneuvers is the player's choice; the ones the engine can express are learned in this
+// order: Precision Attack, Trip Attack, Riposte (the first three), then Menacing Attack, Rally (7th), then
+// Disarming Attack (10th). Not modeled: Parry, Distracting Strike, Sweeping Attack and the rest — so a 10th-level
+// build has six of its seven maneuvers, and a 15th-level one six of nine. Relentless (15th) only matters when a
+// fight starts with the dice already spent, which a single encounter never does.
+// Simplifications worth knowing: a swing is a greatsword (2d6 + Str, no fighting-style reroll), and the maneuver
+// variants of Attack spend their die on the FIRST swing only. Precision Attack adds the die to a roll that would
+// miss and is spent only if that turns it into a hit.
+const BM_LEARNED = ["precision-attack", "trip-attack", "riposte", "menacing-attack", "rally", "disarming-attack"];
+
 function battleMasterFighter(level: number): Combatant {
   const pb = pbFor(level);
   const str = pb === 6 ? 5 : 4;
+  const cha = 0;
   const baseAttacks = level >= 20 ? 4 : level >= 11 ? 3 : level >= 5 ? 2 : 1;
   const toHit = pb + str;
   const dmgPerHit = `2d6+${str}`;
   const dieSize = level >= 18 ? 12 : level >= 10 ? 10 : 8;
   const dc = 8 + pb + str;
+  const known = new Set(BM_LEARNED.slice(0, level >= 15 ? 9 : level >= 10 ? 7 : level >= 7 ? 5 : 3));
+  const sub = level >= 3;
+  const has = (m: string) => sub && known.has(m);
   const mkSwing = (maneuver?: "trip" | "menacing" | "disarming"): AutomationNode => ({
     type: "attack", bonus: toHit, onHit: [
       { type: "damage", amount: dmgPerHit, damageType: "slashing" },
@@ -112,23 +138,31 @@ function battleMasterFighter(level: number): Combatant {
               { type: "spendResource" as const, resource: "superiority", amount: 1 },
               { type: "damage" as const, amount: `1d${dieSize}`, damageType: "slashing" as const },
               ...(maneuver === "trip"
-                ? [{ type: "save" as const, ability: "str" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "prone" as const, durationRounds: 1 }] }]
+                // Trip Attack: only a Large or smaller target makes the save
+                ? [{ type: "branch" as const, if: "target.size<=large", then: [{ type: "save" as const, ability: "str" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "prone" as const, durationRounds: 1 }] }] }]
                 : maneuver === "menacing"
                   ? [{ type: "save" as const, ability: "wis" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "frightened" as const, durationRounds: 1 }] }]
-                  : [{ type: "save" as const, ability: "str" as const, dc, onFail: [{ type: "applyEffect" as const, name: "disarmed", durationRounds: 1, mods: { attackAdvantage: "dis" as const } }] }]),
+                  // Disarming Attack: the target drops one item. What that costs a monster (a weapon it must
+                  // pick back up) isn't modeled, so beyond the die of damage this is only narration.
+                  : [{ type: "save" as const, ability: "str" as const, dc, onFail: [{ type: "applyEffect" as const, name: "disarmed", durationRounds: 1 }] }]),
             ],
           }]
         : []),
     ],
   });
+  const variant = (id: string, name: string, m: "trip" | "menacing" | "disarming") => ({
+    id, name, cost: { action: 1 }, recharge: "none" as const,
+    automation: [{ type: "target" as const, who: { who: "aiChoice" as const }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i === 0 ? m : undefined)) }],
+  });
   return pc({
     id: "battlemaster-fighter", name: `Fighter ${level}`, level,
     ac: 18, hp: between(level, 13, 9 * 20 + 15),
-    abilities: { str: score(str), dex: score(1), con: score(3), int: score(0), wis: score(1), cha: score(0) },
+    abilities: { str: score(str), dex: score(1), con: score(3), int: score(0), wis: score(1), cha: score(cha) },
     proficientSaves: ["str", "con"],
+    specialRules: has("precision-attack") ? [{ rule: "boostMissedAttack", bonusDice: `1d${dieSize}`, resource: "superiority" }] : [],
     resources: {
       action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" },
-      superiority: { max: level >= 15 ? 6 : level >= 7 ? 5 : 4, recharge: "shortRest" },
+      ...(sub ? { superiority: { max: level >= 15 ? 6 : level >= 7 ? 5 : 4, recharge: "shortRest" as const } } : {}),
       second_wind: { max: 1, recharge: "shortRest" },
     },
     actions: [
@@ -136,40 +170,42 @@ function battleMasterFighter(level: number): Combatant {
         id: "attack", name: "Attack", cost: { action: 1 }, recharge: "none",
         automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, () => mkSwing()) }],
       },
-      {
-        id: "attack-trip", name: "Attack + Trip Attack", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i === 0 ? "trip" : undefined)) }],
-      },
-      {
-        id: "attack-menacing", name: "Attack + Menacing Attack", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i === 0 ? "menacing" : undefined)) }],
-      },
-      {
-        id: "attack-disarming", name: "Attack + Disarming Attack", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i === 0 ? "disarming" : undefined)) }],
-      },
+      ...(has("trip-attack") ? [variant("attack-trip", "Attack + Trip Attack", "trip")] : []),
+      ...(has("menacing-attack") ? [variant("attack-menacing", "Attack + Menacing Attack", "menacing")] : []),
+      ...(has("disarming-attack") ? [variant("attack-disarming", "Attack + Disarming Attack", "disarming")] : []),
       {
         id: "action-surge", name: "Action Surge", cost: { bonus: 1 }, recharge: "none",
         limitedUse: { resource: "action_surge", amount: 1 },
         automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, () => mkSwing()) }],
       },
-      {
-        // Rally: a bonus action, spend a die, grant temp HP to the most-hurt ally
-        id: "rally", name: "Rally", cost: { bonus: 1 }, recharge: "none",
+      // Rally: a bonus action, spend a die — a friendly creature gains temporary hit points equal to the die
+      // roll + your Charisma modifier
+      ...(has("rally") ? [{
+        id: "rally", name: "Rally", cost: { bonus: 1 }, recharge: "none" as const,
         automation: [{
-          type: "branch", if: "self.resource('superiority') > 0",
-          then: [
-            { type: "spendResource", resource: "superiority", amount: 1 },
-            { type: "target", who: { who: "lowestHpAlly" }, effects: [{ type: "tempHp", amount: `1d${dieSize}+${str}` }] },
-          ],
+          type: "branch" as const, if: "self.resource('superiority') > 0",
+          then: [{
+            type: "branch" as const, if: "self.has_ally",
+            then: [
+              { type: "spendResource" as const, resource: "superiority", amount: 1 },
+              { type: "target" as const, who: { who: "lowestHpAlly" as const }, effects: [{ type: "tempHp" as const, amount: cha ? `1d${dieSize}+${cha}` : `1d${dieSize}` }] },
+            ],
+          }],
         }],
-      },
+      }] : []),
     ],
-    reactions: [{
+    // Riposte: when a creature misses you with a melee attack, spend a die and reaction to make ONE melee weapon
+    // attack against it; on a hit the die is added to the damage.
+    reactions: has("riposte") ? [{
       id: "riposte", name: "Riposte", cost: { reaction: 1 }, recharge: "none",
       trigger: "self.wasMissedByMeleeAttack", limitedUse: { resource: "superiority", amount: 1 },
-      automation: [{ type: "useAction", action: "attack", times: 1 }],
-    }],
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{
+        type: "attack", bonus: toHit, onHit: [
+          { type: "damage", amount: dmgPerHit, damageType: "slashing" },
+          { type: "damage", amount: `1d${dieSize}`, damageType: "slashing" },
+        ],
+      }] }],
+    }] : [],
     opener: ["action-surge"], targetPriority: "lowestHp",
   });
 }

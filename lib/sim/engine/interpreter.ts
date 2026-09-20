@@ -1,6 +1,6 @@
 // Executes an automation-node tree against live combat state.
 
-import type { Action, AutomationNode, Condition, DamageType } from "../schema";
+import { SIZES, type Action, type AutomationNode, type Condition, type DamageType } from "../schema";
 
 import { applyDamage, critRangeFor, rollAttack, rollSave, type AttackResult } from "./resolve";
 import { MINIONS, PC_SUMMONS } from "./minions";
@@ -233,6 +233,7 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/target\.grappledby\(self\)/i, () => !!tgt && hasCondition(tgt, "grappled")],
     [/lastsave\.passed/i, () => ctx.last.savePassed === true],
     [/lastattack\.hadadvantage/i, () => ctx.last.attackAdv === true],
+    [/target\.size<=(\w+)/i, () => !!tgt && SIZES.indexOf(tgt.ref.size) <= SIZES.indexOf(RegExp.$1.toLowerCase() as (typeof SIZES)[number])],
     [/self\.has_?ally/i, () => livingAllies(st, s).some((a) => a.id !== s.id && a.summonerId === undefined)],
     [/self\.not_?reading/i, () => !(s.insightTargetId && (s.insightUntilRound ?? 0) >= st.round && st.units.get(s.insightTargetId)?.alive)],
     [/lastattack\.sneaklanded/i, () => ctx.last.sneakLanded === true],

@@ -8,15 +8,130 @@
 import { describe, expect, it } from "vitest";
 import { runBattle } from "../lib/sim/battle";
 import { makeTemplate } from "../lib/sim/engine/templates";
+import { runAction } from "../lib/sim/engine/interpreter";
+import { rollAttack } from "../lib/sim/engine/resolve";
+import { spend } from "../lib/sim/engine/ai";
+import { initCombatant, type CombatState, type CombatantState } from "../lib/sim/engine/state";
+import { startOfTurn } from "../lib/sim/engine/loop";
+import { fireEncounterStartTraits } from "../lib/sim/engine/interpreter";
+import { makeRng } from "../lib/sim/engine/rng";
 
-describe("Battle Master fighter — maneuvers", () => {
-  it("offers Trip/Menacing/Disarming as distinct choices, plus Rally", () => {
-    const names = makeTemplate("battlemaster-fighter", 5).actions.map((a) => a.name);
-    expect(names).toEqual(expect.arrayContaining([
-      "Attack", "Attack + Trip Attack", "Attack + Menacing Attack", "Attack + Disarming Attack", "Rally",
-    ]));
+/** a bare CombatState: d20s come from `faces` (the last repeats), dice roll their maximum */
+function state(faces: number | number[], modes: string[] = []): CombatState {
+  const rng = makeRng(1);
+  let i = 0;
+  const next = () => (Array.isArray(faces) ? faces[Math.min(i++, faces.length - 1)] : faces);
+  rng.d20 = () => next();
+  rng.d20mode = (m) => { modes.push(m); const f = next(); return { used: f, nat: f }; };
+  rng.dice = (n, sides) => n * sides;
+  return { round: 1, order: [], activeIdx: 0, units: new Map(), rng, log: [], maxRounds: 10, ended: false, verbose: false, summonCounter: 0 };
+}
+const put = (s: CombatState, ...us: CombatantState[]) => us.forEach((u) => s.units.set(u.id, u));
+const bm = (level: number, suffix = "-p") => initCombatant(makeTemplate("battlemaster-fighter", level), "party", suffix);
+function foe(size: "medium" | "huge" = "medium", ac = 10): CombatantState {
+  const u = initCombatant({ ...makeTemplate("gwm-fighter", 5), ac, size }, "monster", "-m");
+  u.hp = u.maxHp = 1000;
+  return u;
+}
+const act = (s: CombatState, u: CombatantState, id: string) => runAction(s, u, u.ref.actions.find((a) => a.id === id)!);
+
+describe("Battle Master fighter — the printed maneuver list", () => {
+  it("knows three maneuvers at 3rd level, five at 7th, seven at 10th", () => {
+    const ids = (l: number) => {
+      const c = makeTemplate("battlemaster-fighter", l);
+      return [
+        ...c.actions.map((a) => a.id).filter((id) => ["attack-trip", "attack-menacing", "attack-disarming", "rally"].includes(id)),
+        ...c.reactions.map((r) => r.id),
+        ...(c.specialRules.some((r) => r.rule === "boostMissedAttack") ? ["precision-attack"] : []),
+      ];
+    };
+    expect(ids(3).sort()).toEqual(["attack-trip", "precision-attack", "riposte"]);
+    expect(ids(6).sort()).toEqual(["attack-trip", "precision-attack", "riposte"]);
+    expect(ids(7).sort()).toEqual(["attack-menacing", "attack-trip", "precision-attack", "rally", "riposte"]);
+    expect(ids(10).sort()).toEqual(["attack-disarming", "attack-menacing", "attack-trip", "precision-attack", "rally", "riposte"]);
   });
 
+  it("superiority dice: four d8s, a fifth at 7th, a sixth at 15th; d10 at 10th, d12 at 18th; none before 3rd", () => {
+    const dice = (l: number) => makeTemplate("battlemaster-fighter", l).resources.superiority?.max;
+    expect([dice(2), dice(3), dice(7), dice(15)]).toEqual([undefined, 4, 5, 6]);
+    const size = (l: number) => (makeTemplate("battlemaster-fighter", l).specialRules.find((r) => r.rule === "boostMissedAttack") as { bonusDice: string }).bonusDice;
+    expect([size(3), size(10), size(18)]).toEqual(["1d8", "1d10", "1d12"]);
+  });
+
+  it("Trip Attack: the extra die always lands, but only a Large or smaller target makes the save", () => {
+    const run = (size: "medium" | "huge") => {
+      const s = state(15);
+      const f = bm(5);
+      const t = foe(size);
+      t.ref.abilities.str = 1; // Str -5: fails the save
+      put(s, f, t);
+      act(s, f, "attack-trip");
+      return { prone: t.conditions.has("prone"), dice: f.resources.get("superiority") };
+    };
+    expect(run("medium")).toEqual({ prone: true, dice: 3 });
+    expect(run("huge")).toEqual({ prone: false, dice: 3 }); // the die is spent and adds damage; a Huge creature isn't knocked down
+  });
+
+  it("Rally: die + Charisma modifier (+0 here) as temporary HP for a companion — never for yourself", () => {
+    const s = state(15);
+    const f = bm(7);
+    const ally = initCombatant(makeTemplate("gwm-fighter", 7), "party", "-a");
+    ally.hp = 1;
+    put(s, f, ally, foe());
+    act(s, f, "rally");
+    expect(ally.tempHp).toBe(8); // max of 1d8 + 0
+    expect(f.tempHp).toBe(0);
+    expect(f.resources.get("superiority")).toBe(4);
+
+    const alone = state(15);
+    const solo = bm(7);
+    put(alone, solo, foe());
+    act(alone, solo, "rally");
+    expect(solo.tempHp).toBe(0);
+    expect(solo.resources.get("superiority")).toBe(5); // no companion: nothing spent
+  });
+
+  it("Riposte is ONE melee attack (not the whole Multiattack) that adds the die to the damage", () => {
+    const f = makeTemplate("battlemaster-fighter", 11); // three swings per Attack action
+    const rip = f.reactions.find((r) => r.id === "riposte")!;
+    const blob = JSON.stringify(rip.automation);
+    expect((blob.match(/"type":"attack"/g) ?? []).length).toBe(1);
+    expect(blob).toContain('"amount":"1d10"'); // the superiority die at 10th+
+    expect(rip.limitedUse).toEqual({ resource: "superiority", amount: 1 });
+  });
+
+  it("Precision Attack adds the die to a roll that would miss, spent only if it turns the miss into a hit", () => {
+    const s = state(5);
+    const f = bm(3);
+    const t = foe("medium", 20);
+    put(s, f, t);
+    expect(rollAttack(s, f, t, 8, undefined).hit).toBe(true); // 5 + 8 + 8 = 21 >= 20
+    expect(f.resources.get("superiority")).toBe(3);
+    t.ac = 30;
+    expect(rollAttack(s, f, t, 8, undefined).hit).toBe(false);
+    expect(f.resources.get("superiority")).toBe(3);
+  });
+});
+
+describe("Champion: Survivor (18th)", () => {
+  it("regains 5 + Con at the start of a turn while at half HP or below — and not above half", () => {
+    const heal = (hpFraction: number) => {
+      const s = state(15);
+      const f = initCombatant(makeTemplate("gwm-fighter", 18), "party", "-p");
+      put(s, f, foe());
+      fireEncounterStartTraits(s);
+      f.hp = Math.floor(f.maxHp * hpFraction);
+      const before = f.hp;
+      startOfTurn(s, f);
+      return f.hp - before;
+    };
+    expect(heal(0.5)).toBe(8); // Con +3
+    expect(heal(0.9)).toBe(0);
+    expect(makeTemplate("gwm-fighter", 17).traits.some((t) => t.id === "survivor")).toBe(false);
+  });
+});
+
+describe("Battle Master fighter — maneuvers in a fight", () => {
   it("Trip Attack spends a die and knocks prone on a failed save", () => {
     const trip = makeTemplate("battlemaster-fighter", 5).actions.find((a) => a.id === "attack-trip")!;
     let sawProne = 0;
@@ -34,19 +149,4 @@ describe("Battle Master fighter — maneuvers", () => {
     expect(sawProne).toBeGreaterThan(5);
   });
 
-  it("Rally grants temp HP to the most-hurt ally (or self)", () => {
-    let sawRally = false;
-    for (let seed = 1; seed <= 20 && !sawRally; seed++) {
-      const out = runBattle({
-        party: [{ template: "battlemaster-fighter", level: 5, name: "Bront" }],
-        enemies: ["kobold"],
-        seed,
-        controlled: ["pc-1-battlemaster-fighter"],
-        maxRounds: 1,
-        decisions: [{ round: 1, unitId: "pc-1-battlemaster-fighter", bonusActionId: "rally" }],
-      } as never);
-      if (/Rally -> Bront \+\d+/.test(out.frames.map((f) => f.text ?? "").join("\n"))) sawRally = true;
-    }
-    expect(sawRally).toBe(true);
-  });
 });
