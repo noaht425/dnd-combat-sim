@@ -10,7 +10,6 @@ import { runBattle } from "../lib/sim/battle";
 import { makeTemplate } from "../lib/sim/engine/templates";
 import { runAction } from "../lib/sim/engine/interpreter";
 import { rollAttack } from "../lib/sim/engine/resolve";
-import { spend } from "../lib/sim/engine/ai";
 import { initCombatant, type CombatState, type CombatantState } from "../lib/sim/engine/state";
 import { startOfTurn } from "../lib/sim/engine/loop";
 import { fireEncounterStartTraits } from "../lib/sim/engine/interpreter";
