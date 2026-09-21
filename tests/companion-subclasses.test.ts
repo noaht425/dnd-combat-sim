@@ -25,12 +25,12 @@ function companionFightText(template: string, name: string) {
 }
 
 describe("Companion subclasses", () => {
-  it("Beast Master ranger summons a Primal Companion round 1 that acts all fight", () => {
+  it("Beast Master ranger (Ranger's Companion) has its wolf from the start of the fight and commands it with an action", () => {
     const { roster, text } = companionFightText("beastmaster-ranger", "Ranger");
-    expect(roster.some((n) => n.startsWith("Primal Companion"))).toBe(true);
-    expect(text).toMatch(/uses Call Companion -> Primal Companion 1 \+\d+.*raises 1× Primal Companion/);
-    // it acts on its own turn independently of the ranger's own attack
-    expect(text).toMatch(/Primal Companion 1 uses Multiattack/);
+    expect(roster.some((n) => n.startsWith("Wolf (companion)"))).toBe(true);
+    expect(text).toMatch(/The battle begins\nRanger raises 1× Wolf \(companion\)/);
+    // the wolf only Bites when its ranger uses an action to command it
+    expect(text).toMatch(/Ranger uses Command the beast to Attack[\s\S]*Wolf \(companion\) 1 \(commanded\) uses Bite/);
   });
 
   it("Battle Smith artificer has its Steel Defender from the start of the fight and commands it with a bonus action", () => {
@@ -42,8 +42,9 @@ describe("Companion subclasses", () => {
     expect(text).toMatch(/Smith uses Command Steel Defender: Rend[\s\S]*Steel Defender 1 \(commanded\) uses Force-Empowered Rend/);
   });
 
-  it("the Steel Defender's command is a bonus action; Beast Master's companion is still a bonus-action summon", () => {
-    expect(makeTemplate("beastmaster-ranger", 5).actions.find((a) => a.id === "call-companion")?.cost).toEqual({ bonus: 1 });
+  it("the Steel Defender's command is a bonus action; the Ranger's Companion is commanded with the ranger's ACTION (the optional Primal Companion, a bonus action)", () => {
+    expect(makeTemplate("beastmaster-ranger", 5).actions.find((a) => a.id === "command-attack")?.cost).toEqual({ action: 1 });
+    expect(makeTemplate("beastmaster-land-ranger", 5).actions.find((a) => a.id === "command-beast")?.cost).toEqual({ bonus: 1 });
     expect(makeTemplate("battlesmith-artificer", 5).actions.find((a) => a.id === "command-rend")?.cost).toEqual({ bonus: 1 });
   });
 });

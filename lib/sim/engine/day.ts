@@ -44,7 +44,7 @@ const HIT_DIE: Record<string, number> = {
   "gwm-fighter": 10, fighter: 10, "vengeance-paladin": 10, paladin: 10, "hunter-ranger": 10, ranger: 10, artificer: 8,
   "blaster-wizard": 6, wizard: 6, "draconic-sorcerer": 6, sorcerer: 6,
 };
-const hitDieOf = (c: Combatant): number => HIT_DIE[c.templateId ?? ""] ?? (/-barbarian$/.test(c.templateId ?? "") ? 12 : 8);
+const hitDieOf = (c: Combatant): number => HIT_DIE[c.templateId ?? ""] ?? (/-barbarian$/.test(c.templateId ?? "") ? 12 : /-ranger$/.test(c.templateId ?? "") ? 10 : 8);
 
 function partyHpFraction(states: CombatantState[]): number {
   let cur = 0;

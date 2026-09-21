@@ -10,6 +10,7 @@ import {
   breakConcentration,
   effectiveAc,
   hasCondition,
+  isIncapacitated,
   say,
 } from "./state";
 import {
@@ -21,6 +22,7 @@ import {
   reactToFailedSave,
   reactToIncomingAttack,
   reduceIncomingDamage,
+  shadowyDodge,
   spiritShield,
 } from "./reactions";
 
@@ -97,6 +99,16 @@ export interface AttackResult {
   /** the roll was made at (net) disadvantage — Sneak Attack's no-advantage routes all refuse it */
   hadDisadvantage?: boolean;
   nat: number;
+}
+
+/** an ally of `attacker` (not the attacker) within 5 ft of `target` and able to act — the Pack Tactics condition */
+function packAlly(state: CombatState, attacker: CombatantState, target: CombatantState): boolean {
+  for (const a of state.units.values()) {
+    if (a.id === attacker.id || a.side !== attacker.side || !a.alive || a.downed || isIncapacitated(a)) continue;
+    const near = state.distanceFt ? state.distanceFt(a, target) <= 5.001 : a.zone === "melee" && target.zone === "melee";
+    if (near) return true;
+  }
+  return false;
 }
 
 /** Is `attacker` held by a raging Bear-totem barbarian beside it (and not attacking that barbarian or another with the feature)? */
@@ -204,11 +216,17 @@ function rollAttackImpl(
 
   // a bodyguard companion (Steel Defender) may impose disadvantage on this roll before it's made
   if (deflectAttack(state, attacker, target, adv)) adv = combineAdv(adv, "dis");
+  // Pack Tactics: advantage when one of the attacker's allies is within 5 ft of the target and not incapacitated
+  if (adv !== "adv" && attacker.ref.specialRules.some((r) => r.rule === "packTactics") && packAlly(state, attacker, target)) adv = combineAdv(adv, "adv");
+  // Shadowy Dodge: a reaction that imposes disadvantage on an attack that has no advantage
+  if (shadowyDodge(state, attacker, target, adv)) adv = combineAdv(adv, "dis");
   // Restore Balance: a Clockwork Soul sorcerer cancels advantage on an enemy's roll / disadvantage on an ally's
   if (adv !== "flat" && restoreBalance(state, attacker, adv)) adv = "flat";
 
   const { used } = state.rng.d20mode(adv);
-  let ac = effectiveAc(target) + extraTargetAc;
+  // Multiattack Defense: a bonus to AC against the creature that has already hit the target this round
+  const acVs = target.effects.reduce((n, e) => n + (e.mods?.acBonusAgainstSource && e.sourceId === attacker.id ? e.mods.acBonusAgainstSource : 0), 0);
+  let ac = effectiveAc(target) + extraTargetAc + acVs;
   const hits = (f: number) => f >= critRange || f + toHit >= ac;
   let face = precogSwap(state, attacker, used, used !== 1 && hits(used), hits);
   let crit = face >= critRange;
@@ -248,7 +266,7 @@ function rollAttackImpl(
   if (!state.inReaction && !autoMiss) {
     const rr = reactToIncomingAttack(state, { target, hitMargin: face + toHit - ac, crit });
     if (rr.negated) return { hit: false, crit: false, hadAdvantage: adv === "adv", hadDisadvantage: adv === "dis", nat: face };
-    if (rr.shielded) ac = effectiveAc(target) + extraTargetAc; // the +5 Shield effect is now active
+    if (rr.shielded) ac = effectiveAc(target) + extraTargetAc + acVs; // the +5 Shield effect is now active
   }
 
   let hit = !autoMiss && (crit || face + toHit >= ac);

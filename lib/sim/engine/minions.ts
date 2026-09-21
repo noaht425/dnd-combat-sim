@@ -458,3 +458,120 @@ export function eldritchCannonFor(variant: CannonVariant, level: number, int: nu
  * a custom monster pack declares them.
  */
 export const REVERTS_ON_SUMMONER_DEATH = new Set<string>();
+
+// ------------------------------------------------------------------------------------------ ranger companions
+// Level-scaled companions for the ranger subclasses, built from the printed text (dnd5e.wikidot.com/ranger:beast-master and
+// ranger:drakewarden) and the SRD wolf (open5e). All are `commandOnly`: they only Dodge on their own turn unless their
+// ranger commands them, and the ranger's command runs their "attack" / "bite" action.
+
+const dodgeAction: Action = {
+  id: "dodge", name: "Dodge", cost: { action: 1 }, recharge: "none",
+  automation: [{ type: "target", who: { who: "self" }, effects: [
+    { type: "applyEffect", name: "dodging", durationRounds: 1, mods: { attacksAgainstItAdvantage: "dis" } },
+  ] }],
+};
+
+/**
+ * Beast Master (Player's Handbook): the Ranger's Companion. A beast no larger than Medium and CR 1/4 or lower — the SRD wolf
+ * here (AC 13, 11 HP, bite +4 for 2d4+2 with a DC 11 Strength save or prone, Pack Tactics). "Add your proficiency bonus to the
+ * beast's AC, attack rolls, and damage rolls, as well as to any saving throws and skills it is proficient in" (the wolf has
+ * none). Hit points are its normal maximum or four times the ranger's level, whichever is higher. Bestial Fury (11th):
+ * two attacks when commanded to Attack. Exceptional Training's magical attacks (7th) don't matter in the sim.
+ */
+export function rangerCompanionFor(level: number, pb: number): string {
+  const id = `ranger-companion-wolf-L${level}`;
+  if (PC_SUMMONS[id]) return id;
+  const wolfBase = MINIONS["wolf"];
+  const bite = {
+    type: "attack" as const, bonus: 4 + pb,
+    onHit: [
+      { type: "damage" as const, amount: `2d4+${2 + pb}`, damageType: "piercing" as const },
+      { type: "save" as const, ability: "str" as const, dc: 11, onFail: [{ type: "applyCondition" as const, condition: "prone" as const, durationRounds: 1 }] },
+    ],
+  };
+  PC_SUMMONS[id] = parseCombatant({
+    ...wolfBase, id, name: "Wolf (companion)", ac: wolfBase.ac + pb, maxHp: Math.max(11, 4 * level), pb,
+    commandOnly: true, specialRules: [{ rule: "packTactics" }],
+    actions: [dodgeAction, {
+      id: "attack", name: "Bite", cost: {}, recharge: "none", text: "Melee weapon attack, reach 5 ft.",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: level >= 11 ? 2 : 1 }, () => bite) }],
+    }],
+  });
+  return id;
+}
+
+export type PrimalBeastKind = "land" | "sea" | "sky";
+
+/**
+ * Beast Master's optional Primal Companion (Tasha's): Beast of the Land, Sea or Sky. AC 13 + PB, HP 5 + 5 × level (4 + 4 × level for
+ * the Sky), attacks at the ranger's spell attack modifier, and PB added to every ability check and saving throw. Bestial Fury
+ * (11th): two attacks. Not modeled: the Land beast's Charge (needs a 20-ft straight run), the Sea beast's water-only speed, Flyby.
+ */
+export function primalBeastFor(kind: PrimalBeastKind, level: number, pb: number, wis: number): string {
+  const id = `primal-beast-${kind}-L${level}`;
+  if (PC_SUMMONS[id]) return id;
+  REVERTS_ON_SUMMONER_DEATH.add(id); // "The beast also vanishes if you die."
+  const attackBonus = pb + wis; // your spell attack modifier
+  const sky = kind === "sky";
+  const strike: Action["automation"][number] =
+    kind === "land"
+      ? { type: "attack", bonus: attackBonus, onHit: [{ type: "damage", amount: `1d8+${2 + pb}`, damageType: "slashing" }] }
+      : kind === "sea"
+        ? { type: "attack", bonus: attackBonus, onHit: [
+            { type: "damage", amount: `1d6+${2 + pb}`, damageType: "piercing" },
+            { type: "applyCondition", condition: "grappled" }, // escape DC is your spell save DC on the page; the engine's own grapple-escape rule is used
+          ] }
+        : { type: "attack", bonus: attackBonus, onHit: [{ type: "damage", amount: `1d4+${3 + pb}`, damageType: "slashing" }] };
+  PC_SUMMONS[id] = minion({
+    id, name: `Beast of the ${kind[0].toUpperCase()}${kind.slice(1)}`, size: sky ? "small" : "medium",
+    ac: 13 + pb,
+    maxHp: sky ? 4 + 4 * level : 5 + 5 * level,
+    speeds: kind === "land" ? { walk: 40, climb: 40 } : kind === "sea" ? { walk: 5, swim: 60 } : { walk: 10, fly: 60 },
+    abilities: sky ? { str: 6, dex: 16, con: 13, int: 8, wis: 14, cha: 11 } : { str: 14, dex: 14, con: 15, int: 8, wis: 14, cha: 11 },
+    pb,
+    saveBonusAll: pb, // Primal Bond
+    commandOnly: true,
+    actions: [dodgeAction, {
+      id: "attack", name: kind === "land" ? "Maul" : kind === "sea" ? "Binding Strike" : "Shred", cost: {}, recharge: "none",
+      text: "Melee weapon attack, reach 5 ft.",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: level >= 11 ? 2 : 1 }, () => strike) }],
+    }],
+  });
+  return id;
+}
+
+/**
+ * Drakewarden's Drake Companion (Fizban's): Small dragon, AC 14 + PB, HP 5 + 5 × level, bite +3 + PB for 1d6 + PB piercing, immune to
+ * the essence damage type chosen when it's summoned, and Infused Strikes — a reaction adding 1d6 of that type to another creature's
+ * weapon hit within 30 ft. 7th level: wings (fly speed = walk), Medium, and Magic Fang (the bite deals an extra 1d6 of the essence
+ * type); 15th: Large, and 2d6 of it. The ranger's own resistance and Reflexive Resistance live on the ranger.
+ */
+export function drakeFor(level: number, pb: number, essence: import("../schema").DamageType): string {
+  const id = `drake-${essence}-L${level}`;
+  if (PC_SUMMONS[id]) return id;
+  REVERTS_ON_SUMMONER_DEATH.add(id); // "The drake remains until ... you die."
+  const magicFang = level >= 15 ? "2d6" : level >= 7 ? "1d6" : undefined;
+  PC_SUMMONS[id] = minion({
+    id, name: "Drake Companion", size: level >= 15 ? "large" : level >= 7 ? "medium" : "small",
+    ac: 14 + pb,
+    maxHp: 5 + 5 * level,
+    speeds: level >= 7 ? { walk: 40, fly: 40 } : { walk: 40 },
+    abilities: { str: 16, dex: 12, con: 15, int: 8, wis: 14, cha: 8 },
+    pb,
+    proficientSaves: ["dex", "wis"],
+    immunities: [essence],
+    specialRules: [{ rule: "infusedStrikes", dice: "1d6", damageType: essence }],
+    commandOnly: true,
+    actions: [dodgeAction, {
+      id: "bite", name: "Bite", cost: {}, recharge: "none", text: "Melee weapon attack, reach 5 ft.",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{
+        type: "attack", bonus: 3 + pb,
+        onHit: [
+          { type: "damage", amount: `1d6+${pb}`, damageType: "piercing" },
+          ...(magicFang ? [{ type: "damage" as const, amount: magicFang, damageType: essence }] : []),
+        ],
+      }] }],
+    }],
+  });
+  return id;
+}

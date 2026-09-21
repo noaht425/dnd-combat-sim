@@ -11,6 +11,7 @@
 
 import type { Action, AutomationNode, DamageType } from "../schema";
 import { actionBranchGateFails, runAction, runAutomation } from "./interpreter";
+import { rollSave } from "./resolve";
 import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, say, type ReactionAsk } from "./state";
 
 /** the five damage types Absorb Elements answers */
@@ -57,6 +58,8 @@ type RKind =
   | "onDrop"         // react to a creature hitting 0 hp
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
   | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
+  | "shadowyDodge"   // Gloom Stalker — impose disadvantage on an attack against you (before the roll)
+  | "nemesis"        // Monster Slayer's Magic-User's Nemesis — a Wisdom save or the spell fails
   | "tailSwipe"      // Path of the Beast's tail — a d8 bonus to AC against one attack
   | "unknown";
 
@@ -65,7 +68,9 @@ function classify(r: Action): RKind {
   const tr = (r.trigger ?? "").toLowerCase().replace(/\s+/g, "");
   if (id === "shield") return "shieldAc";
   if (id.includes("weight-of-ages") || id.includes("weightofages")) return "negateHit";
-  if (id.includes("uncanny")) return "halveDamage";
+  if (id.includes("uncanny") || id.includes("spectral-defense") || id.includes("swarming-dispersal") || id.includes("reflexive-resistance")) return "halveDamage";
+  if (id.includes("shadowy-dodge")) return "shadowyDodge";
+  if (id.includes("magic-users-nemesis")) return "nemesis";
   if (id.includes("counterspell")) return "counterspell";
   if (id.includes("absorb-elements") || id.includes("absorbelements") || tr.includes("tookelementaldamage")) return "absorbElements";
   if (id.includes("hellish-rebuke") || id.includes("hellishrebuke")) return "onDamaged";
@@ -312,6 +317,25 @@ export function reactToIncomingAttack(
 
 // --------------------------------------------------- damage about to be applied
 
+/** Shadowy Dodge (Gloom Stalker, 15th): whenever a creature makes an attack roll against you and doesn't have advantage, your reaction
+ *  imposes disadvantage on it — decided before the roll. Returns whether disadvantage applies. */
+export function shadowyDodge(state: CombatState, attacker: CombatantState, target: CombatantState, adv: "adv" | "dis" | "flat"): boolean {
+  if (state.inReaction || adv !== "flat") return false;
+  for (const r of target.ref.reactions) {
+    if (classify(r) !== "shadowyDodge" || !ready(state, target, r)) continue;
+    const ok = decideReaction(
+      state, target, "deflectAttack",
+      `${attacker.name} is attacking ${target.name} — Shadowy Dodge imposes disadvantage on the roll.`,
+      "Shadowy Dodge", "Take the attack",
+    );
+    if (!ok) return false;
+    consume(target, r);
+    say(state, `${target.name} slips into shadow (Shadowy Dodge)`, target.id);
+    return true;
+  }
+  return false;
+}
+
 /**
  * Spirit Shield (Path of the Ancestral Guardian): while raging, use your reaction to reduce damage another creature
  * you can see within 30 ft is about to take by 2d6 (3d6 at 10th, 4d6 at 14th). Vengeful Ancestors (14th) sends the
@@ -355,20 +379,22 @@ export function reduceIncomingDamage(
   amount: number,
   viaAttack: boolean,
 ): number {
-  if (state.inReaction || !viaAttack || amount < 15) return amount;
+  if (state.inReaction || amount < 15) return amount;
   for (const r of target.ref.reactions) {
     if (classify(r) !== "halveDamage" || !ready(state, target, r)) continue;
+    // Uncanny Dodge and Spectral Defense answer an attack; Swarming Dispersal and Reflexive Resistance answer any damage
+    if (!viaAttack && !/swarming|reflexive/.test(r.id)) continue;
     const ok = decideReaction(
       state,
       target,
       "uncannyDodge",
-      `${target.name} is about to take ${amount} damage from an attack — Uncanny Dodge halves it to ${Math.floor(amount / 2)}.`,
-      "Uncanny Dodge",
+      `${target.name} is about to take ${amount} damage — ${r.name} halves it to ${Math.floor(amount / 2)}.`,
+      r.name,
       "Take it full",
     );
     if (!ok) return amount;
     consume(target, r);
-    say(state, `${target.name} rolls with it (Uncanny Dodge)`, target.id);
+    say(state, `${target.name} rolls with it (${r.name})`, target.id);
     return Math.floor(amount / 2);
   }
   return amount;
@@ -582,6 +608,30 @@ export function mayCounterspell(state: CombatState, caster: CombatantState, acti
       consume(u, r);
       say(state, `${u.name} counterspells ${caster.name}'s ${action.name}`, u.id);
       return true;
+    }
+  }
+  // Magic-User's Nemesis (Monster Slayer, 11th): a creature casting a spell within 60 ft must succeed on a Wisdom save against
+  // the slayer's spell save DC or the spell fails
+  for (const u of state.units.values()) {
+    if (u.side === caster.side) continue;
+    for (const r of u.ref.reactions) {
+      if (classify(r) !== "nemesis" || !ready(state, u, r)) continue;
+      if (state.distanceFt && state.distanceFt(u, caster) > 60.001) continue;
+      const ok = decideReaction(
+        state, u, "counterspell",
+        `${caster.name} is casting ${action.name} — Magic-User's Nemesis can foil it (Wisdom save).`,
+        "Foil the spell", "Let it resolve",
+      );
+      if (!ok) continue;
+      consume(u, r);
+      const dc = 8 + u.ref.pb + Math.floor((u.ref.abilities.wis - 10) / 2);
+      const save = rollSave(state, caster, "wis", dc, { magical: false, allowLegendaryResistance: true });
+      if (!save.passed) {
+        say(state, `${u.name} foils ${caster.name}'s ${action.name} (Magic-User's Nemesis)`, u.id);
+        return true;
+      }
+      say(state, `${caster.name} shrugs off Magic-User's Nemesis`, caster.id);
+      return false;
     }
   }
   return false;

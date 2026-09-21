@@ -5,6 +5,7 @@
 import type { Action, Combatant } from "../schema";
 import { eldritchCannonFor, houndOfIllOmenFor, steelDefenderFor, type CannonVariant } from "../engine/minions";
 import { rogueKit } from "../engine/rogueKit";
+import { RANGER_BUILDERS } from "./rangerTemplates";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
@@ -204,58 +205,6 @@ export function vengeancePaladin(level: number): Combatant {
       ] }],
     }],
     keepDistance: false, opener: ["attack"], targetPriority: "lowestHp",
-  });
-}
-
-export function hunterRanger(level: number): Combatant {
-  const pb = pbFor(level);
-  const dex = pb === 6 ? 5 : 4;
-  const attacks = (level >= 5 ? 2 : 1) + (level >= 11 ? 1 : 0);
-  return makeCaster({
-    id: "hunter-ranger", name: `Ranger ${level}`, level, spellClass: "ranger", casterKind: "half", spellAbility: "wis",
-    ac: 18, hp: between(level, 11, 7 * 20 + 12),
-    abilities: { str: score(0), dex: score(dex), con: score(2), int: score(0), wis: score(3), cha: score(0) },
-    proficientSaves: ["str", "dex"], focus: "balanced",
-    extraActions: [{
-      id: "attack", name: "Multiattack (Longbow + Sharpshooter)", cost: { action: 1 }, recharge: "none",
-      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks }, (_, i) => (
-        {
-          type: "attack" as const, bonus: pb + dex - 2, onHit: [
-            { type: "damage" as const, amount: `1d8+${dex + 10}`, damageType: "piercing" as const },
-            // Hunter's Prey: Colossus Slayer — once per turn (first hit
-            // only, same convention as this session's other once-per-turn
-            // riders), an extra 1d8 if the target is already wounded
-            ...(i === 0 ? [{ type: "branch" as const, if: "target.hp < target.maxhp", then: [{ type: "damage" as const, amount: "1d8", damageType: "piercing" as const }] }] : []),
-          ],
-        }
-      )) }],
-    }],
-    keepDistance: true, opener: ["attack"], targetPriority: "lowestHp",
-  });
-}
-
-export function beastMasterRanger(level: number): Combatant {
-  const pb = pbFor(level);
-  const dex = pb === 6 ? 5 : 4;
-  return makeCaster({
-    id: "beastmaster-ranger", name: `Ranger ${level}`, level, spellClass: "ranger", casterKind: "half", spellAbility: "wis",
-    ac: 15, hp: between(level, 11, 7 * 20 + 12),
-    abilities: { str: score(0), dex: score(dex), con: score(2), int: score(0), wis: score(3), cha: score(0) },
-    proficientSaves: ["str", "dex"], focus: "balanced",
-    extraActions: [
-      {
-        id: "attack", name: "Shortsword", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: pb + dex, onHit: [{ type: "damage", amount: `1d6+${dex}`, damageType: "piercing" }] }] }],
-      },
-      {
-        // a real persistent ally, not a spell-slot summon — joins the roster
-        // at the start of the fight and acts on its own turn order slot for
-        // the whole encounter, the way an animal companion actually works
-        id: "call-companion", name: "Call Companion", cost: { bonus: 1 }, recharge: "none",
-        automation: [{ type: "summon", statBlock: "primal-companion", count: "1", max: 1 }],
-      },
-    ],
-    keepDistance: false, opener: ["call-companion", "attack"], targetPriority: "lowestHp",
   });
 }
 
@@ -1178,8 +1127,7 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "blaster-wizard": blasterWizard,
   "life-cleric": lifeCleric,
   "vengeance-paladin": vengeancePaladin,
-  "hunter-ranger": hunterRanger,
-  "beastmaster-ranger": beastMasterRanger,
+  ...RANGER_BUILDERS,
   "battlesmith-artificer": battleSmithArtificer,
   "artillerist-artificer": artilleristArtificer,
   "armorer-guardian-artificer": armorerGuardianArtificer,

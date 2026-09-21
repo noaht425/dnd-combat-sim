@@ -30,7 +30,7 @@ describe("Subclass audit fixes, round 2", () => {
     // directly, and confirm the battle actually runs with it without throwing.
     const c = makeTemplate("hunter-ranger", 5);
     const atk = c.actions.find((a) => a.id === "attack")!;
-    expect(JSON.stringify(atk.automation)).toContain("target.hp < target.maxhp");
+    expect(JSON.stringify(atk.automation)).toContain("target.wounded_at_hit");
     const out = runBattle({
       party: [{ template: "hunter-ranger", level: 5, name: "Ranger" }],
       enemies: ["troll"],

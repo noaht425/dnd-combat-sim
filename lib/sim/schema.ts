@@ -82,6 +82,8 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   // lowest AC / lowest effective HP. `preferFresh`: skip a creature this one has already Sneak-Attacked this turn when
   // any other is available (Scout's Sudden Strike may Sneak Attack again, but never the same target twice)
   z.object({ who: z.literal("squishiestEnemy"), preferFresh: z.boolean().optional() }),
+  // the enemy at this rank when sorted weakest first (0 = squishiest); the last enemy if there are fewer (Distant Strike's three targets)
+  z.object({ who: z.literal("enemyRank"), rank: z.number().int().min(0) }),
   z.object({ who: z.literal("chosenEnemies"), upTo: z.number().int().positive(), withinFt: z.number().positive().optional() }),
   z.object({
     who: z.literal("area"),
@@ -118,6 +120,11 @@ export const effectModsSchema = z.object({
   /** the holder has disadvantage on attack rolls against the creature that applied this effect
    *  (Armorer Infiltrator's Perfected Armor glimmer) */
   disadvantageOnlyTargetingSource: z.boolean().optional(),
+  /** a mark on the holder: whenever the creature that applied this effect hits the holder with an attack, the holder takes this extra
+   *  damage (Slayer's Prey, Planar Warrior); `oncePerTurn` = at most once each turn */
+  extraDamageWhenHitBySource: z.object({ amount: diceSchema, damageType: damageTypeSchema, oncePerTurn: z.boolean().optional() }).optional(),
+  /** the holder's AC is this much higher against attacks by the creature that applied the effect (Multiattack Defense) */
+  acBonusAgainstSource: z.number().int().optional(),
   /** temporary resistance to these damage types while the effect lasts (Rage: bludgeoning / piercing / slashing) */
   resistTypes: z.array(damageTypeSchema).optional(),
   /** advantage on saving throws with these abilities (Rage: Strength) */
@@ -331,6 +338,12 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("surviveDrop"), ability: abilitySchema, baseDc: z.number().int(), resource: z.string(), excludeTypes: z.array(damageTypeSchema).default([]), excludeCrit: z.boolean().default(true) }),
   // Clockwork Soul's Restore Balance: reaction, cancel advantage/disadvantage on a d20 rolled by a creature within range
   z.object({ rule: z.literal("restoreBalance"), resource: z.string(), rangeFt: z.number().positive() }),
+  // Pack Tactics: advantage on an attack roll against a creature with an ally of the attacker within 5 ft of it that isn't incapacitated
+  z.object({ rule: z.literal("packTactics") }),
+  // Multiattack Defense (Hunter, 7th): when a creature hits you, +4 AC against that creature's later attacks until its next turn
+  z.object({ rule: z.literal("multiattackDefense") }),
+  // Infused Strikes (Drakewarden's drake): reaction — when another creature within 30 ft that it can see hits with a weapon attack, the target takes extra damage
+  z.object({ rule: z.literal("infusedStrikes"), dice: z.string(), damageType: damageTypeSchema }),
   // Persistent Rage (15th): a rage ends early only if you fall unconscious or choose to end it
   z.object({ rule: z.literal("persistentRage") }),
   // Relentless Rage (11th): dropping to 0 while raging, a Constitution save (DC 10, +5 for each use since the last rest) to stay at 1 HP

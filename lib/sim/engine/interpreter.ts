@@ -31,6 +31,8 @@ interface RunCtx {
     /** an ally of the attacker was within 5ft of the target on this attack —
      *  Sneak Attack's other prerequisite, alongside attackAdv */
     allyAdjacent?: boolean;
+    /** the target was already below its hit point maximum when the attack hit (before this hit's damage) — Colossus Slayer */
+    woundedAtHit?: boolean;
     /** the attack roll was at net disadvantage */
     attackDis?: boolean;
     /** Swashbuckler: within 5 ft of the target with no other creature within 5 ft of the attacker */
@@ -131,6 +133,15 @@ function rollDamage(state: CombatState, amount: string, mult = 1, crit = false, 
  *  if that was the caster's concentration spell, ending it here is correct — the spell's own
  *  duration is "until the triggering hit lands or 1 minute", not the full minute regardless. */
 function applyExtraDamageOnHit(state: CombatState, attacker: CombatantState, target: CombatantState, res: AttackResult): void {
+  // marks on the target that only the creature that applied them cashes in (Slayer's Prey, Planar Warrior)
+  for (const e of [...target.effects]) {
+    const mark = e.mods?.extraDamageWhenHitBySource;
+    if (!mark || e.sourceId !== attacker.id || !target.alive) continue;
+    if (mark.oncePerTurn && !claimOncePerTurn(state, attacker, `mark:${e.name}`)) continue;
+    applyDamage(state, target, rollDamage(state, mark.amount, 1, res.crit), mark.damageType as DamageType, {
+      hadAdvantage: res.hadAdvantage, attackerMagical: true, sourceId: attacker.id, viaAttack: true,
+    });
+  }
   for (const e of [...attacker.effects]) {
     const extra = e.mods?.extraDamageOnHit;
     if (!extra) continue;
@@ -241,6 +252,11 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/lastsave\.passed/i, () => ctx.last.savePassed === true],
     [/lastattack\.hadadvantage/i, () => ctx.last.attackAdv === true],
     [/target\.size<=(\w+)/i, () => !!tgt && SIZES.indexOf(tgt.ref.size) <= SIZES.indexOf(RegExp.$1.toLowerCase() as (typeof SIZES)[number])],
+    [/target\.wounded_?at_?hit/i, () => ctx.last.woundedAtHit === true],
+    [/self\.has_?companion/i, () => [...st.units.values()].some((u) => u.summonerId === s.id && u.alive && !u.downed)],
+    [/self\.no_?companion/i, () => ![...st.units.values()].some((u) => u.summonerId === s.id && u.alive && !u.downed)],
+    [/enemies\s*>=\s*(\d+)/i, () => livingEnemies(st, s).length >= Number(RegExp.$1)],
+    [/round\s*<=\s*(\d+)/i, () => st.round <= Number(RegExp.$1)],
     [/self\.hasnt\('([^']+)'\)/i, () => !(s.effects.some((e) => e.name === RegExp.$1) || hasCondition(s, RegExp.$1 as Condition))],
     // Path of the Beast: in this natural-weapon form, or able to rage into it this turn (so the attack can be chosen in the same
     // decision as the Rage bonus action that grows the weapon)
@@ -323,6 +339,10 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
       }
       return [pool[0]];
     }
+    case "enemyRank": {
+      const pool = enemies.slice().sort((a, b) => a.ac - b.ac || a.hp - b.hp);
+      return pool.length ? [pool[Math.min(who.rank, pool.length - 1)]] : [];
+    }
     case "chosenEnemies": {
       let pool = enemies.slice().sort((a, b) => a.hp - b.hp);
       if (who.withinFt && state.distanceFt) pool = pool.filter((e) => state.distanceFt!(source, e) <= who.withinFt! + 0.001);
@@ -351,6 +371,21 @@ function claimOncePerTurn(state: CombatState, u: CombatantState, key: string): b
   if (u.onceTurn.keys.includes(key)) return false;
   u.onceTurn.keys.push(key);
   return true;
+}
+
+/** Infused Strikes: a drake within 30 ft of the attacker adds its essence's damage to a weapon hit, spending its reaction */
+function infusedStrikes(state: CombatState, attacker: CombatantState, target: CombatantState): void {
+  if (state.inReaction) return;
+  for (const d of state.units.values()) {
+    if (d.id === attacker.id || d.side !== attacker.side || !d.alive || d.downed || d.reactionUsed || isIncapacitated(d)) continue;
+    const rule = d.ref.specialRules.find((r) => r.rule === "infusedStrikes");
+    if (!rule || rule.rule !== "infusedStrikes") continue;
+    if (state.distanceFt && state.distanceFt(d, attacker) > 30.001) continue;
+    d.reactionUsed = true;
+    say(state, `${d.name} infuses ${attacker.name}'s strike`, d.id);
+    applyDamage(state, target, rollDamage(state, rule.dice), rule.damageType as DamageType, { sourceId: d.id, viaAttack: true, attackerMagical: true });
+    return;
+  }
 }
 
 /** Monte-Carlo has no grid, only the abstract melee / ranged zones: "nobody else within 5 ft of me" reads as
@@ -451,7 +486,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           if (res.hit) ctx.attackTally.hit++;
         }
         const soloDuel = tweak ? tweak.soloDuel : abstractSoloDuel(state, source, t);
-        const next: RunCtx = { ...ctx, last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage, attackDis: res.hadDisadvantage, allyAdjacent: tweak?.allyAdjacent, soloDuel, sneakLanded: false, insightMarked: false }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
+        const next: RunCtx = { ...ctx, last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage, attackDis: res.hadDisadvantage, woundedAtHit: t.hp < t.maxHp, allyAdjacent: tweak?.allyAdjacent, soloDuel, sneakLanded: false, insightMarked: false }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
         if (source.zone === "melee" && source.ref.specialRules.some((r) => r.rule === "fancyFootwork")) {
           const serial = state.turnSerial ?? 0;
           if (!source.footwork || source.footwork.serial !== serial) source.footwork = { serial, ids: [] };
@@ -462,6 +497,11 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           runAutomation(node.onHit, next);
           applyExtraDamageOnHit(state, source, t, res);
           fireOnHitTraits(state, t, source);
+          if (t.ref.specialRules.some((r) => r.rule === "multiattackDefense") && t.alive) { // +4 AC against this attacker until its next turn
+            t.effects = t.effects.filter((e) => !(e.name === "multiattack-defense" && e.sourceId === source.id));
+            t.effects.push({ name: "multiattack-defense", mods: { acBonusAgainstSource: 4, untilSourceNextTurn: true }, expiresRound: Infinity, sourceId: source.id });
+          }
+          if (!ctx.spell && t.alive) infusedStrikes(state, source, t);
           for (const e of [...t.effects]) { // a surge / Spiked Retribution: whoever hits the holder takes damage back
             const hb = e.mods?.hitBackDamage;
             if (!hb || !t.alive || !source.alive || (hb.meleeOnly && source.zone !== "melee")) continue;
