@@ -19,9 +19,10 @@ export const isCreatureType = (c: Combatant, ...types: CreatureType[]): boolean 
   return t !== undefined && types.includes(t);
 };
 
-/** may `c` be picked by a target node carrying `filter`? An unknown type passes both `types` and `notTypes`. */
-export function matchesFilter(c: Combatant, filter?: TargetFilter): boolean {
+/** may `c` be picked by a target node carrying `filter`? An unknown type passes both `types` and `notTypes`; `effects` are the creature's current effects. */
+export function matchesFilter(c: Combatant, filter?: TargetFilter, effects?: readonly { name: string }[]): boolean {
   if (!filter) return true;
+  if (filter.notEffects && effects?.some((e) => filter.notEffects!.includes(e.name))) return false;
   const t = creatureTypeOf(c);
   if (filter.types && t !== undefined && !filter.types.includes(t)) return false;
   if (filter.notTypes && t !== undefined && filter.notTypes.includes(t)) return false;

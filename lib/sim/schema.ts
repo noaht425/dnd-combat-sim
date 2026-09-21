@@ -79,6 +79,7 @@ export const targetFilterSchema = z.object({
   notTypes: z.array(creatureTypeSchema).optional(),   // never creatures of these types
   notImmune: z.array(conditionSchema).optional(),     // never a creature immune to one of these conditions ("creatures immune to being charmed")
   minInt: z.number().int().optional(),                // an Intelligence score of at least this
+  notEffects: z.array(z.string()).optional(),        // never a creature currently carrying one of these effects (Command Undead: "you can't use this feature on it again")
 });
 export type TargetFilter = z.infer<typeof targetFilterSchema>;
 
@@ -240,6 +241,8 @@ export type AutomationNode =
   | { type: "regainSlot"; below: number }
   /** Portent: roll `dice` d20s and keep them, unless they were already rolled since the last long rest */
   | { type: "portentRoll"; dice: number }
+  /** the target changes sides and obeys the source until the source takes control of another (Command Undead); it counts as one of the source's minions */
+  | { type: "takeControl" }
   /** Inquisitive's Insightful Fighting: `bonus` is the rogue's Wisdom (Insight) modifier, rolled against the
    *  target's Charisma (Deception). On a success the rogue may Sneak Attack that target without advantage. */
   | { type: "insightfulFighting"; bonus: number }
@@ -335,6 +338,7 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     z.object({ type: z.literal("arcaneWard"), maxHp: z.number().int().positive(), slotLevel: z.number().int().min(1).max(9) }),
     z.object({ type: z.literal("regainSlot"), below: z.number().int().min(2).max(9) }),
     z.object({ type: z.literal("portentRoll"), dice: z.number().int().min(1).max(3) }),
+    z.object({ type: z.literal("takeControl") }),
     z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
     z.object({ type: z.literal("spendReaction") }),
     z.object({ type: z.literal("spendBonusAction") }),

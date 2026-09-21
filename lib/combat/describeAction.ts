@@ -130,6 +130,8 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return `regain an expended spell slot below ${n.below}${n.below === 2 ? "nd" : n.below === 3 ? "rd" : "th"} level`;
     case "portentRoll":
       return "";
+    case "takeControl":
+      return "takes control of it: it turns friendly and obeys until another is commanded";
     case "note":
     case "restoreSlot":
     case "removeEffect":

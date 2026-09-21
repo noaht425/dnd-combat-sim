@@ -77,7 +77,7 @@ function noLegalTarget(state: CombatState, u: CombatantState, a: Action): boolea
   return nodes.every((n) => {
     const friendly = n.who.who === "lowestHpAlly" || n.who.who === "eachAlly";
     const pool = units.filter((x) => (friendly ? x.side === u.side : x.side !== u.side));
-    return !pool.some((x) => matchesFilter(x.ref, n.filter));
+    return !pool.some((x) => matchesFilter(x.ref, n.filter, x.effects));
   });
 }
 

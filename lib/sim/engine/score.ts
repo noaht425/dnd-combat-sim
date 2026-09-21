@@ -106,7 +106,7 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
 
   const forEachTarget = (who: string, upTo: number, cb: (t: CombatantState) => void, filter?: TargetFilter) => {
     // a spell's printed restriction (a humanoid, not undead, ...) leaves ineligible creatures out — a Hold Person is worth nothing against a troll
-    const ok = (u: CombatantState) => matchesFilter(u.ref, filter);
+    const ok = (u: CombatantState) => matchesFilter(u.ref, filter, u.effects);
     const foes = filter ? enemies.filter(ok) : enemies;
     const friends = filter ? allies.filter(ok) : allies;
     if (who === "self") return cb(actor);
@@ -176,6 +176,9 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
       } else if (n.type === "useAction") {
         const sub = actor.ref.actions.find((a) => a.id === n.action);
         if (sub) for (let i = 0; i < (n.times ?? 1); i++) scoreSubtree(sub.automation, t, pMul);
+      } else if (n.type === "takeControl") {
+        // a whole creature changes sides: it stops fighting for them and starts fighting for us
+        if (t.side !== actor.side) control += pMul * (30 + Math.min(40, estimatedThreat(t)));
       } else if (n.type === "summon") {
         // action-economy value of raising bodies — count ~ avg of the dice, capped
         const count = Math.max(1, Math.round(avgDice(n.count) ?? 1));

@@ -101,6 +101,7 @@ function saveStakes(onFail: AutomationNode[]): "damage" | "control" | "lock" {
   for (const n of onFail) {
     if (n.type === "applyCondition" && LOCK_CONDITIONS.includes(n.condition)) return "lock";
     if (n.type === "applyEffect" && (n.mods?.speedZero)) return "lock";
+    if (n.type === "takeControl") return "lock";
   }
   for (const n of onFail) {
     if (n.type === "applyCondition" && CONTROL_CONDITIONS.includes(n.condition)) return "control";
@@ -275,6 +276,7 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     // so it counts as "singing" from round 1 until it drops.
     [/self\.(is_?singing|singing)/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
     [/self\.sang_?since_?last_?turn/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
+    [/target\.int\s*>=\s*(\d+)/i, () => !!tgt && tgt.ref.abilities.int >= Number(RegExp.$1)],
     [/target\.is\('([a-z]+)'\)/i, () => !!tgt && isCreatureType(tgt.ref, RegExp.$1 as never)],
     [/target\.has\('([^']+)'\)/i, () => !!tgt && (tgt.effects.some((e) => e.name === RegExp.$1) || hasCondition(tgt, RegExp.$1 as Condition))],
     [/target\.hp\s*<\s*target\.maxhp/i, () => !!tgt && tgt.hp < tgt.maxHp],
@@ -318,7 +320,7 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
 function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: RunCtx): CombatantState[] {
   const { state, source } = ctx;
   // a spell's printed restriction is applied to the pool BEFORE anything is chosen from it (Hold Person never picks a troll)
-  const eligible = (u: CombatantState) => matchesFilter(u.ref, node.filter);
+  const eligible = (u: CombatantState) => matchesFilter(u.ref, node.filter, u.effects);
   const enemies = livingEnemies(state, source).filter(eligible);
   const allies = livingAllies(state, source).filter(eligible);
   const who = node.who;
@@ -497,7 +499,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
 
       case "target": {
         const picked = ctx.forceScope ?? ctx.geoTargets?.(node, source) ?? selectTargets(node, ctx);
-        const targets = node.filter ? picked.filter((u) => u.id === source.id || matchesFilter(u.ref, node.filter)) : picked; // (battle mode's own picker may not know the restriction)
+        const targets = node.filter ? picked.filter((u) => u.id === source.id || matchesFilter(u.ref, node.filter, u.effects)) : picked; // (battle mode's own picker may not know the restriction)
         // an area / multi-target effect rolls its damage dice once and shares
         // the total across every creature caught (each still saves for its own half)
         const multi = targets.length > 1;
@@ -837,6 +839,27 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
             break;
           }
         }
+        break;
+      }
+
+      case "takeControl": {
+        const t = ctx.scope[0];
+        if (!t || !t.alive || t.side === source.side) break;
+        // "until you use this feature again": the last creature taken is let go
+        for (const u of state.units.values()) {
+          if (u.summonerId === source.id && u.effects.some((e) => e.name === "commanded" && e.sourceId === source.id)) {
+            u.effects = u.effects.filter((e) => e.name !== "commanded");
+            u.side = u.side === "party" ? "monster" : "party";
+            u.summonerId = undefined;
+            say(state, `${u.name} slips the leash`, source.id);
+          }
+        }
+        t.side = source.side;
+        t.summonerId = source.id;
+        t.effects.push({ name: "commanded", expiresRound: Infinity, sourceId: source.id });
+        if (state.focusId === t.id) state.focusId = undefined;
+        if (state.monsterFocusId === t.id) state.monsterFocusId = undefined;
+        say(state, `${t.name} turns on its old masters and obeys ${source.name}`, source.id);
         break;
       }
 

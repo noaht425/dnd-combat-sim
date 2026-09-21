@@ -422,3 +422,89 @@ describe("enemy ids that look like a count", () => {
     expect(resolveEnemies(["goblin x3"])).toHaveLength(3);
   });
 });
+
+describe("Command Undead (Necromancy wizard, 14th)", () => {
+  const necro = () => initCombatant(makeTemplate("necromancy-wizard", 14), "party", "-n");
+  const undead = (id: string, over: Partial<Record<keyof Combatant["abilities"], number>> = {}, type: CreatureType = "undead") => foe(id, type, {}, over);
+
+  it("an undead that fails the Charisma save turns on its side and obeys the wizard; it counts as one of the wizard's minions", () => {
+    const w = necro();
+    const zombie = undead("z");
+    const s = state(2);
+    put(s, w, zombie);
+    runAction(s, w, w.ref.actions.find((a) => a.id === "command-undead")!);
+    expect(zombie.side).toBe("party");
+    expect(zombie.summonerId).toBe(w.id);
+    expect(zombie.effects.some((e) => e.name === "commanded")).toBe(true);
+  });
+
+  it("commanding another lets the first go: 'until you use this feature again'", () => {
+    const w = necro();
+    const a = undead("a");
+    const b = undead("b");
+    const s = state(2);
+    put(s, w, a);
+    const cmd = w.ref.actions.find((x) => x.id === "command-undead")!;
+    runAction(s, w, cmd);
+    expect(a.side).toBe("party");
+    put(s, b);
+    runAction(s, w, cmd);
+    expect(b.side).toBe("party");
+    expect(a.side).toBe("monster");
+    expect(a.summonerId).toBeUndefined();
+  });
+
+  it("a creature that makes the save is never commanded by this wizard again — the AI stops trying it", () => {
+    const w = necro();
+    const wight = undead("w", { cha: 10 });
+    const ghoul = undead("g");
+    const s = state(20);
+    put(s, w, wight);
+    const cmd = w.ref.actions.find((x) => x.id === "command-undead")!;
+    runAction(s, w, cmd);
+    expect(wight.side).toBe("monster");
+    expect(wight.effects.some((e) => e.name === "command-resisted")).toBe(true);
+    expect(actionAvailable(s, w, cmd)).toBe(false); // the only undead in view has already resisted
+    put(s, ghoul);
+    expect(actionAvailable(s, w, cmd)).toBe(true);
+  });
+
+  it("an undead with an Intelligence of 8 or higher makes the save with advantage; a dimmer one doesn't", () => {
+    for (const [int, expected] of [[-4, "flat"], [-1, "adv"], [3, "adv"]] as const) { // Int score 2, 8, 16
+      const w = necro();
+      const modes: string[] = [];
+      const s = state(2);
+      s.rng.d20mode = (m) => { modes.push(m); return { used: 2, nat: 2 }; };
+      const u = undead("u", { int });
+      put(s, w, u);
+      runAction(s, w, w.ref.actions.find((a) => a.id === "command-undead")!);
+      expect(modes.at(-1), `Int ${10 + 2 * int}`).toBe(expected);
+    }
+  });
+
+  it("only undead: a troll can't be commanded, and with nothing undead in view the action isn't available", () => {
+    const w = necro();
+    const troll = foe("troll", "giant");
+    const s = state(2);
+    put(s, w, troll);
+    const cmd = w.ref.actions.find((a) => a.id === "command-undead")!;
+    expect(actionAvailable(s, w, cmd)).toBe(false);
+    runAction(s, w, cmd);
+    expect(troll.side).toBe("monster");
+  });
+
+  it("not before the 14th level", () => {
+    expect(makeTemplate("necromancy-wizard", 13).actions.some((a) => a.id === "command-undead")).toBe(false);
+  });
+
+  it("a wizard faces a crypt of undead and turns some of it: the fight still ends, and the log says so", () => {
+    let turned = 0;
+    for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+      const out = runBattle({ party: [{ template: "necromancy-wizard", level: 14, name: "Necro" }, { template: "gwm-fighter", level: 14, name: "Fig" }], enemies: ["ghoul", "ghast", "wight", "wraith"], seed, controlled: [], maxRounds: 10 } as never);
+      const text = out.frames.map((f) => f.text ?? "").join("\n");
+      if (/turns on its old masters/.test(text)) turned++;
+      expect(out.frames.length).toBeGreaterThan(0);
+    }
+    expect(turned).toBeGreaterThan(0);
+  });
+});

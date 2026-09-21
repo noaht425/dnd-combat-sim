@@ -81,7 +81,7 @@ function isRangedAction(a: Action): boolean {
 /** the enemy this unit should aim at: the side's shared focus if it's sane, else grid-nearest with sight */
 function pickTarget(state: BattleState, u: CombatantState, filter?: TargetFilter): CombatantState | undefined {
   // a spell's printed restriction (a humanoid, not undead) leaves out whoever it can't affect
-  const foes = livingEnemies(state, u).filter((f) => matchesFilter(f.ref, filter));
+  const foes = livingEnemies(state, u).filter((f) => matchesFilter(f.ref, filter, f.effects));
   if (!foes.length) return undefined;
   const focusId = u.side === "party" ? state.focusId : u.ref.ai.focusFire ? state.monsterFocusId : undefined;
   const focus = focusId ? state.units.get(focusId) : undefined;
@@ -326,7 +326,7 @@ export function geoTargetsFor(state: BattleState, u: CombatantState, plan: Battl
     const who = node.who.who;
     if (who === "self" || who === "eachAlly" || who === "lowestHpAlly" || who === "chosenEnemies") return null;
     if (who === "eachEnemy" && node.who.withinFt) return null; // resolved by real distance in selectTargets
-    const foes = livingEnemies(state, source).filter((f) => matchesFilter(f.ref, node.filter));
+    const foes = livingEnemies(state, source).filter((f) => matchesFilter(f.ref, node.filter, f.effects));
     if (!foes.length) return [];
     const me = boxOfUnit(state, source);
 

@@ -13,7 +13,7 @@
 //
 // Not modeled anywhere: the schools' Savant halved-copying rules and other spellbook features, Minor Conjuration, Benign Transposition, Arcane
 // Abeyance, Hypnotic Gaze (it needs an adjacent creature and a spent action each turn), Alter Memories, Malleable Illusions and Illusory Reality,
-// Minor Alchemy, Shapechanger, Master Transmuter, Command Undead, Adjust Density, Gravity Well, Manifest Mind, The Third Eye, Improved Abjuration
+// Minor Alchemy, Shapechanger, Master Transmuter, Adjust Density, Gravity Well, Manifest Mind, The Third Eye, Improved Abjuration
 // (ability checks), and Sculpt Spells (an area spell in this sim never catches an ally, so there is nothing to spare). Overchannel is built for its
 // free first use only — the necrotic self-damage of later uses is not.
 
@@ -252,15 +252,30 @@ function illusion(level: number): Combatant {
 // Grim Harvest (2nd): killing a creature with a spell of 1st level or higher heals twice the spell's level (three times for a necromancy spell),
 // not for constructs or undead. Undead Thralls (6th): Animate Dead is in the spellbook and raises one more corpse; anything a necromancy spell
 // raises has extra hit points equal to your wizard level and adds your proficiency bonus to weapon damage. Inured to Undeath (10th): resistance to
-// necrotic damage (the hit point maximum can't be reduced isn't modeled). Command Undead (14th) isn't modeled.
+// necrotic damage (the hit point maximum can't be reduced isn't modeled). Command Undead (14th): an action, one undead within 60 ft, a Charisma save
+// (advantage at Intelligence 8+); on a failure it changes sides until another is commanded. (The hourly repeat save at Intelligence 12+ outlasts a fight.)
 function necromancy(level: number): Combatant {
   const pb = pbFor(level);
+  const dc = 8 + pb + intMod(level);
+  // Command Undead (14th): "As an action, you can choose one undead that you can see within 60 feet of you. That creature must make a Charisma saving throw
+  // against your wizard spell save DC. If it succeeds, you can't use this feature on it again. If it fails, it becomes friendly to you and obeys your
+  // commands until you use this feature again. Intelligent undead are harder to control. If the target has an Intelligence of 8 or higher, it has advantage
+  // on the saving throw." (An Intelligence of 12 or higher may repeat the save each hour — longer than a fight.)
+  const command: Action[] = level >= 14 ? [{
+    id: "command-undead", name: "Command Undead", cost: { action: 1 }, recharge: "none",
+    automation: [{ type: "target", who: { who: "chosenEnemies", upTo: 1, withinFt: 60 }, filter: { types: ["undead"], notEffects: ["command-resisted"] }, effects: [{
+      type: "branch", if: "target.int >= 8",
+      then: [{ type: "save", ability: "cha", dc, adv: "adv", onFail: [{ type: "takeControl" }], onSuccess: [{ type: "applyEffect", name: "command-resisted", mods: {} }] }],
+      else: [{ type: "save", ability: "cha", dc, onFail: [{ type: "takeControl" }], onSuccess: [{ type: "applyEffect", name: "command-resisted", mods: {} }] }],
+    }] }],
+  }] : [];
   const thralls = (a: Action): Action => (a.school === "necromancy" && level >= 6
     ? { ...a, automation: mapNodes(a.automation, (n) => (n.type === "summon"
       ? { ...n, hpBonus: level, damageBonus: pb, ...(baseSpellId(a.id) === "animate-dead" ? { count: String(Number(n.count) + 1) } : {}) } : n)) } : a);
   return chassis({
     id: "necromancy-wizard", level, focus: "balanced", always: level >= 6 ? ["animate-dead", "vampiric-touch"] : ["vampiric-touch"],
     spells: level >= 6 ? thralls : undefined,
+    actions: command,
     rules: level >= 2 ? [{ rule: "grimHarvest" }] : undefined,
     resistances: level >= 10 ? ["necrotic"] : undefined,
   });
