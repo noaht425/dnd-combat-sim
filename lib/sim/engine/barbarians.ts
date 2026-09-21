@@ -217,14 +217,33 @@ function berserker(level: number): Combatant {
 }
 
 // ---------------------------------------------------------------------------------------- Totem Warrior (PHB)
-// The totem spirit is the player's choice; this is the Bear (3rd level: resistance to all damage except psychic while
-// raging; 14th, Totemic Attunement: hostile creatures beside you have disadvantage on attacks against anyone else).
-// Aspect of the Beast, Spirit Seeker and Spirit Walker are non-combat. Eagle, Elk, Tiger and Wolf aren't built.
-function totemWarrior(level: number): Combatant {
+// The totem spirit is the player's choice. Bear (the default): 3rd level, resistance to all damage except psychic while raging;
+// 14th (Totemic Attunement), hostile creatures beside you have disadvantage on attacks against anyone else. Wolf: while raging, your
+// allies have advantage on melee attacks against hostile creatures within 5 ft of you; 14th, a bonus action to knock a Large or smaller
+// creature prone when you hit it with a melee attack. Elk: +15 ft speed while raging (14th, moving through a creature's space: not
+// modeled). Eagle: opportunity attacks against you are made with disadvantage while raging (Dash as a bonus action and the 14th-level
+// flying speed aren't modeled). The Tiger's jumps and charge bonus attack (a straight 20-ft run) aren't built. Aspect of the Beast,
+// Spirit Seeker and Spirit Walker are non-combat.
+type Totem = "bear" | "wolf" | "elk" | "eagle";
+function totemWarrior(level: number, spirit: Totem): Combatant {
   const k = kit(level);
-  return build(k, "totem-barbarian", {
-    rages: [rageAction(k, { resist: level >= 3 ? ALL_BUT_PSYCHIC : BPS })],
-    specialRules: level >= 14 ? [{ rule: "bearAttunement" }] : [],
+  const sub = level >= 3;
+  const topple: AutomationNode[] = spirit === "wolf" && level >= 14 ? [{
+    type: "branch", if: "self.has('rage')", then: [{
+      type: "branch", if: "self.bonus_free", then: [
+        { type: "spendBonusAction" },
+        { type: "branch", if: "target.size<=large", then: [{ type: "applyCondition", condition: "prone", durationRounds: 1 }] },
+      ],
+    }],
+  }] : [];
+  const mods: EffectMods = !sub ? {} : spirit === "elk" ? { speedBonusFt: 15 } : spirit === "eagle" ? { disadvantageOnOpportunityAttacks: true } : {};
+  return build(k, spirit === "bear" ? "totem-barbarian" : `totem-${spirit}-barbarian`, {
+    rages: [rageAction(k, { resist: sub && spirit === "bear" ? ALL_BUT_PSYCHIC : BPS, mods })],
+    specialRules: [
+      ...(spirit === "bear" && level >= 14 ? [{ rule: "bearAttunement" as const }] : []),
+      ...(spirit === "wolf" && sub ? [{ rule: "wolfTotem" as const }] : []),
+    ],
+    riders: topple,
   });
 }
 
@@ -334,7 +353,8 @@ function stormHerald(level: number, env: StormEnv): Combatant {
 // damage — radiant here (necrotic is the other choice). Warrior of the Gods is non-combat. Fanatical Focus (6th): reroll a
 // failed save while raging, once per rage. Zealous Presence (10th): bonus action, up to ten other creatures within 60 ft
 // have advantage on attack rolls and saves until the start of your next turn (once per long rest). Rage Beyond Death
-// (14th) is not modeled.
+// (14th): while raging, 0 hit points doesn't knock you unconscious — you still make death saves and take failures from
+// damage, but you can't die until the rage ends, and die then only if you're still at 0.
 function zealot(level: number): Combatant {
   const k = kit(level);
   return build(k, "zealot-barbarian", {
@@ -342,7 +362,10 @@ function zealot(level: number): Combatant {
       type: "branch", if: "self.has('rage')",
       then: [{ type: "damage", amount: `1d6+${Math.floor(level / 2)}`, damageType: "radiant", oncePerTurn: "divine-fury" }],
     }] : [],
-    specialRules: level >= 6 ? [{ rule: "rerollFailedSave", resource: "fanatical_focus", whileEffect: "rage" }] : [],
+    specialRules: [
+      ...(level >= 6 ? [{ rule: "rerollFailedSave" as const, resource: "fanatical_focus", whileEffect: "rage" }] : []),
+      ...(level >= 14 ? [{ rule: "rageBeyondDeath" as const }] : []),
+    ],
     resources: {
       ...(level >= 6 ? { fanatical_focus: { max: 1, recharge: "none" as const } } : {}),
       ...(level >= 10 ? { zealous_presence: { max: 1, recharge: "longRest" as const } } : {}),
@@ -533,7 +556,10 @@ function wildMagic(level: number): Combatant {
 
 export const BARBARIAN_BUILDERS: Record<string, (level: number) => Combatant> = {
   "berserker-barbarian": berserker,
-  "totem-barbarian": totemWarrior,
+  "totem-barbarian": (l) => totemWarrior(l, "bear"),
+  "totem-wolf-barbarian": (l) => totemWarrior(l, "wolf"),
+  "totem-elk-barbarian": (l) => totemWarrior(l, "elk"),
+  "totem-eagle-barbarian": (l) => totemWarrior(l, "eagle"),
   "ancestral-guardian-barbarian": ancestralGuardian,
   "storm-herald-barbarian": (l) => stormHerald(l, "sea"),
   "storm-herald-desert-barbarian": (l) => stormHerald(l, "desert"),

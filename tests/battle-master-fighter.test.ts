@@ -36,19 +36,20 @@ function foe(size: "medium" | "huge" = "medium", ac = 10): CombatantState {
 const act = (s: CombatState, u: CombatantState, id: string) => runAction(s, u, u.ref.actions.find((a) => a.id === id)!);
 
 describe("Battle Master fighter — the printed maneuver list", () => {
-  it("knows three maneuvers at 3rd level, five at 7th, seven at 10th", () => {
+  it("knows three maneuvers at 3rd level, five at 7th, seven at 10th, nine at 15th", () => {
     const ids = (l: number) => {
       const c = makeTemplate("battlemaster-fighter", l);
       return [
-        ...c.actions.map((a) => a.id).filter((id) => ["attack-trip", "attack-menacing", "attack-disarming", "rally"].includes(id)),
+        ...c.actions.map((a) => a.id).filter((id) => ["attack-trip", "attack-menacing", "attack-disarming", "attack-goading", "attack-distracting", "rally"].includes(id)),
         ...c.reactions.map((r) => r.id),
         ...(c.specialRules.some((r) => r.rule === "boostMissedAttack") ? ["precision-attack"] : []),
-      ];
+      ].sort();
     };
-    expect(ids(3).sort()).toEqual(["attack-trip", "precision-attack", "riposte"]);
-    expect(ids(6).sort()).toEqual(["attack-trip", "precision-attack", "riposte"]);
-    expect(ids(7).sort()).toEqual(["attack-menacing", "attack-trip", "precision-attack", "rally", "riposte"]);
-    expect(ids(10).sort()).toEqual(["attack-disarming", "attack-menacing", "attack-trip", "precision-attack", "rally", "riposte"]);
+    expect(ids(3)).toEqual(["attack-trip", "precision-attack", "riposte"]);
+    expect(ids(6)).toEqual(["attack-trip", "precision-attack", "riposte"]);
+    expect(ids(7)).toEqual(["attack-menacing", "attack-trip", "precision-attack", "rally", "riposte"]);
+    expect(ids(10)).toEqual(["attack-disarming", "attack-menacing", "attack-trip", "parry", "precision-attack", "rally", "riposte"]);
+    expect(ids(15)).toEqual(["attack-disarming", "attack-distracting", "attack-goading", "attack-menacing", "attack-trip", "parry", "precision-attack", "rally", "riposte"]);
   });
 
   it("superiority dice: four d8s, a fifth at 7th, a sixth at 15th; d10 at 10th, d12 at 18th; none before 3rd", () => {

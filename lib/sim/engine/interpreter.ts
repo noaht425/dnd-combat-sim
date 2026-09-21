@@ -253,6 +253,7 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/lastattack\.hadadvantage/i, () => ctx.last.attackAdv === true],
     [/target\.size<=(\w+)/i, () => !!tgt && SIZES.indexOf(tgt.ref.size) <= SIZES.indexOf(RegExp.$1.toLowerCase() as (typeof SIZES)[number])],
     [/target\.wounded_?at_?hit/i, () => ctx.last.woundedAtHit === true],
+    [/party\.missing_?hp\s*>=\s*(\d+)/i, () => livingAllies(st, s).reduce((n, a) => n + Math.max(0, a.maxHp - a.hp), 0) >= Number(RegExp.$1)],
     [/self\.has_?companion/i, () => [...st.units.values()].some((u) => u.summonerId === s.id && u.alive && !u.downed)],
     [/self\.no_?companion/i, () => ![...st.units.values()].some((u) => u.summonerId === s.id && u.alive && !u.downed)],
     [/enemies\s*>=\s*(\d+)/i, () => livingEnemies(st, s).length >= Number(RegExp.$1)],
@@ -262,6 +263,7 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     // decision as the Rage bonus action that grows the weapon)
     [/self\.canform\('([^']+)'\)/i, () => s.effects.some((e) => e.name === `form-${RegExp.$1}`) ||
       (!s.effects.some((e) => e.name === "rage") && (s.resources.get("rage") ?? 0) > 0)],
+    [/self\.bonus_?free/i, () => !s.bonusUsedThisTurn && !isIncapacitated(s)],
     [/self\.reaction_?free/i, () => !s.reactionUsed && !isIncapacitated(s)],
     [/self\.hp\s*<\s*self\.maxhp\s*\/\s*2/i, () => s.hp < s.maxHp / 2],
     [/self\.has_?ally/i, () => livingAllies(st, s).some((a) => a.id !== s.id && a.summonerId === undefined)],
@@ -362,6 +364,13 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
     default:
       return enemies.slice(0, 1);
   }
+}
+
+/** Psychic Veil and the like: invisibility ends the moment you deal damage to a creature or force a saving throw */
+function endInvisibilityOnStrike(u: CombatantState): void {
+  if (!u.effects.some((e) => e.mods?.endsOnDealingDamage)) return;
+  u.effects = u.effects.filter((e) => !e.mods?.endsOnDealingDamage);
+  u.conditions.delete("invisible");
 }
 
 /** a rider that lands at most once per turn under `key` (Divine Fury, a bite's healing, Call the Hunt's d6) */
@@ -515,10 +524,11 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       case "save": {
         const t = ctx.scope[0];
         if (!t) break;
+        endInvisibilityOnStrike(source);
         const dc = typeof node.dc === "number" ? node.dc : 18;
         // the conditions this save is against (Psychic Defenses: advantage vs charmed/frightened)
         const conditions = node.onFail.flatMap((n) => (n.type === "applyCondition" ? [n.condition] : []));
-        const sr = rollSave(state, t, node.ability, dc, { magical: true, stakes: saveStakes(node.onFail), conditions });
+        const sr = rollSave(state, t, node.ability, dc, { magical: true, stakes: saveStakes(node.onFail), conditions, sourceId: source.id });
         if (ctx.saveLog) ctx.saveLog.set(t.id, sr.passed);
         const next: RunCtx = { ...ctx, last: { ...ctx.last, savePassed: sr.passed }, depth: ctx.depth + 1 };
         if (!sr.passed) {
@@ -538,6 +548,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       case "damage": {
         const t = ctx.scope[0];
         if (!t) break;
+        endInvisibilityOnStrike(source);
         if (node.requiresSneakAttack && !claimSneakAttack(ctx, t)) break;
         let amt: number;
         if (ctx.sharedRolls) {
@@ -676,8 +687,24 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         break;
       }
 
+      case "healPool": {
+        let left = node.total;
+        const pool = livingAllies(state, source)
+          .filter((a) => !node.withinFt || !state.distanceFt || a.id === source.id || state.distanceFt(source, a) <= node.withinFt + 0.001)
+          .sort((a, b) => (b.maxHp - b.hp) - (a.maxHp - a.hp));
+        for (const a of pool) {
+          if (left <= 0) break;
+          left -= applyHealing(state, a, Math.min(left, a.maxHp - a.hp));
+        }
+        break;
+      }
+
       case "spendReaction":
         source.reactionUsed = true;
+        break;
+
+      case "spendBonusAction":
+        source.bonusUsedThisTurn = true;
         break;
 
       case "contest": {

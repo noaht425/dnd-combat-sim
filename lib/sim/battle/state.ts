@@ -150,7 +150,7 @@ export function unitReachFt(u: CombatantState): number {
 /** movement budget: the walk speed, or the fly speed for a creature that can
  *  ONLY fly (no walk). A flyer whose fly == walk (a Fairy) is unchanged. */
 export const speedFt = (u: CombatantState): number =>
-  u.ref.speeds?.walk ?? u.ref.speeds?.fly ?? 30;
+  (u.ref.speeds?.walk ?? u.ref.speeds?.fly ?? 30) + u.effects.reduce((n, e) => n + (e.mods?.speedBonusFt ?? 0), 0);
 
 /** does this unit have a flying speed? (it ignores difficult terrain + ground hazards) */
 export const canFly = (u: CombatantState): boolean => (u.ref.speeds?.fly ?? 0) > 0;

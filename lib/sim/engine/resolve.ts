@@ -23,6 +23,8 @@ import {
   reactToIncomingAttack,
   reduceIncomingDamage,
   shadowyDodge,
+  slayersCounter,
+  beguilingTwist,
   spiritShield,
 } from "./reactions";
 
@@ -101,12 +103,33 @@ export interface AttackResult {
   nat: number;
 }
 
+/** Tides of Chaos — spend the once-a-rest use to roll a d20 with advantage */
+function spendTides(state: CombatState, u: CombatantState): boolean {
+  const rule = u.ref.specialRules.find((r) => r.rule === "advantageOnce");
+  if (!rule || rule.rule !== "advantageOnce" || (u.resources.get(rule.resource) ?? 0) <= 0) return false;
+  u.resources.set(rule.resource, (u.resources.get(rule.resource) ?? 0) - 1);
+  say(state, `${u.name} bends chaos in its favor (Tides of Chaos)`, u.id);
+  return true;
+}
+
 /** an ally of `attacker` (not the attacker) within 5 ft of `target` and able to act — the Pack Tactics condition */
 function packAlly(state: CombatState, attacker: CombatantState, target: CombatantState): boolean {
   for (const a of state.units.values()) {
     if (a.id === attacker.id || a.side !== attacker.side || !a.alive || a.downed || isIncapacitated(a)) continue;
     const near = state.distanceFt ? state.distanceFt(a, target) <= 5.001 : a.zone === "melee" && target.zone === "melee";
     if (near) return true;
+  }
+  return false;
+}
+
+/** Wolf totem: does a raging wolf-totem barbarian on the attacker's side (not the attacker) have `target` within 5 ft, for a melee attack? */
+function wolfTotemAdvantage(state: CombatState, attacker: CombatantState, target: CombatantState): boolean {
+  if (attacker.zone !== "melee") return false;
+  for (const b of state.units.values()) {
+    if (b.id === attacker.id || b.side !== attacker.side || !b.alive || b.downed) continue;
+    if (!b.ref.specialRules.some((r) => r.rule === "wolfTotem") || !b.effects.some((e) => e.name === "rage")) continue;
+    const close = state.distanceFt ? state.distanceFt(b, target) <= 5.001 : b.zone === "melee" && target.zone === "melee";
+    if (close) return true;
   }
   return false;
 }
@@ -172,16 +195,21 @@ function rollAttackImpl(
       ? "adv"
       : undefined;
   const targetInvisible = hasCondition(target, "invisible") ? "dis" : undefined;
+  // an attacker the target can't see (invisible) attacks with advantage
+  const attackerUnseen = hasCondition(attacker, "invisible") ? "adv" : undefined;
 
-  let adv = combineAdv(intrinsicAdv, attackerConditionDis, attackerBlind, targetGivesAdv, targetInvisible);
+  let adv = combineAdv(intrinsicAdv, attackerConditionDis, attackerBlind, targetGivesAdv, targetInvisible, attackerUnseen);
 
   // target denies advantage entirely (It Has Been Seen); foresight-style effect gives attackers disadvantage
-  if (ruleActive(target, "denyAdvantageToAttackers") && adv === "adv") adv = "flat";
+  if ((ruleActive(target, "denyAdvantageToAttackers") || target.effects.some((e) => e.mods?.denyAdvantageToAttackers)) && adv === "adv") adv = "flat";
   for (const e of target.effects) {
     if (e.mods?.attacksAgainstItAdvantage === "dis") adv = combineAdv(adv, "dis");
     // "attack rolls against that target have advantage" — only for the side that put it there (Help, Ambush Master)
-    if (e.mods?.attacksAgainstItAdvantage === "adv" && (e.sourceId === target.id || state.units.get(e.sourceId)?.side === attacker.side)) adv = combineAdv(adv, "adv");
+    if (e.mods?.attacksAgainstItAdvantage === "adv" && (e.sourceId === target.id || state.units.get(e.sourceId)?.side === attacker.side) &&
+        !(e.mods.advantageToOthersOnly && e.sourceId === attacker.id)) adv = combineAdv(adv, "adv");
   }
+  // Wolf totem: a raging wolf-totem barbarian's allies have advantage on melee attacks against hostile creatures within 5 ft of it
+  if (adv !== "adv" && wolfTotemAdvantage(state, attacker, target)) adv = combineAdv(adv, "adv");
   // Totemic Attunement (Bear): a hostile creature beside a raging barbarian has disadvantage on attacks against anyone else
   if (bearAttunementApplies(state, attacker, target)) adv = combineAdv(adv, "dis");
   // Panache: a companion of the rogue attacking the creature ends the hold the rogue had on it
@@ -189,9 +217,9 @@ function rollAttackImpl(
     target.effects = target.effects.filter((e) => !(e.mods?.endOnAllyAttack && e.sourceId !== attacker.id && state.units.get(e.sourceId)?.side === attacker.side));
   }
   // the Help action is spent by the first attack roll made against the target
-  if (target.effects.some((e) => e.mods?.consumeOnAttacked && state.units.get(e.sourceId)?.side === attacker.side)) {
-    target.effects = target.effects.filter((e) => !(e.mods?.consumeOnAttacked && state.units.get(e.sourceId)?.side === attacker.side));
-  }
+  const consumes = (e: import("./state").ActiveEffect) =>
+    !!e.mods?.consumeOnAttacked && state.units.get(e.sourceId)?.side === attacker.side && !(e.mods.advantageToOthersOnly && e.sourceId === attacker.id);
+  if (target.effects.some(consumes)) target.effects = target.effects.filter((e) => !consumes(e));
   for (const e of attacker.effects) {
     if (e.mods?.attackAdvantage === "adv") adv = combineAdv(adv, "adv");
     if (e.mods?.attackAdvantage === "dis") adv = combineAdv(adv, "dis");
@@ -216,6 +244,8 @@ function rollAttackImpl(
 
   // a bodyguard companion (Steel Defender) may impose disadvantage on this roll before it's made
   if (deflectAttack(state, attacker, target, adv)) adv = combineAdv(adv, "dis");
+  // Tides of Chaos: the first d20 roll of the fight is made with advantage (spending the use)
+  if (adv !== "adv" && spendTides(state, attacker)) adv = combineAdv(adv, "adv");
   // Pack Tactics: advantage when one of the attacker's allies is within 5 ft of the target and not incapacitated
   if (adv !== "adv" && attacker.ref.specialRules.some((r) => r.rule === "packTactics") && packAlly(state, attacker, target)) adv = combineAdv(adv, "adv");
   // Shadowy Dodge: a reaction that imposes disadvantage on an attack that has no advantage
@@ -223,7 +253,9 @@ function rollAttackImpl(
   // Restore Balance: a Clockwork Soul sorcerer cancels advantage on an enemy's roll / disadvantage on an ally's
   if (adv !== "flat" && restoreBalance(state, attacker, adv)) adv = "flat";
 
-  const { used } = state.rng.d20mode(adv);
+  let used = state.rng.d20mode(adv).used;
+  const rollFloor = attacker.effects.reduce((n, e) => Math.max(n, e.mods?.d20Floor ?? 0), 0);
+  if (used < rollFloor) used = rollFloor; // Trance of Order: a d20 of 9 or lower counts as a 10
   // Multiattack Defense: a bonus to AC against the creature that has already hit the target this round
   const acVs = target.effects.reduce((n, e) => n + (e.mods?.acBonusAgainstSource && e.sourceId === attacker.id ? e.mods.acBonusAgainstSource : 0), 0);
   let ac = effectiveAc(target) + extraTargetAc + acVs;
@@ -315,19 +347,26 @@ export function rollSave(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[] } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string } = {},
 ): SaveResult {
+  // Slayer's Counter — a hit on the creature forcing the save makes the save succeed outright
+  const forcer = opts.sourceId ? state.units.get(opts.sourceId) : undefined;
+  if (forcer && slayersCounter(state, target, forcer)) {
+    (state.saveLog ??= []).push({ round: state.round, unitId: target.id, ability, passed: true });
+    return { passed: true, usedLegendaryResistance: false };
+  }
   let result = rollSaveImpl(state, target, ability, dc, opts);
-  // Fanatical Focus — fail a save while raging and you may reroll it, using the new roll (once per rage)
+  // Fanatical Focus / Indomitable — fail a save while raging and you may reroll it, using the new roll (once per rage)
   if (!result.passed) {
     const ff = target.ref.specialRules.find((r) => r.rule === "rerollFailedSave");
-    if (ff && ff.rule === "rerollFailedSave" && target.effects.some((e) => e.name === ff.whileEffect) && (target.resources.get(ff.resource) ?? 0) > 0) {
+    if (ff && ff.rule === "rerollFailedSave" && (!ff.whileEffect || target.effects.some((e) => e.name === ff.whileEffect)) && (target.resources.get(ff.resource) ?? 0) > 0) {
       target.resources.set(ff.resource, (target.resources.get(ff.resource) ?? 0) - 1);
-      say(state, `${target.name} rerolls the failed save (Fanatical Focus)`, target.id);
+      say(state, `${target.name} rerolls the failed save (${ff.whileEffect ? "Fanatical Focus" : "Indomitable"})`, target.id);
       result = rollSaveImpl(state, target, ability, dc, opts);
     }
   }
   (state.saveLog ??= []).push({ round: state.round, unitId: target.id, ability, passed: result.passed });
+  if (result.passed) beguilingTwist(state, target, opts.conditions); // a Fey Wanderer turns a shrugged-off charm or fear on someone else
   return result;
 }
 
@@ -336,7 +375,7 @@ function rollSaveImpl(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[] } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string } = {},
 ): SaveResult {
   const magical = opts.magical ?? true;
 
@@ -357,6 +396,7 @@ function rollSaveImpl(
     if (e.mods?.saveAdvantage === "adv") adv = combineAdv(adv, "adv");
     if (e.mods?.saveAdvantage === "dis") adv = combineAdv(adv, "dis");
     if (e.mods?.saveAdvantageOn?.includes(ability)) adv = combineAdv(adv, "adv"); // Rage: Strength saves
+    if (e.mods?.saveDisadvantageAgainstSource && opts.sourceId && e.sourceId === opts.sourceId) adv = combineAdv(adv, "dis"); // the Hound of Ill Omen's mark
     if (e.mods?.disadvantageOnFirstD20EachRound) adv = combineAdv(adv, "dis"); // "doomed" — simplification
   }
   // restrained imposes disadvantage on Dexterity saving throws
@@ -366,11 +406,17 @@ function rollSaveImpl(
   if (advVs && advVs.rule === "advantageOnSavesAgainst" && opts.conditions?.some((c) => advVs.conditions.includes(c))) {
     adv = combineAdv(adv, "adv");
   }
+  if (adv !== "adv" && spendTides(state, target)) adv = combineAdv(adv, "adv");
   if (adv !== "flat" && restoreBalance(state, target, adv)) adv = "flat";
 
-  const { used } = state.rng.d20mode(adv);
+  let used = state.rng.d20mode(adv).used;
+  const floor = target.effects.reduce((n, e) => Math.max(n, e.mods?.d20Floor ?? 0), 0);
+  if (used < floor) used = floor; // Trance of Order
   let mod = saveModifierOf(target, ability);
   for (const e of target.effects) if (e.mods?.saveBonusDice) mod += rollBonusDice(state, e.mods.saveBonusDice);
+  // Supernatural Defense: +1d6 on saves against effects from the creature designated as your prey
+  if (opts.sourceId && target.ref.specialRules.some((r) => r.rule === "supernaturalDefense") &&
+      state.units.get(opts.sourceId)?.effects.some((e) => e.name === "slayers-prey" && e.sourceId === target.id)) mod += state.rng.dice(1, 6);
   const succeeds = (f: number) => f + mod >= dc; // 2014 RAW: no auto-success on a natural 20 for saves
   const face = precogSwap(state, target, used, succeeds(used), succeeds);
   const passed = succeeds(face);
@@ -461,6 +507,14 @@ export function applyDamage(
     }
   }
 
+  if (target.zeroHpRaging && target.hp <= 0) {
+    // Rage Beyond Death: still at 0 HP and on its feet — a hit is a failed death save, but a third failure only kills when the rage ends
+    if (rawAmount >= target.maxHp) { target.alive = false; say(state, `${target.name} is killed outright`, target.id); return 0; }
+    target.deathSaves.fail += 1;
+    if (target.deathSaves.fail >= 3 && !target.deathPending) { target.deathPending = true; say(state, `${target.name} can't die until the rage ends`, target.id); }
+    return 0;
+  }
+
   if (target.downed) {
     // a downed PC that takes a hit fails a death save (two on a crit ~ big hit)
     target.deathSaves.fail += rawAmount >= target.maxHp ? 2 : 1;
@@ -472,7 +526,8 @@ export function applyDamage(
   }
 
   // Uncanny Dodge — the target spends a reaction to halve an attack's damage
-  rawAmount = reduceIncomingDamage(state, target, rawAmount, opts.viaAttack ?? false);
+  rawAmount = reduceIncomingDamage(state, target, rawAmount, opts.viaAttack ?? false,
+    !!opts.viaAttack && state.units.get(opts.sourceId ?? "")?.zone === "melee");
   // Spirit Shield — a raging Ancestral Guardian nearby soaks some of it
   rawAmount = spiritShield(state, target, rawAmount, opts.sourceId);
   if (rawAmount <= 0) return 0;
@@ -630,6 +685,15 @@ export function applyDamage(
 
 function handleDropToZero(state: CombatState, target: CombatantState): void {
   if (!target.alive || target.downed) return;
+  // Rage Beyond Death: raging, 0 hit points doesn't knock you unconscious
+  if (target.side === "party" && target.summonerId === undefined && target.effects.some((e) => e.name === "rage") &&
+      target.ref.specialRules.some((r) => r.rule === "rageBeyondDeath")) {
+    target.hp = 0;
+    target.zeroHpRaging = true;
+    target.deathSaves = { success: 0, fail: 0 };
+    say(state, `${target.name} fights on at 0 HP (Rage Beyond Death)`, target.id);
+    return;
+  }
   // Undying return (Undying Grudge / Unrelenting Storm)
   const ur = target.ref.specialRules.find((r) => r.rule === "undyingReturn");
   if (ur && ur.rule === "undyingReturn" && !target.onceFired.has("undyingReturn")) {

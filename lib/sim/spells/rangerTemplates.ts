@@ -214,7 +214,7 @@ function primalBeastMaster(level: number, kind: PrimalBeastKind): Combatant {
 
 // -------------------------------------------------------------------------------------------- Gloom Stalker (XGtE)
 // Dread Ambusher (3rd): + Wisdom to initiative; on your first turn of a combat one extra shot as part of the Attack action, +1d8
-// damage on a hit (the +10 ft of speed that turn isn't modeled). Umbral Sight is darkvision. Iron Mind (7th): Wisdom saves.
+// damage on a hit, and +10 ft of speed that turn. Umbral Sight is darkvision (not modeled). Iron Mind (7th): Wisdom saves.
 // Stalker's Flurry (11th): once a turn a missed weapon attack is followed by another. Shadowy Dodge (15th): a reaction imposing
 // disadvantage on an attack against you that has no advantage.
 const GLOOM_SPELLS: SubclassSpells = [[3, ["disguise-self"]], [5, ["rope-trick"]], [9, ["fear"]], [13, ["greater-invisibility"]], [17, ["seeming"]]];
@@ -236,6 +236,7 @@ function gloomStalker(level: number): Combatant {
       after: sub ? [{ type: "branch", if: "round <= 1", then: [shot(k, [{ type: "damage", amount: "1d8", damageType: "piercing" }])] }] : [],
     })],
     proficientSaves: level >= 7 ? ["str", "dex", "wis"] : ["str", "dex"],
+    specialRules: sub ? [{ rule: "firstTurnSpeed", ft: 10 }] : [],
     reactions: level >= 15 ? [reaction("shadowy-dodge", "Shadowy Dodge", "an attack roll is made against you", "imposes disadvantage on the attack (engine hook)")] : [],
   });
 }
@@ -276,8 +277,9 @@ function horizonWalker(level: number): Combatant {
 // ------------------------------------------------------------------------------------------ Monster Slayer (XGtE)
 // Slayer's Prey (3rd): a bonus action designates a creature within 60 ft; the first weapon hit on it each turn deals an extra 1d6,
 // until you designate another. Magic-User's Nemesis (11th): a reaction — a creature casting a spell within 60 ft makes a Wisdom save
-// against your spell save DC or the spell fails (once per short rest). Not modeled: Hunter's Sense, Supernatural Defense (7th: 1d6 on
-// saves against your prey's effects), Slayer's Counter (15th).
+// against your spell save DC or the spell fails (once per short rest). Supernatural Defense (7th): + 1d6 on saves against your prey's
+// effects. Slayer's Counter (15th): your reaction attacks the prey before the save, and a hit makes the save succeed. Not modeled:
+// Hunter's Sense (learning resistances).
 const SLAYER_SPELLS: SubclassSpells = [[3, ["protection-from-evil-and-good"]], [5, ["zone-of-truth"]], [9, ["magic-circle"]], [13, ["banishment"]], [17, ["hold-monster"]]];
 function monsterSlayer(level: number): Combatant {
   const k = kit(level);
@@ -295,14 +297,23 @@ function monsterSlayer(level: number): Combatant {
       ],
     }] : [],
     bonusRoutine: sub ? ["slayers-prey"] : undefined,
+    specialRules: level >= 7 ? [{ rule: "supernaturalDefense" }] : [],
     resources: level >= 11 ? { magic_users_nemesis: { max: 1, recharge: "shortRest" as const } } : {},
-    reactions: level >= 11 ? [reaction("magic-users-nemesis", "Magic-User's Nemesis", "a creature within 60 ft casts a spell", "a Wisdom save or the spell fails (engine hook)", "magic_users_nemesis")] : [],
+    reactions: [
+      ...(level >= 11 ? [reaction("magic-users-nemesis", "Magic-User's Nemesis", "a creature within 60 ft casts a spell", "a Wisdom save or the spell fails (engine hook)", "magic_users_nemesis")] : []),
+      ...(level >= 15 ? [{
+        id: "slayers-counter", name: "Slayer's Counter", cost: { reaction: 1 }, recharge: "none" as const,
+        trigger: "your prey forces you to make a saving throw",
+        automation: [{ type: "target" as const, who: { who: "aiChoice" as const }, effects: [shot(k)] }],
+      }] : []),
+    ],
   });
 }
 
 // ------------------------------------------------------------------------------------------ Fey Wanderer (Tasha's)
 // Dreadful Strikes (3rd): an extra 1d4 psychic (1d6 at 11th) once per turn on a weapon hit. Beguiling Twist (7th): advantage on saves
-// against being charmed or frightened (the reaction that turns a success into a charm or fear isn't modeled). Misty Wanderer (15th):
+// against being charmed or frightened, and a reaction turns a shrugged-off charm or fear on another creature (frightened, Wisdom save
+// against your spell DC). Misty Wanderer (15th):
 // Misty Step Wisdom-modifier times per long rest. Fey Reinforcements (Summon Fey) isn't built; Otherworldly Glamour is social.
 const FEY_SPELLS: SubclassSpells = [[3, ["charm-person"]], [5, ["misty-step"]], [9, ["dispel-magic"]], [13, ["dimension-door"]], [17, ["mislead"]]];
 function feyWanderer(level: number): Combatant {
@@ -312,6 +323,7 @@ function feyWanderer(level: number): Combatant {
     spells: FEY_SPELLS,
     attacks: [attackAction(k, { onHit: dreadful })],
     specialRules: level >= 7 ? [{ rule: "advantageOnSavesAgainst", conditions: ["charmed", "frightened"] }] : [],
+    reactions: level >= 7 ? [reaction("beguiling-twist", "Beguiling Twist", "a creature within 120 ft succeeds on a save against being charmed or frightened", "a different creature makes a Wisdom save or is frightened (engine hook)")] : [],
     resources: level >= 15 ? { misty_wanderer: { max: WIS, recharge: "longRest" as const } } : {},
     actions: level >= 15 ? [{
       id: "misty-wanderer", name: "Misty Step (Misty Wanderer)", cost: { bonus: 1 }, recharge: "none",

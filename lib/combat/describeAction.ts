@@ -116,6 +116,10 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return `win a contested ${n.theirs.toUpperCase()} check against the target, then ${describeNodes(n.onSuccess, siblings, depth + 1).join(", ") || "it takes effect"}`;
     case "spendReaction":
       return "";
+    case "spendBonusAction":
+      return "";
+    case "healPool":
+      return `restore up to ${n.total} hit points, divided among allies nearby`;
     case "insightfulFighting":
       return "read a foe's tactics (Insight vs Deception) so Sneak Attack lands without advantage";
     case "note":

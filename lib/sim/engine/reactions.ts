@@ -9,10 +9,10 @@
 // concussed / stunned / a "no reactions" rider now actually shuts a creature's
 // reactions off. Reactions never trigger reactions (`state.inReaction`).
 
-import type { Action, AutomationNode, DamageType } from "../schema";
+import type { Action, AutomationNode, Condition, DamageType } from "../schema";
 import { actionBranchGateFails, runAction, runAutomation } from "./interpreter";
 import { rollSave } from "./resolve";
-import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, say, type ReactionAsk } from "./state";
+import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, livingEnemies, say, type ReactionAsk } from "./state";
 
 /** the five damage types Absorb Elements answers */
 const ELEMENTAL: readonly DamageType[] = ["acid", "cold", "fire", "lightning", "thunder"];
@@ -58,6 +58,7 @@ type RKind =
   | "onDrop"         // react to a creature hitting 0 hp
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
   | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
+  | "parry"          // Battle Master — spend a superiority die to reduce melee damage
   | "shadowyDodge"   // Gloom Stalker — impose disadvantage on an attack against you (before the roll)
   | "nemesis"        // Monster Slayer's Magic-User's Nemesis — a Wisdom save or the spell fails
   | "tailSwipe"      // Path of the Beast's tail — a d8 bonus to AC against one attack
@@ -70,6 +71,7 @@ function classify(r: Action): RKind {
   if (id.includes("weight-of-ages") || id.includes("weightofages")) return "negateHit";
   if (id.includes("uncanny") || id.includes("spectral-defense") || id.includes("swarming-dispersal") || id.includes("reflexive-resistance")) return "halveDamage";
   if (id.includes("shadowy-dodge")) return "shadowyDodge";
+  if (id === "parry") return "parry";
   if (id.includes("magic-users-nemesis")) return "nemesis";
   if (id.includes("counterspell")) return "counterspell";
   if (id.includes("absorb-elements") || id.includes("absorbelements") || tr.includes("tookelementaldamage")) return "absorbElements";
@@ -79,7 +81,7 @@ function classify(r: Action): RKind {
   if (id.includes("raging-storm")) return "retaliateOnMeleeHit";
   if (id.includes("tail-swipe")) return "tailSwipe";
   if (id.includes("deflect-attack")) return "deflectAttack";
-  if (id.includes("cutting-words") || id.includes("cuttingwords")) return "protectAllyAttackRoll";
+  if (id.includes("cutting-words") || id.includes("cuttingwords") || id.includes("bend-luck")) return "protectAllyAttackRoll";
   if (tr.includes("belowhalf") || tr.includes("reducedtohalf")) return "onBloodied";
   if (tr.includes("tookdamagefromattackorspell")) return "onDamaged";
   if (tr.includes("tookdamagefromonesource")) return "onBigHit";
@@ -185,6 +187,22 @@ export function reactToFailedSave(state: CombatState, target: CombatantState, ro
       target.resources.set(boost.resource, (target.resources.get(boost.resource) ?? 0) - 1);
       say(state, `${target.name} turns the save around (+${bonus})`, target.id);
       return true;
+    }
+  }
+
+  // Bend Luck (Wild Magic Sorcerer): 2 sorcery points and a reaction for a d4 bonus to another creature's failed save
+  if (dc - rollTotal <= 4) {
+    for (const a of livingAllies(state, target)) {
+      if (a.id === target.id) continue;
+      const r = a.ref.reactions.find((x) => x.id === "bend-luck");
+      if (!r || !ready(state, a, r)) continue;
+      if (state.distanceFt && state.distanceFt(a, target) > 60.001) continue;
+      const ok = decideReaction(state, a, "flashOfGenius", `${target.name} fails a saving throw (${rollTotal} vs DC ${dc}) — ${a.name}'s Bend Luck can add a d4.`, "Bend Luck", "Let it fail");
+      if (!ok) continue;
+      consume(a, r);
+      const bonus = state.rng.dice(1, 4);
+      say(state, `${a.name} bends luck for ${target.name} (+${bonus})`, a.id);
+      if (rollTotal + bonus >= dc) return true;
     }
   }
 
@@ -296,18 +314,18 @@ export function reactToIncomingAttack(
       if (ally.id === t.id) continue;
       for (const r of ally.ref.reactions) {
         if (classify(r) !== "protectAllyAttackRoll" || !ready(state, ally, r)) continue;
-        if (p.hitMargin >= bardicDieAverage(ally.ref.level ?? 1)) continue;
+        if (p.hitMargin >= (r.id.includes("bend-luck") ? 2.5 : bardicDieAverage(ally.ref.level ?? 1))) continue;
         const ok = decideReaction(
           state,
           ally,
           "cuttingWords",
-          `An attack hits ${t.name} by ${p.hitMargin} — ${ally.name}'s Cutting Words (subtract a Bardic Inspiration die) can turn it into a miss.`,
-          "Use Cutting Words",
+          `An attack hits ${t.name} by ${p.hitMargin} — ${ally.name}'s ${r.name} (subtract a die from the roll) can turn it into a miss.`,
+          `Use ${r.name}`,
           "Take the hit",
         );
         if (!ok) continue;
         fire(state, ally, r);
-        say(state, `${ally.name} undercuts the blow with Cutting Words`, ally.id);
+        say(state, `${ally.name} undercuts the blow with ${r.name}`, ally.id);
         return { negated: true, shielded: false };
       }
     }
@@ -316,6 +334,61 @@ export function reactToIncomingAttack(
 }
 
 // --------------------------------------------------- damage about to be applied
+
+/**
+ * Slayer's Counter (Monster Slayer, 15th): when the creature you designated with Slayer's Prey forces you to make a saving throw,
+ * your reaction makes one weapon attack against it immediately before the save; if it hits, the save succeeds automatically.
+ */
+export function slayersCounter(state: CombatState, target: CombatantState, source: CombatantState): boolean {
+  if (state.inReaction || source.side === target.side) return false;
+  const r = target.ref.reactions.find((x) => x.id === "slayers-counter");
+  if (!r || !ready(state, target, r)) return false;
+  if (!source.effects.some((e) => e.name === "slayers-prey" && e.sourceId === target.id)) return false;
+  const ok = decideReaction(
+    state, target, "riposte",
+    `${source.name} is forcing ${target.name} to make a saving throw — Slayer's Counter attacks it first; a hit means the save succeeds.`,
+    "Counterattack", "Just make the save",
+  );
+  if (!ok) return false;
+  const before = state.attackLog?.length ?? 0;
+  fire(state, target, r, source);
+  const won = (state.attackLog ?? []).slice(before).some((a) => a.attackerId === target.id && a.hit);
+  if (won) say(state, `${target.name}'s counterattack lands — the save succeeds`, target.id);
+  return won;
+}
+
+/**
+ * Beguiling Twist (Fey Wanderer, 7th): when you or a creature you can see within 120 ft succeeds on a saving throw against being
+ * charmed or frightened, your reaction forces a DIFFERENT creature you can see within 120 ft to make a Wisdom save against your
+ * spell save DC or be charmed or frightened by you (your choice — frightened here) for a minute, repeating the save each turn.
+ */
+export function beguilingTwist(state: CombatState, saver: CombatantState, conditions?: Condition[]): void {
+  if (state.inReaction || !conditions?.some((c) => c === "charmed" || c === "frightened")) return;
+  for (const f of state.units.values()) {
+    if (!f.alive || f.downed) continue;
+    const r = f.ref.reactions.find((x) => x.id === "beguiling-twist");
+    if (!r || !ready(state, f, r)) continue;
+    if (state.distanceFt && state.distanceFt(f, saver) > 120.001) continue;
+    const victims = livingEnemies(state, f).filter((e) => e.id !== saver.id && !e.ref.conditionImmunities.includes("frightened") &&
+      (!state.distanceFt || state.distanceFt(f, e) <= 120.001));
+    if (!victims.length) continue;
+    const v = victims.sort((a, b) => a.ref.abilities.wis - b.ref.abilities.wis)[0]; // the one likeliest to fail
+    const ok = decideReaction(
+      state, f, "riposte",
+      `${saver.name} shrugged off a fear or charm — ${f.name}'s Beguiling Twist can turn it on ${v.name}.`,
+      "Beguiling Twist", "Let it go",
+    );
+    if (!ok) continue;
+    consume(f, r);
+    const dc = 8 + f.ref.pb + Math.floor((f.ref.abilities.wis - 10) / 2);
+    const save = rollSave(state, v, "wis", dc, { magical: true, allowLegendaryResistance: true });
+    if (!save.passed) {
+      v.conditions.set("frightened", { expiresRound: state.round + 10, sourceId: f.id, saveEnds: { ability: "wis", dc, at: "endOfTurn" } });
+      say(state, `${v.name} is frightened by ${f.name}'s Beguiling Twist`, f.id);
+    }
+    return;
+  }
+}
 
 /** Shadowy Dodge (Gloom Stalker, 15th): whenever a creature makes an attack roll against you and doesn't have advantage, your reaction
  *  imposes disadvantage on it — decided before the roll. Returns whether disadvantage applies. */
@@ -378,9 +451,28 @@ export function reduceIncomingDamage(
   target: CombatantState,
   amount: number,
   viaAttack: boolean,
+  melee = false,
 ): number {
-  if (state.inReaction || amount < 15) return amount;
+  if (state.inReaction || amount < 8) return amount;
   for (const r of target.ref.reactions) {
+    // Parry: a superiority die + Dex off a melee attack's damage
+    if (classify(r) === "parry" && melee && ready(state, target, r)) {
+      const rule = target.ref.specialRules.find((x) => x.rule === "parry");
+      if (rule && rule.rule === "parry") {
+        const m = rule.dice.match(/(\d+)d(\d+)/);
+        const ok = decideReaction(
+          state, target, "uncannyDodge",
+          `${target.name} is about to take ${amount} damage from a melee attack — Parry reduces it by ${rule.dice} + ${rule.bonus}.`,
+          "Parry", "Take it full",
+        );
+        if (!ok) return amount;
+        consume(target, r);
+        const cut = (m ? state.rng.dice(Number(m[1]), Number(m[2])) : 0) + rule.bonus;
+        say(state, `${target.name} parries (-${Math.min(amount, cut)})`, target.id);
+        return Math.max(0, amount - cut);
+      }
+    }
+    if (amount < 15) continue;
     if (classify(r) !== "halveDamage" || !ready(state, target, r)) continue;
     // Uncanny Dodge and Spectral Defense answer an attack; Swarming Dispersal and Reflexive Resistance answer any damage
     if (!viaAttack && !/swarming|reflexive/.test(r.id)) continue;
@@ -559,6 +651,7 @@ function basicSwing(u: CombatantState): AutomationNode | undefined {
  */
 export function provokeOpportunityAttacks(state: CombatState, mover: CombatantState, cap = 2): void {
   if (state.inReaction) return;
+  if (mover.effects.some((e) => e.mods?.noOpportunityAttacks)) return; // Disengage
   const takers = [...state.units.values()]
     .filter((u) => u.side !== mover.side && u.alive && !u.downed && u.zone === "melee" && !isIncapacitated(u))
     .filter((u) => !u.reactionUsed && canTakeReactions(u) && basicSwing(u))
@@ -571,7 +664,10 @@ export function provokeOpportunityAttacks(state: CombatState, mover: CombatantSt
     state.inReaction = true;
     try {
       say(state, `${u.name} takes an opportunity attack at ${mover.name}`, u.id);
-      runAutomation([swing], { state, source: u, scope: [mover], last: {}, depth: 0, inAttack: true });
+      // an eagle totem's rage: opportunity attacks against you are made with disadvantage
+      const hampered = mover.effects.some((e) => e.mods?.disadvantageOnOpportunityAttacks);
+      const oa = hampered && swing.type === "attack" ? { ...swing, adv: "dis" as const } : swing;
+      runAutomation([oa], { state, source: u, scope: [mover], last: {}, depth: 0, inAttack: true });
     } finally {
       state.inReaction = false;
     }

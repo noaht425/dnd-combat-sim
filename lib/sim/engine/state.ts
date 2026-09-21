@@ -68,6 +68,10 @@ export interface CombatantState {
   /** Inquisitive's Insightful Fighting — the creature currently read, and the round the minute runs out */
   insightTargetId?: string;
   insightUntilRound?: number;
+  /** Rage Beyond Death: at 0 hit points but still on its feet while the rage lasts */
+  zeroHpRaging?: boolean;
+  /** ...and it has failed its third death save: it dies when the rage ends, if it's still at 0 */
+  deathPending?: boolean;
   /** turnSerial of the last attack this creature made or damage it took (Rage ends if a turn passes with neither) */
   combatEventSerial?: number;
   /** turnSerial at the end of this creature's previous turn, or just before it began raging */
@@ -201,10 +205,16 @@ export function startTurnEconomy(u: CombatantState): void {
  *  "until the start of your next turn" and was put out by this creature ends (Help, Ambush Master). */
 export function beginTurn(state: CombatState, u: CombatantState): void {
   state.turnSerial = (state.turnSerial ?? 0) + 1;
+  const firstTurn = !u.hasTakenTurn;
   u.hasTakenTurn = true;
   for (const other of state.units.values()) {
     if (!other.effects.some((e) => e.sourceId === u.id && e.mods?.untilSourceNextTurn)) continue;
     other.effects = other.effects.filter((e) => !(e.sourceId === u.id && e.mods?.untilSourceNextTurn));
+  }
+  // Dread Ambusher: extra speed on the first turn of the combat, until the start of the next one
+  const ft = firstTurn ? u.ref.specialRules.find((r) => r.rule === "firstTurnSpeed") : undefined;
+  if (ft && ft.rule === "firstTurnSpeed") {
+    u.effects.push({ name: "dread-ambusher-speed", mods: { speedBonusFt: ft.ft, untilSourceNextTurn: true }, expiresRound: Infinity, sourceId: u.id });
   }
 }
 
@@ -241,6 +251,7 @@ export function applyHealing(state: CombatState, target: CombatantState, raw: nu
   if (target.effects.some((e) => e.mods?.cannotHeal)) return 0;
   const applied = Math.min(Math.round(raw), Math.max(0, target.maxHp - target.hp));
   target.hp += applied;
+  if (target.hp > 0) { target.zeroHpRaging = false; target.deathPending = false; if (!target.downed) target.deathSaves = { success: 0, fail: 0 }; }
   // healing a downed / stable creature above 0 brings it back to consciousness
   if (target.hp > 0 && (target.downed || target.stable)) {
     target.downed = false;

@@ -28,7 +28,7 @@ describe("Wild Magic Sorcerer — Wild Magic Surge", () => {
     if (trigger?.type !== "randomEffect") throw new Error("no surge check on the spell action");
     // 19 parts nothing, 1 part surge — the natural-1-on-a-d20 chance
     expect(trigger.options.map((o) => o.weight)).toEqual([19, 1]);
-    const table = trigger.options[1].then[0];
+    const table = trigger.options[1].then.find((n) => n.type === "randomEffect")!; // (the surge also refills Tides of Chaos)
     if (table.type !== "randomEffect") throw new Error("surge doesn't roll on a table");
     expect(table.options.length).toBe(50);
     expect(table.options.reduce((sum, o) => sum + o.weight, 0)).toBe(100);

@@ -120,6 +120,22 @@ export const effectModsSchema = z.object({
   /** the holder has disadvantage on attack rolls against the creature that applied this effect
    *  (Armorer Infiltrator's Perfected Armor glimmer) */
   disadvantageOnlyTargetingSource: z.boolean().optional(),
+  /** attack rolls against the holder gain advantage / spend `consumeOnAttacked` only for attackers OTHER than the creature that applied it (Distracting Strike) */
+  advantageToOthersOnly: z.boolean().optional(),
+  /** opportunity attacks against the holder are made with disadvantage (an eagle totem's rage) */
+  disadvantageOnOpportunityAttacks: z.boolean().optional(),
+  /** the holder provokes no opportunity attacks while the effect lasts (Disengage) */
+  noOpportunityAttacks: z.boolean().optional(),
+  /** the effect ends — and invisibility with it — the moment the holder deals damage to a creature or forces a saving throw (Psychic Veil) */
+  endsOnDealingDamage: z.boolean().optional(),
+  /** the holder has disadvantage on saving throws against effects the creature that applied this came from (the Hound of Ill Omen's mark) */
+  saveDisadvantageAgainstSource: z.boolean().optional(),
+  /** a natural d20 lower than this counts as this (Trance of Order: 10) on the holder's attack rolls, saving throws and checks */
+  d20Floor: z.number().int().optional(),
+  /** attack rolls against the holder can't have advantage (Trance of Order) */
+  denyAdvantageToAttackers: z.boolean().optional(),
+  /** extra walking speed in feet while the effect lasts (an elk totem's +15, a gloom stalker's first turn) */
+  speedBonusFt: z.number().int().optional(),
   /** a mark on the holder: whenever the creature that applied this effect hits the holder with an attack, the holder takes this extra
    *  damage (Slayer's Prey, Planar Warrior); `oncePerTurn` = at most once each turn */
   extraDamageWhenHitBySource: z.object({ amount: diceSchema, damageType: damageTypeSchema, oncePerTurn: z.boolean().optional() }).optional(),
@@ -191,6 +207,10 @@ export type AutomationNode =
   /** Inquisitive's Insightful Fighting: `bonus` is the rogue's Wisdom (Insight) modifier, rolled against the
    *  target's Charisma (Deception). On a success the rogue may Sneak Attack that target without advantage. */
   | { type: "insightfulFighting"; bonus: number }
+  /** heal up to `total` hit points, divided among the source's allies within `withinFt` (most wounded first) — Clockwork Cavalcade */
+  | { type: "healPool"; total: number; withinFt?: number }
+  /** the source spends its bonus action (a rider that IS a bonus action: the wolf totem's topple) */
+  | { type: "spendBonusAction" }
   /** the source spends its reaction (a rider that IS a reaction: Raging Storm's wave) */
   | { type: "spendReaction" }
   /** a contested ability check: the source rolls d20 + `bonus`, the target d20 + its `theirs` modifier; only a strictly
@@ -276,6 +296,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     z.object({ type: z.literal("restoreSlot") }),
     z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
     z.object({ type: z.literal("spendReaction") }),
+    z.object({ type: z.literal("spendBonusAction") }),
+    z.object({ type: z.literal("healPool"), total: z.number().int().positive(), withinFt: z.number().positive().optional() }),
     z.object({ type: z.literal("contest"), bonus: z.number().int(), theirs: abilitySchema, onSuccess: z.array(automationNodeSchema) }),
     z.object({ type: z.literal("commandSummon"), action: z.string(), limit: z.number().int().positive().optional(), rangeFt: z.number().positive().optional() }),
     z.object({ type: z.literal("rechargeRoll"), resource: z.string() }),
@@ -351,7 +373,19 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   // Brutal Critical: this many extra weapon damage dice on a melee critical hit
   z.object({ rule: z.literal("brutalCritical"), dice: z.number().int().positive() }),
   // reroll a failed save (Fanatical Focus: once per rage) — only while the named effect is up; each reroll spends one `resource`
-  z.object({ rule: z.literal("rerollFailedSave"), resource: z.string(), whileEffect: z.string() }),
+  z.object({ rule: z.literal("rerollFailedSave"), resource: z.string(), whileEffect: z.string().optional() }),
+  // Supernatural Defense (Monster Slayer, 7th): +1d6 on saves against effects from the creature you designated with Slayer's Prey
+  z.object({ rule: z.literal("supernaturalDefense") }),
+  // Parry (Battle Master): a reaction and a superiority die reduce melee-attack damage by the die + `bonus`
+  z.object({ rule: z.literal("parry"), resource: z.string(), dice: z.string(), bonus: z.number().int() }),
+  // Rage Beyond Death (Zealot, 14th): while raging, 0 hit points doesn't knock you unconscious; failing death saves doesn't kill you until the rage ends
+  z.object({ rule: z.literal("rageBeyondDeath") }),
+  // Dread Ambusher (Gloom Stalker): +this many feet of walking speed on the first turn of a combat
+  z.object({ rule: z.literal("firstTurnSpeed"), ft: z.number().int().positive() }),
+  // Tides of Chaos: the first d20 roll of the fight (an attack roll or a save) is made with advantage, spending the use
+  z.object({ rule: z.literal("advantageOnce"), resource: z.string() }),
+  // Wolf totem: while raging, allies have advantage on melee attacks against hostile creatures within 5 ft of you
+  z.object({ rule: z.literal("wolfTotem") }),
   // Totemic Attunement (Bear): while raging, hostile creatures within 5 ft of you have disadvantage on attacks against anyone but you (or another with this feature)
   z.object({ rule: z.literal("bearAttunement") }),
   // Spirit Shield (Ancestral Guardian): while raging, reaction — reduce damage another creature within 30 ft takes by `dice`; `vengeful` (14th) sends the prevented amount back as force damage

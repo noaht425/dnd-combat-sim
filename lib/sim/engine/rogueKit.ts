@@ -38,6 +38,8 @@ export interface RogueKit {
   attack: Action;
   /** the off-hand bonus attack, taken after the Attack action (none for a bow build) */
   offhand?: Action;
+  /** Cunning Action (2nd): Disengage as a bonus action, so retreating from melee provokes no opportunity attacks */
+  disengage?: Action;
   ranged: boolean;
   traits: Trait[];
   reactions: Combatant["reactions"];
@@ -90,5 +92,9 @@ export function rogueKit(level: number, o: StrikeOpts = {}): RogueKit {
   }
   const proficientSaves: Combatant["proficientSaves"] = level >= 15 ? ["dex", "int", "wis"] : ["dex", "int"]; // Slippery Mind
 
-  return { pb, dex, sneak, attack, offhand, ranged: !!o.ranged, traits, reactions, specialRules, resources, proficientSaves };
+  const disengage: Action | undefined = level >= 2 ? {
+    id: "cunning-disengage", name: "Cunning Action: Disengage", cost: { bonus: 1 }, recharge: "none",
+    automation: [{ type: "target", who: { who: "self" }, effects: [{ type: "applyEffect", name: "disengaged", mods: { noOpportunityAttacks: true, untilSourceNextTurn: true } }] }],
+  } : undefined;
+  return { pb, dex, sneak, attack, offhand, disengage, ranged: !!o.ranged, traits, reactions, specialRules, resources, proficientSaves };
 }

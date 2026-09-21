@@ -7,7 +7,7 @@ import type { Action, AutomationNode } from "../schema";
 import { chooseBest } from "../engine/ai";
 import { runAction } from "../engine/interpreter";
 import { provokeOpportunityAttacks } from "../engine/reactions";
-import { isIncapacitated, livingEnemies, say, type CombatantState } from "../engine/state";
+import { canTakeReactions, isIncapacitated, livingEnemies, say, type CombatantState } from "../engine/state";
 import {
   BattleState,
   boxOfUnit,
@@ -185,9 +185,9 @@ function occupiedByOthers(state: BattleState, selfId: string): Set<string> {
 
 /** move `u` this turn according to `plan`. Records a "move" frame if it stepped.
  *  Returns whether it actually moved. */
-export function reposition(state: BattleState, u: CombatantState, plan: BattleIntentPlan): boolean {
+export function reposition(state: BattleState, u: CombatantState, plan: BattleIntentPlan, opts: { budgetFt?: number; free?: boolean } = {}): boolean {
   if (isIncapacitated(u) || !u.alive) return false;
-  const budget = speedFt(u);
+  const budget = opts.budgetFt ?? speedFt(u);
   const ctx: MoveContext = { grid: state.grid, size: u.ref.size, blocked: occupiedByOthers(state, u.id), flying: canFly(u) };
   const start = posOf(state, u.id);
   const myReach = unitReachFt(u);
@@ -228,8 +228,15 @@ export function reposition(state: BattleState, u: CombatantState, plan: BattleIn
   // opportunity attacks: resolve while the mover is still where it started and
   // adjacent enemies are still flagged "melee"
   const wasMelee = u.zone === "melee";
-  if (wasMelee) {
-    provokeOpportunityAttacks(state, u);
+  if (wasMelee && !opts.free) {
+    // Cunning Action: a rogue spends its bonus action to Disengage rather than eat opportunity attacks
+    const dis = u.ref.actions.find((a) => a.id === "cunning-disengage");
+    if (dis && !u.bonusUsedThisTurn) {
+      u.bonusUsedThisTurn = true;
+      runAction(state, u, dis);
+      say(state, `${u.name} disengages (Cunning Action)`, u.id);
+    }
+    provokeOpportunityAttacks(state, u); // a Disengage makes this a no-op
     if (!u.alive || isIncapacitated(u)) return false;
   }
 
@@ -244,6 +251,22 @@ export function reposition(state: BattleState, u: CombatantState, plan: BattleIn
   }
   recordFrame(state, { kind: "move", actorId: u.id, text, path: endPath });
   return true;
+}
+
+/**
+ * Skirmisher (Scout, 3rd): when an enemy ends its turn within 5 ft of you, your reaction moves you up to half your speed, provoking
+ * no opportunity attacks. Taken by AI-run scouts (a player-controlled one isn't interrupted to be asked).
+ */
+export function skirmish(state: BattleState, enemy: CombatantState): void {
+  if (!enemy.alive) return;
+  for (const r of state.units.values()) {
+    if (r.side === enemy.side || !r.alive || r.downed || r.reactionUsed || isIncapacitated(r) || !canTakeReactions(r)) continue;
+    if (!r.ref.reactions.some((x) => x.id === "skirmisher") || state.controlled?.has(r.id)) continue;
+    if (feetBetweenBoxes(boxOfUnit(state, r), boxOfUnit(state, enemy)) > 5.001) continue;
+    r.reactionUsed = true;
+    say(state, `${r.name} slips away (Skirmisher)`, r.id);
+    reposition(state, r, { needsMelee: false, targetId: enemy.id }, { budgetFt: Math.floor(speedFt(r) / 2), free: true });
+  }
 }
 
 function minEnemyGap(state: BattleState, u: CombatantState, box: Box): number {

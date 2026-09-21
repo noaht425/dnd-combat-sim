@@ -208,6 +208,7 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
 // ---------------------------------------------------------------- turn phases
 
 export function startOfTurn(state: CombatState, u: CombatantState): void {
+  if (u.zeroHpRaging && u.hp <= 0 && u.alive) rollDeathSave(state, u); // Rage Beyond Death still makes death saves
   // Absorb Elements resistance lasts "until the start of your next turn"
   if (u.absorbElements && state.round >= u.absorbElements.untilRound) u.absorbElements = undefined;
 
@@ -276,6 +277,15 @@ export function endOfTurn(state: CombatState, u: CombatantState): void {
     if (c.saveEnds && c.saveEnds.at === "endOfTurn") trySaveEndsCondition(state, u, name);
     if (state.round >= c.expiresRound && c.expiresRound !== Infinity) u.conditions.delete(name);
   }
+  // Rage Beyond Death: the rage is over — if it was holding off death you die now (still at 0 HP); otherwise you go down as normal
+  if (u.zeroHpRaging && !u.effects.some((e) => e.name === "rage")) {
+    u.zeroHpRaging = false;
+    if (u.hp <= 0) {
+      if (u.deathPending) { u.alive = false; say(state, `${u.name} dies as the rage ends`, u.id); }
+      else { u.downed = true; say(state, `${u.name} drops as the rage ends`, u.id); }
+    }
+    u.deathPending = false;
+  }
 }
 
 function trySaveEnds(state: CombatState, u: CombatantState, effectName: string): void {
@@ -312,11 +322,16 @@ function trySaveEndsCondition(state: CombatState, u: CombatantState, name: strin
 export function rollDeathSave(state: CombatState, u: CombatantState): void {
   if (u.stable) return; // stabilised: unconscious at 0 HP, no more death saves until healed
   const r = state.rng.d20();
-  if (r === 20) { u.downed = false; u.stable = false; u.hp = 1; u.deathSaves = { success: 0, fail: 0 }; say(state, `${u.name} rallies (1 HP)`, u.id); return; }
+  if (r === 20) { u.downed = false; u.stable = false; u.zeroHpRaging = false; u.deathPending = false; u.hp = 1; u.deathSaves = { success: 0, fail: 0 }; say(state, `${u.name} rallies (1 HP)`, u.id); return; }
   if (r >= 10) u.deathSaves.success++;
   else u.deathSaves.fail += r === 1 ? 2 : 1;
   if (u.deathSaves.success >= 3) { u.stable = true; say(state, `${u.name} stabilises (still unconscious)`, u.id); }
-  if (u.deathSaves.fail >= 3) { u.alive = false; say(state, `${u.name} dies`, u.id); }
+  if (u.deathSaves.fail >= 3) {
+    if (u.zeroHpRaging) { // Rage Beyond Death: the rage holds off the dying
+      if (!u.deathPending) say(state, `${u.name} can't die until the rage ends`, u.id);
+      u.deathPending = true;
+    } else { u.alive = false; say(state, `${u.name} dies`, u.id); }
+  }
 }
 
 // -------------------------------------------------------------------- end check

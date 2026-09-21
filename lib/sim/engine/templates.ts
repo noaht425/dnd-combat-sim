@@ -15,7 +15,12 @@ import { rogueKit, type RogueKit } from "./rogueKit";
 // Fighter base (Player's Handbook): Fighting Style at 1st (Great Weapon Fighting here: a greatsword, so a 1 or 2 on
 // the weapon dice is rerolled), Second Wind (bonus action, 1d10 + fighter level, once per short rest), Action Surge
 // (one extra action; twice from 17th), Extra Attack at 5th / 11th / 20th. Action Surge is modeled as a bonus-cost
-// action that makes one more Attack action's worth of swings. Indomitable (9th) is not modeled.
+// action that makes one more Attack action's worth of swings. Indomitable (9th) is modeled as a reroll of a failed save.
+/** Indomitable (9th): reroll a failed saving throw (once; twice at 13th, three times at 17th), each until a long rest */
+const fighterIndomitable = (level: number): Pick<Combatant, "specialRules" | "resources"> => level >= 9
+  ? { specialRules: [{ rule: "rerollFailedSave", resource: "indomitable" }], resources: { indomitable: { max: level >= 17 ? 3 : level >= 13 ? 2 : 1, recharge: "longRest" } } }
+  : { specialRules: [], resources: {} };
+
 const fighterSecondWind = (level: number): Combatant["actions"][number] => ({
   id: "second-wind", name: "Second Wind", cost: { bonus: 1 }, recharge: "none",
   limitedUse: { resource: "second_wind", amount: 1 },
@@ -26,7 +31,7 @@ const fighterSecondWind = (level: number): Combatant["actions"][number] => ({
 });
 
 // Champion (Player's Handbook): Improved Critical (3rd, 19-20), Remarkable Athlete (7th, checks), Additional
-// Fighting Style (10th, not modeled), Superior Critical (15th, 18-20), Survivor (18th). This is the template "fighter"
+// Fighting Style (10th; Defense, +1 AC), Superior Critical (15th, 18-20), Survivor (18th). This is the template "fighter"
 // resolves to; a Great Weapon Master feat, when a custom PC has it, is applied separately (applyFeats).
 function championFighter(level: number): Combatant {
   const pb = pbFor(level);
@@ -36,13 +41,15 @@ function championFighter(level: number): Combatant {
     ({ type: "attack" as const, bonus: pb + str, onHit: [{ type: "damage" as const, amount: `2d6+${str}`, damageType: "slashing" as const, weaponDice: true }] });
   return pc({
     id: "gwm-fighter", name: `Fighter ${level}`, level,
-    ac: 19, hp: between(level, 13, 9 * 20 + 15),
+    ac: 19 + (level >= 10 ? 1 : 0), // Additional Fighting Style (10th): Defense, +1 AC while armored
+    hp: between(level, 13, 9 * 20 + 15),
     abilities: { str: score(str), dex: score(1), con: score(3), int: score(0), wis: score(1), cha: score(0) },
     proficientSaves: ["str", "con"],
-    resources: { action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" }, second_wind: { max: 1, recharge: "shortRest" } },
+    resources: { action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" }, second_wind: { max: 1, recharge: "shortRest" }, ...fighterIndomitable(level).resources },
     specialRules: [
       { rule: "greatWeaponFighting" },
       ...(level >= 3 ? [{ rule: "critRange" as const, value: level >= 15 ? 18 : 19 }] : []),
+      ...fighterIndomitable(level).specialRules,
     ],
     // Survivor (18th): at the start of each of your turns, regain 5 + Con modifier HP if you have no more than half
     // your hit points left (Con +3 here). Applied as a standing effect whose tick fires at the start of the turn.
@@ -74,13 +81,14 @@ function championFighter(level: number): Combatant {
 // d12s at 18th; maneuver save DC 8 + PB + Str. Three maneuvers known at 3rd, two more at 7th, 10th and 15th
 // (3 / 5 / 7 / 9). Which maneuvers is the player's choice; the ones the engine can express are learned in this
 // order: Precision Attack, Trip Attack, Riposte (the first three), then Menacing Attack, Rally (7th), then
-// Disarming Attack (10th). Not modeled: Parry, Distracting Strike, Sweeping Attack and the rest — so a 10th-level
-// build has six of its seven maneuvers, and a 15th-level one six of nine. Relentless (15th) only matters when a
+// Disarming Attack, Parry (10th), then Goading Attack and Distracting Strike (15th). Not modeled: Sweeping Attack and the
+// positional / ally-moving maneuvers (Commander's Strike, Feinting, Lunging, Maneuvering, Pushing, Evasive Footwork, Bait and
+// Switch, Brace, Ambush, Quick Toss, Grappling, Tactical Assessment). Relentless (15th) only matters when a
 // fight starts with the dice already spent, which a single encounter never does.
 // Simplifications worth knowing: a swing is a greatsword (2d6 + Str, Great Weapon Fighting), and the maneuver
 // variants of Attack spend their die on the FIRST swing only. Precision Attack adds the die to a roll that would
 // miss and is spent only if that turns it into a hit.
-const BM_LEARNED = ["precision-attack", "trip-attack", "riposte", "menacing-attack", "rally", "disarming-attack"];
+const BM_LEARNED = ["precision-attack", "trip-attack", "riposte", "menacing-attack", "rally", "disarming-attack", "parry", "goading-attack", "distracting-strike"];
 
 function battleMasterFighter(level: number): Combatant {
   const pb = pbFor(level);
@@ -94,7 +102,7 @@ function battleMasterFighter(level: number): Combatant {
   const known = new Set(BM_LEARNED.slice(0, level >= 15 ? 9 : level >= 10 ? 7 : level >= 7 ? 5 : 3));
   const sub = level >= 3;
   const has = (m: string) => sub && known.has(m);
-  const mkSwing = (maneuver?: "trip" | "menacing" | "disarming"): AutomationNode => ({
+  const mkSwing = (maneuver?: "trip" | "menacing" | "disarming" | "goading" | "distracting"): AutomationNode => ({
     type: "attack", bonus: toHit, onHit: [
       { type: "damage", amount: dmgPerHit, damageType: "slashing", weaponDice: true },
       ...(maneuver
@@ -106,7 +114,13 @@ function battleMasterFighter(level: number): Combatant {
               ...(maneuver === "trip"
                 // Trip Attack: only a Large or smaller target makes the save
                 ? [{ type: "branch" as const, if: "target.size<=large", then: [{ type: "save" as const, ability: "str" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "prone" as const, durationRounds: 1 }] }] }]
-                : maneuver === "menacing"
+                : maneuver === "goading"
+                  // Goading Attack: a Wisdom save, or disadvantage on attacks against anyone but you until the end of your next turn
+                  ? [{ type: "save" as const, ability: "wis" as const, dc, onFail: [{ type: "applyEffect" as const, name: "goaded", mods: { disadvantageUnlessTargetingSource: true, untilSourceNextTurn: true } }] }]
+                  : maneuver === "distracting"
+                  // Distracting Strike: the next attack roll against the target by anyone else, before your next turn, has advantage
+                  ? [{ type: "applyEffect" as const, name: "distracted", mods: { attacksAgainstItAdvantage: "adv" as const, consumeOnAttacked: true, advantageToOthersOnly: true, untilSourceNextTurn: true } }]
+                  : maneuver === "menacing"
                   ? [{ type: "save" as const, ability: "wis" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "frightened" as const, durationRounds: 1 }] }]
                   // Disarming Attack: the target drops one item. What that costs a monster (a weapon it must
                   // pick back up) isn't modeled, so beyond the die of damage this is only narration.
@@ -116,7 +130,7 @@ function battleMasterFighter(level: number): Combatant {
         : []),
     ],
   });
-  const variant = (id: string, name: string, m: "trip" | "menacing" | "disarming") => ({
+  const variant = (id: string, name: string, m: "trip" | "menacing" | "disarming" | "goading" | "distracting") => ({
     id, name, cost: { action: 1 }, recharge: "none" as const,
     automation: [{ type: "target" as const, who: { who: "aiChoice" as const }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i === 0 ? m : undefined)) }],
   });
@@ -127,12 +141,15 @@ function battleMasterFighter(level: number): Combatant {
     proficientSaves: ["str", "con"],
     specialRules: [
       { rule: "greatWeaponFighting" },
+      ...fighterIndomitable(level).specialRules,
+      ...(has("parry") ? [{ rule: "parry" as const, resource: "superiority", dice: `1d${dieSize}`, bonus: 1 }] : []), // Dex +1
       ...(has("precision-attack") ? [{ rule: "boostMissedAttack" as const, bonusDice: `1d${dieSize}`, resource: "superiority" }] : []),
     ],
     resources: {
       action_surge: { max: level >= 17 ? 2 : 1, recharge: "shortRest" },
       ...(sub ? { superiority: { max: level >= 15 ? 6 : level >= 7 ? 5 : 4, recharge: "shortRest" as const } } : {}),
       second_wind: { max: 1, recharge: "shortRest" },
+      ...fighterIndomitable(level).resources,
     },
     actions: [
       {
@@ -142,6 +159,8 @@ function battleMasterFighter(level: number): Combatant {
       ...(has("trip-attack") ? [variant("attack-trip", "Attack + Trip Attack", "trip")] : []),
       ...(has("menacing-attack") ? [variant("attack-menacing", "Attack + Menacing Attack", "menacing")] : []),
       ...(has("disarming-attack") ? [variant("attack-disarming", "Attack + Disarming Attack", "disarming")] : []),
+      ...(has("goading-attack") ? [variant("attack-goading", "Attack + Goading Attack", "goading")] : []),
+      ...(has("distracting-strike") ? [variant("attack-distracting", "Attack + Distracting Strike", "distracting")] : []),
       {
         id: "action-surge", name: "Action Surge", cost: { bonus: 1 }, recharge: "none",
         limitedUse: { resource: "action_surge", amount: 1 },
@@ -166,7 +185,11 @@ function battleMasterFighter(level: number): Combatant {
     ],
     // Riposte: when a creature misses you with a melee attack, spend a die and reaction to make ONE melee weapon
     // attack against it; on a hit the die is added to the damage.
-    reactions: has("riposte") ? [{
+    reactions: [...(has("parry") ? [{
+      id: "parry", name: "Parry", cost: { reaction: 1 }, recharge: "none" as const,
+      trigger: "self.tookDamageFromMeleeAttack", limitedUse: { resource: "superiority", amount: 1 },
+      automation: [{ type: "note" as const, text: "reduces the damage by a superiority die + Dex (engine hook)" }],
+    }] : []), ...(has("riposte") ? [{
       id: "riposte", name: "Riposte", cost: { reaction: 1 }, recharge: "none",
       trigger: "self.wasMissedByMeleeAttack", limitedUse: { resource: "superiority", amount: 1 },
       automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{
@@ -175,7 +198,7 @@ function battleMasterFighter(level: number): Combatant {
           { type: "damage", amount: `1d${dieSize}`, damageType: "slashing" },
         ],
       }] }],
-    }] : [],
+    }] : [])] as Combatant["reactions"],
     opener: ["action-surge"], targetPriority: "lowestHp", bonusRoutine: ["second-wind"],
   });
 }
@@ -194,6 +217,7 @@ function buildRogue(level: number, id: string, kit: RogueKit, o: {
   actions?: Combatant["actions"];
   resources?: Combatant["resources"];
   specialRules?: Combatant["specialRules"];
+  reactions?: Combatant["reactions"];
   speed?: number; initiativeBonus?: number; keepDistance?: boolean;
   bonusRoutine?: string[]; bonusAfterAttack?: string[];
 } = {}): Combatant {
@@ -205,8 +229,8 @@ function buildRogue(level: number, id: string, kit: RogueKit, o: {
     specialRules: [...kit.specialRules, ...(o.specialRules ?? [])],
     resources: { ...kit.resources, ...(o.resources ?? {}) },
     traits: kit.traits,
-    actions: [kit.attack, ...(kit.offhand ? [kit.offhand] : []), ...(o.actions ?? [])],
-    reactions: kit.reactions,
+    actions: [kit.attack, ...(kit.offhand ? [kit.offhand] : []), ...(kit.disengage ? [kit.disengage] : []), ...(o.actions ?? [])],
+    reactions: [...kit.reactions, ...(o.reactions ?? [])],
     // a bow build shoots from range; the melee loadout fights up close (each subclass picks — see its comment)
     keepDistance: o.keepDistance ?? kit.ranged, targetPriority: "squishiest",
     speed: o.speed, initiativeBonus: o.initiativeBonus,
@@ -306,7 +330,8 @@ function inquisitiveRogue(level: number): Combatant {
 }
 
 // Scout (Xanathar's):
-//   Skirmisher (3rd) — a reaction move away from an enemy that ends its turn beside you: positional, not modeled.
+//   Skirmisher (3rd) — a reaction move of half your speed away from an enemy that ends its turn beside you, no opportunity attacks
+//     (taken by AI-run scouts on the grid).
 //   Survivalist (3rd) — Nature / Survival expertise: not a combat feature.
 //   Superior Mobility (9th) — +10 ft walking speed.
 //   Ambush Master (13th) — advantage on initiative; the first creature you hit in round 1 can be hit with
@@ -328,6 +353,11 @@ function scoutRogue(level: number): Combatant {
       automation: [{ type: "target" as const, who: { who: "squishiestEnemy" as const, preferFresh: true }, effects: swing.effects }],
     }] : [],
     bonusAfterAttack: sudden ? ["sudden-strike"] : [],
+    reactions: level >= 3 ? [{
+      id: "skirmisher", name: "Skirmisher", cost: { reaction: 1 }, recharge: "none",
+      trigger: "an enemy ends its turn within 5 ft of you",
+      automation: [{ type: "note", text: "move up to half your speed without provoking opportunity attacks (engine hook)" }],
+    }] : [],
   });
 }
 
@@ -337,7 +367,8 @@ function scoutRogue(level: number): Combatant {
 //     psychic; then a bonus-action second blade for 1d4 + the modifier. (Sneak Attack damage is psychic too.)
 //   Soul Blades (9th) — Homing Strikes: add a psionic die to a missed blade attack, spending it only if that turns the
 //     miss into a hit. (Psychic Teleportation is a positional bonus action: not modeled.)
-//   Psychic Veil (13th) — invisibility that ends when you deal damage: not modeled.
+//   Psychic Veil (13th) — an action: invisible for an hour, ending when you deal damage to a creature or force a save; once per long
+//     rest, or again for a psionic die (an invisible attacker has advantage, and attacks against it have disadvantage).
 //   Rend Mind (17th) — Sneak Attack with the blades: Wisdom save (DC 8 + PB + Dex) or stunned for 1 minute, save each
 //     turn; once per long rest, or spend three psionic dice.
 function soulknifeRogue(level: number): Combatant {
@@ -357,6 +388,10 @@ function soulknifeRogue(level: number): Combatant {
     }],
   };
   const sub = level >= 3;
+  const veil: AutomationNode[] = [{ type: "target", who: { who: "self" }, effects: [
+    { type: "applyCondition", condition: "invisible", durationRounds: 600 },
+    { type: "applyEffect", name: "psychic-veil", durationRounds: 600, mods: { endsOnDealingDamage: true } },
+  ] }];
   const kit = rogueKit(level, sub ? {
     die: "1d6", type: "psychic", offhandDie: "1d4", offhandMod: true, offhandName: "Second Psychic Blade",
     riders: level >= 17 ? [rendMind] : [],
@@ -367,13 +402,21 @@ function soulknifeRogue(level: number): Combatant {
     resources: sub ? {
       psi_die: { max: 2 * pb0, recharge: "longRest" as const },
       psi_recovery: { max: 1, recharge: "shortRest" as const },
+      ...(level >= 13 ? { psychic_veil: { max: 1, recharge: "longRest" as const } } : {}),
       ...(level >= 17 ? { rend_mind: { max: 1, recharge: "longRest" as const } } : {}),
     } : {},
-    actions: sub ? [{
+    actions: [...(level >= 13 ? [{
+      id: "psychic-veil", name: "Psychic Veil", cost: { action: 1 }, recharge: "none" as const,
+      automation: [{ type: "branch" as const, if: "self.hasnt('psychic-veil')", then: [{
+        type: "branch" as const, if: "self.resource('psychic_veil') > 0",
+        then: [{ type: "spendResource" as const, resource: "psychic_veil", amount: 1 }, ...veil],
+        else: [{ type: "branch" as const, if: "self.resource('psi_die') > 0", then: [{ type: "spendResource" as const, resource: "psi_die", amount: 1 }, ...veil] }],
+      }] }],
+    }] : []), ...(sub ? [{
       id: "psionic-recovery", name: "Regain a Psionic Energy die", cost: { bonus: 1 }, recharge: "none" as const,
       limitedUse: { resource: "psi_recovery", amount: 1 },
       automation: [{ type: "spendResource" as const, resource: "psi_die", amount: -1 }],
-    }] : [],
+    }] : [])],
   });
 }
 

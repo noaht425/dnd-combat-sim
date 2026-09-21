@@ -36,7 +36,7 @@ import {
 } from "../engine/state";
 import { resolveEnemies } from "../engine/scenario";
 import { TERRAIN_GLYPH, blocksMove, footprint, inBounds, terrainAt } from "./grid";
-import { actionMakesAttacks, attackModsFor, geoTargetsFor, planForAction, planTurn, reposition } from "./ai";
+import { actionMakesAttacks, attackModsFor, geoTargetsFor, planForAction, planTurn, reposition, skirmish } from "./ai";
 import { applyDecision, computeAwaiting, runActionLogged } from "./control";
 import { BattleState, ReactionPause, canFly, deriveZones, nearestEnemyFt, recordFrame, unitReachFt } from "./state";
 
@@ -408,6 +408,7 @@ export function runBattleLoop(state: BattleState): void {
       }
 
       endOfTurn(state, u);
+      if (u.side === "monster") skirmish(state, u); // a scout's Skirmisher reaction
       checkEnd(state);
       if (state.ended) break;
 

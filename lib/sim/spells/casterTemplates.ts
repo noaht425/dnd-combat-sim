@@ -2,7 +2,7 @@
 // which pulls a prepared / known list from the SRD catalog, wires real slot
 // resources, and expands every prepared spell into its upcast Action variants.
 
-import type { Action, Combatant } from "../schema";
+import { DAMAGE_TYPES, type Action, type Combatant } from "../schema";
 import { eldritchCannonFor, houndOfIllOmenFor, steelDefenderFor, type CannonVariant } from "../engine/minions";
 import { rogueKit } from "../engine/rogueKit";
 import { RANGER_BUILDERS } from "./rangerTemplates";
@@ -489,7 +489,7 @@ export function elixirDrinkActions(level: number, int: number): Combatant["actio
     healing: [{ type: "heal", amount: `2d4+${int}` }],
     resilience: [{ type: "applyEffect", name: "elixir-resilience", durationRounds: 100, mods: { acBonus: 1 } }], // +1 AC for 10 minutes
     boldness: [{ type: "applyEffect", name: "elixir-boldness", durationRounds: 10, mods: { attackBonusDice: "1d4", saveBonusDice: "1d4" } }], // a d4 on every attack roll and save for a minute
-    swiftness: [{ type: "note", text: "+10 ft walking speed for an hour (not modeled)" }],
+    swiftness: [{ type: "applyEffect", name: "elixir-swiftness", durationRounds: 600, mods: { speedBonusFt: 10 } }], // +10 ft for an hour
     flight: [{ type: "note", text: "10 ft flying speed for 10 minutes (not modeled)" }],
     transformation: [{ type: "note", text: "Alter Self for 10 minutes (not modeled)" }],
   };
@@ -497,7 +497,7 @@ export function elixirDrinkActions(level: number, int: number): Combatant["actio
     healing: `Regain 2d4 + ${int} hit points.`,
     resilience: "+1 bonus to AC for 10 minutes.",
     boldness: "Add a d4 to every attack roll and saving throw for a minute.",
-    swiftness: "+10 feet walking speed for an hour (effect not modeled).",
+    swiftness: "+10 feet walking speed for an hour.",
     flight: "10 ft flying speed for 10 minutes (effect not modeled).",
     transformation: "Alter Self for 10 minutes (effect not modeled).",
   };
@@ -655,7 +655,9 @@ function sorcererBase(spec: SorcererSpec): { c: Combatant; pb: number; cha: numb
 // Affinity (6th): +CHA to one damage roll of a spell of the ancestry's damage type, and 1 sorcery
 // point buys resistance to that type for an hour (taken as paid, at the start). The ancestry is a
 // choice; this build is a red dragon's (fire) — the app's own placeholder text elsewhere.
-// NOT modeled: Dragon Wings (14th), Draconic Presence (18th).
+// Draconic Presence (18th): an action and 5 sorcery points — a 60-ft aura of fear (concentration, a minute): each hostile creature makes a
+// Wisdom save or is frightened (they'd save at the start of their turns until one succeeds; here one save each, at the start).
+// NOT modeled: Dragon Wings (14th, flight).
 function withElementalAffinity(c: Combatant, level: number, cha: number): Combatant {
   if (level < 6) return c;
   return {
@@ -670,19 +672,37 @@ function withElementalAffinity(c: Combatant, level: number, cha: number): Combat
 
 export function draconicSorcerer(level: number): Combatant {
   const dex = 2;
-  const cha = pbFor(level) === 6 ? 5 : 4;
+  const pb = pbFor(level);
+  const cha = pb === 6 ? 5 : 4;
   const { c } = sorcererBase({ id: "draconic-sorcerer", level, ac: 13 + dex, hpBonus: level, pre: (b) => withElementalAffinity(b, level, cha) });
-  return level >= 6
-    ? { ...c, resistances: [...c.resistances, "fire"], resources: { ...c.resources, sorcery_points: { max: level, recharge: "longRest", start: level - 1 } } }
+  const d: Combatant = level >= 6
+    ? { ...c, resistances: [...c.resistances, "fire" as const], resources: { ...c.resources, sorcery_points: { max: level, recharge: "longRest" as const, start: level - 1 } } }
     : c;
+  if (level < 18) return d;
+  const dc = 8 + pb + cha;
+  const presence: Combatant["actions"][number] = {
+    id: "draconic-presence", name: "Draconic Presence", cost: { action: 1 }, recharge: "none", concentration: true,
+    text: "5 sorcery points: a 60-ft aura of fear; hostile creatures make a Wisdom save or are frightened.",
+    automation: [{
+      type: "branch", if: "self.resource('sorcery_points') >= 5",
+      then: [
+        { type: "spendResource", resource: "sorcery_points", amount: 5 },
+        { type: "target", who: { who: "eachEnemy", withinFt: 60 }, effects: [{
+          type: "save", ability: "wis", dc, onFail: [{ type: "applyCondition", condition: "frightened", durationRounds: 10 }],
+        }] },
+      ],
+    }],
+  };
+  return { ...d, actions: [...d.actions, presence], ai: { ...d.ai, opener: ["draconic-presence", ...d.ai.opener] } };
 }
 
 // ---- Wild Magic (PHB) -------------------------------------------------------------------------
 // Wild Magic Surge: "immediately after you cast a sorcerer spell of 1st level or higher. If you roll a
 // 1 [on a d20], roll on the Wild Magic Surge table" — 1 in 20, once per turn, then the real d100 table
 // (50 entries, each 2%). Entries the engine can model are; the rest announce themselves and do nothing
-// (cosmetic ones — hair, beard, skin — need nothing). NOT modeled: Tides of Chaos (1st), Bend Luck (6th),
-// Controlled Chaos (14th), Spell Bombardment (18th), and the surge entries flagged "not modeled".
+// (cosmetic ones — hair, beard, skin — need nothing). Tides of Chaos (1st): the first d20 roll of the fight has advantage, and a surge gives
+// it back. Bend Luck (6th): a reaction and 2 sorcery points for a d4 on another creature's attack roll (against an ally, taken off) or failed
+// save (added). NOT modeled: Controlled Chaos (14th), Spell Bombardment (18th), and the surge entries flagged "not modeled".
 const SURGE_TEXT = [
   "Roll on this table at the start of each of your turns for the next minute, ignoring this result on subsequent rolls.",
   "For the next minute, you can see any invisible creature if you have line of sight to it.",
@@ -779,7 +799,8 @@ function withWildMagicSurge(c: Combatant, level: number, cha: number, pb: number
       if (!a.isSpell || !/-\d+$/.test(a.id)) return a;
       return { ...a, automation: [...a.automation, {
         type: "randomEffect" as const,
-        options: [{ weight: 19, then: [] }, { weight: 1, then: [{ type: "randomEffect" as const, options: table }] }],
+        // a surge also gives Tides of Chaos back ("you then regain the use of this feature")
+        options: [{ weight: 19, then: [] }, { weight: 1, then: [{ type: "spendResource" as const, resource: "tides_of_chaos", amount: -1 }, { type: "randomEffect" as const, options: table }] }],
       }] };
     }),
   };
@@ -788,7 +809,18 @@ function withWildMagicSurge(c: Combatant, level: number, cha: number, pb: number
 export function wildMagicSorcerer(level: number): Combatant {
   const pb = pbFor(level);
   const cha = pb === 6 ? 5 : 4;
-  return sorcererBase({ id: "wild-magic-sorcerer", level, pre: (b) => withWildMagicSurge(b, level, cha, pb) }).c;
+  const c = sorcererBase({ id: "wild-magic-sorcerer", level, pre: (b) => withWildMagicSurge(b, level, cha, pb) }).c;
+  return {
+    ...c,
+    specialRules: [...c.specialRules, { rule: "advantageOnce", resource: "tides_of_chaos" }],
+    resources: { ...c.resources, tides_of_chaos: { max: 1, recharge: "longRest" as const } },
+    // Bend Luck (6th): a reaction and 2 sorcery points — a d4 bonus or penalty to another creature's attack roll or save
+    reactions: level >= 6 ? [...c.reactions, {
+      id: "bend-luck", name: "Bend Luck", cost: { reaction: 1 }, recharge: "none" as const,
+      trigger: "another creature you can see makes an attack roll or a saving throw", limitedUse: { resource: "sorcery_points", amount: 2 },
+      automation: [{ type: "note" as const, text: "a d4 bonus or penalty to the roll (engine hook)" }],
+    }] : c.reactions,
+  };
 }
 
 // ---- Divine Soul (Xanathar's) -----------------------------------------------------------------
@@ -826,9 +858,9 @@ export function divineSoulSorcerer(level: number): Combatant {
 // taken) to drop to 1 HP instead — not against radiant damage or a critical hit; only a success
 // spends the once-per-long-rest use. Hound of Ill Omen (6th): a bonus action and 3 sorcery points
 // summon a Medium hound (dire wolf statistics) with temporary HP equal to half your level.
-// NOT modeled: the hound's forced target and its "target has disadvantage on saves against your
-// spells while the hound is within 5 feet" aura, Eyes of the Dark's Darkness spell (3rd), Shadow
-// Walk (14th), Umbral Form (18th). The hound can be raised once per fight here.
+// The hound's mark (disadvantage on the target's saves against your spells) is kept for the hound's minute whether or not it's within 5 feet.
+// Umbral Form (18th): a bonus action and 6 sorcery points — resistance to all damage except force and radiant for a minute. NOT modeled:
+// Eyes of the Dark's Darkness spell (3rd), Shadow Walk (14th). The hound can be raised once per fight here.
 export function shadowMagicSorcerer(level: number): Combatant {
   const hound: Combatant["actions"] = level >= 6 ? [{
     id: "hound-of-ill-omen", name: "Hound of Ill Omen", cost: { bonus: 1 }, recharge: "none",
@@ -839,10 +871,26 @@ export function shadowMagicSorcerer(level: number): Combatant {
       then: [
         { type: "spendResource", resource: "sorcery_points", amount: 3 },
         { type: "summon", statBlock: houndOfIllOmenFor(level), count: "1", max: 1, tempHp: String(Math.floor(level / 2)) },
+        // "the target has disadvantage on saving throws against your spells while the hound is within 5 feet of it"
+        { type: "target", who: { who: "aiChoice" }, effects: [{ type: "applyEffect", name: "hound-of-ill-omen", durationRounds: 10, mods: { saveDisadvantageAgainstSource: true } }] },
       ],
     }],
   }] : [];
-  const { c } = sorcererBase({ id: "shadow-magic-sorcerer", level, extraActions: hound });
+  const umbral: Combatant["actions"] = level >= 18 ? [{
+    id: "umbral-form", name: "Umbral Form", cost: { bonus: 1 }, recharge: "none",
+    text: "Bonus action, 6 sorcery points: for a minute, resistance to all damage except force and radiant.",
+    automation: [{ type: "branch", if: "self.hasnt('umbral-form')", then: [{
+      type: "branch", if: "self.resource('sorcery_points') >= 6",
+      then: [
+        { type: "spendResource", resource: "sorcery_points", amount: 6 },
+        { type: "target", who: { who: "self" }, effects: [{
+          type: "applyEffect", name: "umbral-form", durationRounds: 10,
+          mods: { resistTypes: DAMAGE_TYPES.filter((t) => t !== "force" && t !== "radiant") },
+        }] },
+      ],
+    }] }],
+  }] : [];
+  const { c } = sorcererBase({ id: "shadow-magic-sorcerer", level, extraActions: [...hound, ...umbral] });
   return {
     ...c,
     specialRules: [...c.specialRules, { rule: "surviveDrop", ability: "cha", baseDc: 5, resource: "strength_of_the_grave", excludeTypes: ["radiant"], excludeCrit: true }],
@@ -851,7 +899,7 @@ export function shadowMagicSorcerer(level: number): Combatant {
       strength_of_the_grave: { max: 1, recharge: "longRest" },
       ...(level >= 6 ? { hound_of_ill_omen: { max: 1, recharge: "longRest" as const } } : {}),
     },
-    ai: { ...c.ai, bonusRoutine: level >= 6 ? ["hound-of-ill-omen"] : [] },
+    ai: { ...c.ai, bonusRoutine: [...(level >= 6 ? ["hound-of-ill-omen"] : []), ...(level >= 18 ? ["umbral-form"] : [])] },
   };
 }
 
@@ -950,7 +998,10 @@ export function aberrantMindSorcerer(level: number): Combatant {
 // a creature within 60 feet. Bastion of Law (6th): an ACTION spending 1-5 sorcery points to ward a
 // creature within 30 feet with that many d8s; when the warded creature takes damage it expends dice,
 // rolls them, and reduces the damage by the total (until a long rest or a new ward). Built as three
-// buttons (1, 3, 5 points). NOT modeled: Trance of Order (14th), Clockwork Cavalcade (18th).
+// buttons (1, 3, 5 points). Trance of Order (14th): a bonus action — for a minute attack rolls against you can't have advantage and a d20 of 9
+// or lower on your attack rolls and saves counts as 10 (once per long rest, or again for 5 sorcery points). Clockwork Cavalcade (18th): an
+// action restoring up to 100 hit points divided among allies within 30 feet (once per long rest, or again for 7 sorcery points) — the AI uses
+// it once allies are missing 60 or more hit points between them. Its repairs and spell-ending are not modeled.
 const CLOCKWORK_SPELLS: [number, string[]][] = [
   [1, ["alarm", "protection-from-evil-and-good"]], [3, ["aid", "lesser-restoration"]],
   [5, ["dispel-magic", "protection-from-energy"]], [7, ["freedom-of-movement", "summon-construct"]],
@@ -958,6 +1009,10 @@ const CLOCKWORK_SPELLS: [number, string[]][] = [
 ];
 export function clockworkSoulSorcerer(level: number): Combatant {
   const pb = pbFor(level);
+  const tranceEffect: import("../schema").AutomationNode = {
+    type: "target", who: { who: "self" },
+    effects: [{ type: "applyEffect", name: "trance-of-order", durationRounds: 10, mods: { d20Floor: 10, denyAdvantageToAttackers: true } }],
+  };
   const bastion = (points: number): Combatant["actions"][number] => ({
     id: `bastion-of-law-${points}`, name: `Bastion of Law (${points} sorcery point${points === 1 ? "" : "s"})`, cost: { action: 1 }, recharge: "none",
     text: `Action: spend ${points} sorcery point${points === 1 ? "" : "s"} to ward yourself or a creature within 30 feet with ${points}d8 that reduce damage it takes (until a long rest or a new ward).`,
@@ -973,10 +1028,34 @@ export function clockworkSoulSorcerer(level: number): Combatant {
     id: "clockwork-soul-sorcerer", level, always: CLOCKWORK_SPELLS,
     extraActions: level >= 6 ? [bastion(1), bastion(3), bastion(5)] : [],
   });
+  const trance: Combatant["actions"] = level >= 14 ? [{
+    id: "trance-of-order", name: "Trance of Order", cost: { bonus: 1 }, recharge: "none",
+    text: "Bonus action, a minute: attack rolls against you can't have advantage; your d20s of 9 or lower on attacks and saves count as 10.",
+    automation: [{ type: "branch", if: "self.hasnt('trance-of-order')", then: [{
+      type: "branch", if: "self.resource('trance_of_order') > 0",
+      then: [{ type: "spendResource", resource: "trance_of_order", amount: 1 }, tranceEffect],
+      else: [{ type: "branch", if: "self.resource('sorcery_points') >= 5", then: [{ type: "spendResource", resource: "sorcery_points", amount: 5 }, tranceEffect] }],
+    }] }],
+  }] : [];
+  const cavalcade: Combatant["actions"] = level >= 18 ? [{
+    id: "clockwork-cavalcade", name: "Clockwork Cavalcade", cost: { action: 1 }, recharge: "none",
+    text: "Action: spirits of order restore up to 100 hit points, divided among allies within 30 feet.",
+    automation: [{ type: "branch", if: "party.missing_hp >= 60", then: [{
+      type: "branch", if: "self.resource('clockwork_cavalcade') > 0",
+      then: [{ type: "spendResource", resource: "clockwork_cavalcade", amount: 1 }, { type: "healPool", total: 100, withinFt: 30 }],
+      else: [{ type: "branch", if: "self.resource('sorcery_points') >= 7", then: [{ type: "spendResource", resource: "sorcery_points", amount: 7 }, { type: "healPool", total: 100, withinFt: 30 }] }],
+    }] }],
+  }] : [];
   return {
     ...c,
+    actions: [...c.actions, ...trance, ...cavalcade],
     specialRules: [...c.specialRules, { rule: "restoreBalance", resource: "restore_balance", rangeFt: 60 }],
-    resources: { ...c.resources, restore_balance: { max: pb, recharge: "longRest" } },
+    resources: {
+      ...c.resources, restore_balance: { max: pb, recharge: "longRest" },
+      ...(level >= 14 ? { trance_of_order: { max: 1, recharge: "longRest" as const } } : {}),
+      ...(level >= 18 ? { clockwork_cavalcade: { max: 1, recharge: "longRest" as const } } : {}),
+    },
+    ai: { ...c.ai, bonusRoutine: [...(c.ai.bonusRoutine ?? []), ...(level >= 14 ? ["trance-of-order"] : []), ...(level >= 18 ? ["clockwork-cavalcade"] : [])] },
   };
 }
 
@@ -1023,6 +1102,7 @@ export function arcaneTricksterRogue(level: number): Combatant {
     extraReactions: kit.reactions,
     extraActions: [
       kit.attack,
+      ...(kit.disengage ? [kit.disengage] : []),
       ...(level >= 13 ? [{
         id: "versatile-trickster", name: "Versatile Trickster", cost: { bonus: 1 }, recharge: "none" as const,
         automation: [{ type: "target" as const, who: { who: "self" as const }, effects: [
