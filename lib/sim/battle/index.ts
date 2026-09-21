@@ -12,6 +12,7 @@ import type { AwaitingInput, BattleDecision } from "./control";
 import { BattleGrid, BattleMapDef, blocksMove, footprint, gridFromDef, inBounds, makeGrid, terrainAt } from "./grid";
 import { runBattleLoop } from "./loop";
 import { commandMinionAction, placeSummon } from "./ai";
+import { moveCreatureInBattle } from "./forced";
 import { feetBetweenBoxes } from "./geometry";
 import {
   BattleState,
@@ -282,6 +283,7 @@ export function runBattle(s: BattleSetup): BattleOutcome {
   state.distanceFt = (a, b) => feetBetweenBoxes(boxOfUnit(state, a), boxOfUnit(state, b));
   state.placeSummon = (summoner, minion) => placeSummon(state, summoner, minion);
   state.commandMinion = (minion, action) => commandMinionAction(state, minion, action);
+  state.moveCreature = (req) => moveCreatureInBattle(state, req);
 
   // Battle-mode reaction seam: for an AI unit (or one the player handed back),
   // keep the engine's auto-heuristic; for a controlled unit, replay a recorded

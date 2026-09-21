@@ -39,7 +39,8 @@ import { resolveEnemies } from "../engine/scenario";
 import { TERRAIN_GLYPH, blocksMove, footprint, inBounds, terrainAt } from "./grid";
 import { actionMakesAttacks, attackModsFor, geoTargetsFor, planForAction, planTurn, reposition, skirmish } from "./ai";
 import { applyDecision, computeAwaiting, runActionLogged } from "./control";
-import { BattleState, ReactionPause, canFly, deriveZones, nearestEnemyFt, posOf, recordFrame, speedFt, unitReachFt } from "./state";
+import { BattleState, ReactionPause, boxOfUnit, canFly, deriveZones, nearestEnemyFt, posOf, recordFrame, speedFt, unitReachFt } from "./state";
+import { feetBetweenBoxes } from "./geometry";
 
 const monsterGlyph = (i: number): string => (i < 9 ? String(i + 1) : String.fromCharCode(97 + (i - 9)));
 
@@ -199,9 +200,20 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
   // bonus action commanding it this round (that command already ran its action)
   const co = commandOnlyPlan(state, u);
   if (co.handled) {
-    if (co.dodge) {
-      markEconomy(u, co.dodge);
-      const text = runActionLogged(state, u, co.dodge, {}, `${u.name} uses ${co.dodge.name}`);
+    let act = co.dodge;
+    // a familiar's Help: it flies up beside a foe first (the Help action needs it within 5 feet), and Dodges if it can't get there
+    if (act?.id === "help") {
+      const plan = planForAction(state, u, act);
+      const foe = plan.targetId ? state.units.get(plan.targetId) : undefined;
+      if (foe) {
+        plan.needsMelee = true;
+        reposition(state, u, plan);
+        if (!u.alive || feetBetweenBoxes(boxOfUnit(state, u), boxOfUnit(state, foe)) > 5.001) act = u.ref.actions.find((a) => a.id === "dodge");
+      }
+    }
+    if (act) {
+      markEconomy(u, act);
+      const text = runActionLogged(state, u, act, {}, `${u.name} uses ${act.name}`);
       recordFrame(state, { kind: "action", actorId: u.id, text });
     }
     return;

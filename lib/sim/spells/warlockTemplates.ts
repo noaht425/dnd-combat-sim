@@ -7,21 +7,24 @@
 // A patron's Expanded Spell List only widens what the warlock may choose from — those spells are learned like any other and count against spells known.
 //
 // Build assumptions the books leave open: Charisma 18 (20 from 17th), Dexterity 14, Constitution 14; studded leather (AC 14), or Mage Armor at will from the Armor of Shadows invocation
-// (AC 15), which a Tome build takes as its second invocation and a Blade build once its first five are chosen; the Hexblade wears scale mail and a shield (AC 18). Every build takes Agonizing Blast. Two pact boons are built —
-// Pact of the Tome (Eldritch Blast, and three extra cantrips) and Pact of the Blade (a pact weapon: a longsword for the Hexblade, a rapier for the rest, Improved Pact Weapon, Thirsting Blade,
-// Eldritch Smite, Lifedrinker); a patron's plain id is the Tome build (the Hexblade's is the Blade), and `-blade` / `-tome` names the other.
+// (AC 15), which a Tome or Chain build takes early and a Blade build once its first five are chosen; the Hexblade wears scale mail and a shield (AC 18). Every build takes Agonizing Blast.
+// The pact boon is a choice made at the 3rd level (before it every warlock is the same Eldritch Blast caster), and four are built: Tome (three extra cantrips), Blade (a pact weapon — a longsword for the
+// Hexblade, a rapier for the rest — with Improved Pact Weapon, Thirsting Blade, Eldritch Smite, Lifedrinker, Grasp of Hadar), Chain (an imp familiar that Helps, and stings on the warlock's command with
+// Investment of the Chain Master) and Talisman (an amulet on the sturdiest ally, with Rebuke and Protection of the Talisman). A patron's plain id is the Tome build (the Hexblade's is the Blade), and
+// `-blade` / `-tome` / `-chain` / `-talisman` name the others. The imp is the only familiar offered (pseudodragon, quasit and sprite are the other special forms); the Tome build's Repelling Blast and
+// Lance of Lethargy, and the Blade build's Grasp of Hadar, are why those are the ones picked.
 //
-// Not modeled anywhere: Pact of the Chain (a familiar) and Pact of the Talisman (an ally's d4), Eldritch Master (20th: a minute to regain every slot), Repelling Blast, Grasp of Hadar and Lance
-// of Lethargy (the engine has no forced movement or speed penalties), Eldritch Spear, Devil's Sight and the other utility invocations, Tomb of Levistus, Cloak of Flies, Relentless Hex,
-// Beguiling Defenses' reflection, Fathomless Plunge, Gift of the Sea, Tentacle of the Deeps' speed penalty, Limited Wish, Genie's Vessel and Sanctuary Vessel, Elemental Gift's flight,
-// Spirit Projection, Grave Touched's change of damage type, Among the Dead against spells, Awakened Mind, Create Thrall's permanence past the fight, Undying Nature, Celestial's
-// bonus cantrip Light (it has no automation) and Spare the Dying. The catalog has automation for only three warlock cantrips (Eldritch Blast, Chill Touch, Poison Spray), so the fourth cantrip at 10th level isn't filled. Known approximations: Necrotic Husk and Limited-use "1d4 long rests" features come back every long rest; Necrotic Husk's
-// exhaustion and immunity are dropped; Dark Delirium and Fey Presence's charm-or-fear are built as the charm (a turned creature for Dark Delirium); Maddening Hex hits only the cursed creature;
-// Hurl Through Hell's 10d10 lands the moment the creature is sent away, not when it returns.
+// Not modeled anywhere: Eldritch Master (20th: a minute to regain every slot), Eldritch Spear, Devil's Sight and the other utility invocations, Tomb of Levistus, Cloak of Flies, Beguiling Defenses'
+// reflection, Fathomless Plunge, Gift of the Sea, Limited Wish, Genie's Vessel and Sanctuary Vessel, Elemental Gift's flight, Spirit Projection, Grave Touched's change of damage type, Among the Dead
+// against spells, Awakened Mind, Create Thrall's permanence past the fight, Undying Nature, the Chain familiar's forgone-attack reaction (it needs the Attack action, and Eldritch Blast is a spell),
+// Voice of the Chain Master, Celestial's bonus cantrip Light (it has no automation) and Spare the Dying. The catalog has automation for only three warlock cantrips (Eldritch Blast, Chill Touch,
+// Poison Spray), so the fourth cantrip at 10th level isn't filled. Known approximations: the AI never chooses Bond of the Talisman; forced movement is one square (5 feet) at a time along the nearest of
+// eight directions; Necrotic Husk and the "1d4 long rests" features come back every long rest; Necrotic Husk's exhaustion and immunity are dropped; Dark Delirium and Fey Presence's charm-or-fear are built
+// as the charm (a turned creature for Dark Delirium); Maddening Hex hits only the cursed creature; Hurl Through Hell's 10d10 lands the moment the creature is sent away, not when it returns.
 
 import type { Action, AutomationNode, Combatant, DamageType } from "../schema";
 import { between, pbFor, score } from "../engine/pcBase";
-import { accursedSpecterFor } from "../engine/minions";
+import { accursedSpecterFor, impFamiliarFor } from "../engine/minions";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { spellActions, type CasterCtx } from "./cast";
@@ -34,7 +37,7 @@ const DEX = 2;
 const CON = 2;
 
 export type Patron = "archfey" | "celestial" | "fathomless" | "fiend" | "great-old-one" | "hexblade" | "undead" | "undying" | "dao" | "djinni" | "efreeti" | "marid";
-export type Boon = "tome" | "blade";
+export type Boon = "tome" | "blade" | "chain" | "talisman";
 
 // ------------------------------------------------------------------------------------------------------------------------------- expanded spell lists
 const EXPANDED: Record<Patron, [number, string[]][]> = {
@@ -87,18 +90,29 @@ const SPELL_INVOCATIONS: Record<string, { spell: string; name: string; minLevel:
 };
 
 type Pick = { id: string; minLevel: number };
+// (an invocation that needs a pact boon is only available from the 3rd level, when the boon is chosen)
 const TOME_PICKS: Pick[] = [
-  { id: "agonizing-blast", minLevel: 2 }, { id: "armor-of-shadows", minLevel: 2 }, { id: "eldritch-mind", minLevel: 2 }, { id: "maddening-hex", minLevel: 5 }, { id: "fiendish-vigor", minLevel: 2 },
-  { id: "mire-the-mind", minLevel: 5 }, { id: "dreadful-word", minLevel: 7 }, { id: "sign-of-ill-omen", minLevel: 5 }, { id: "bewitching-whispers", minLevel: 7 }, { id: "thief-of-five-fates", minLevel: 2 },
-  { id: "minions-of-chaos", minLevel: 9 },
+  { id: "agonizing-blast", minLevel: 2 }, { id: "armor-of-shadows", minLevel: 2 }, { id: "repelling-blast", minLevel: 2 }, { id: "maddening-hex", minLevel: 5 }, { id: "eldritch-mind", minLevel: 2 },
+  { id: "lance-of-lethargy", minLevel: 2 }, { id: "fiendish-vigor", minLevel: 2 }, { id: "mire-the-mind", minLevel: 5 }, { id: "dreadful-word", minLevel: 7 }, { id: "sign-of-ill-omen", minLevel: 5 },
+  { id: "bewitching-whispers", minLevel: 7 }, { id: "thief-of-five-fates", minLevel: 2 }, { id: "minions-of-chaos", minLevel: 9 },
 ];
 const BLADE_PICKS: Pick[] = [
-  { id: "improved-pact-weapon", minLevel: 2 }, { id: "agonizing-blast", minLevel: 2 }, { id: "thirsting-blade", minLevel: 5 }, { id: "eldritch-smite", minLevel: 5 }, { id: "lifedrinker", minLevel: 12 },
-  { id: "armor-of-shadows", minLevel: 2 }, { id: "maddening-hex", minLevel: 5 }, { id: "fiendish-vigor", minLevel: 2 }, { id: "eldritch-mind", minLevel: 2 }, { id: "mire-the-mind", minLevel: 5 },
+  { id: "improved-pact-weapon", minLevel: 3 }, { id: "agonizing-blast", minLevel: 2 }, { id: "thirsting-blade", minLevel: 5 }, { id: "eldritch-smite", minLevel: 5 }, { id: "armor-of-shadows", minLevel: 2 },
+  { id: "grasp-of-hadar", minLevel: 2 }, { id: "relentless-hex", minLevel: 7 }, { id: "lifedrinker", minLevel: 12 }, { id: "maddening-hex", minLevel: 5 }, { id: "eldritch-mind", minLevel: 2 },
+  { id: "fiendish-vigor", minLevel: 2 }, { id: "mire-the-mind", minLevel: 5 },
 ];
+const CHAIN_PICKS: Pick[] = [
+  { id: "agonizing-blast", minLevel: 2 }, { id: "investment-of-the-chain-master", minLevel: 3 }, { id: "armor-of-shadows", minLevel: 2 }, { id: "repelling-blast", minLevel: 2 }, { id: "maddening-hex", minLevel: 5 },
+  { id: "eldritch-mind", minLevel: 2 }, { id: "gift-of-the-ever-living-ones", minLevel: 3 }, { id: "chains-of-carceri", minLevel: 15 }, { id: "lance-of-lethargy", minLevel: 2 }, { id: "fiendish-vigor", minLevel: 2 },
+];
+const TALISMAN_PICKS: Pick[] = [
+  { id: "agonizing-blast", minLevel: 2 }, { id: "rebuke-of-the-talisman", minLevel: 3 }, { id: "armor-of-shadows", minLevel: 2 }, { id: "repelling-blast", minLevel: 2 }, { id: "protection-of-the-talisman", minLevel: 7 },
+  { id: "bond-of-the-talisman", minLevel: 12 }, { id: "maddening-hex", minLevel: 5 }, { id: "eldritch-mind", minLevel: 2 }, { id: "lance-of-lethargy", minLevel: 2 }, { id: "fiendish-vigor", minLevel: 2 },
+];
+const PICKS: Record<Boon, Pick[]> = { tome: TOME_PICKS, blade: BLADE_PICKS, chain: CHAIN_PICKS, talisman: TALISMAN_PICKS };
 
 function chooseInvocations(level: number, boon: Boon, hexblade: boolean): Set<string> {
-  const picks = (boon === "blade" ? BLADE_PICKS : TOME_PICKS).filter((p) => !(hexblade && p.id === "armor-of-shadows")); // the Hexblade wears real armor
+  const picks = PICKS[boon].filter((p) => !(hexblade && p.id === "armor-of-shadows")); // the Hexblade wears real armor
   const out: string[] = [];
   for (const p of picks) {
     if (out.length >= invocationsKnown(level)) break;
@@ -124,8 +138,12 @@ function build(spec: Spec): Combatant {
   const cha = chaMod(level);
   const dc = 8 + pb + cha;
   const hexblade = isHexblade(patron);
-  const blade = boon === "blade";
-  const inv = chooseInvocations(level, blade ? "blade" : "tome", hexblade);
+  // "Pact Boon (3rd)": before it, every warlock is the same Eldritch Blast caster. The Hexblade's Hex Warrior gives a martial weapon and Charisma from the 1st level regardless.
+  const boonActive = level >= 3;
+  const effBoon: Boon = boonActive ? boon : "tome";
+  const pactBlade = effBoon === "blade";
+  const wieldsWeapon = pactBlade || (hexblade && boon === "blade");
+  const inv = chooseInvocations(level, effBoon, hexblade);
   const has = (id: string) => inv.has(id);
   const pact = pactSlotLevel(level);
   const cc: CasterCtx = { kind: "warlock", level, pb, spellMod: cha };
@@ -148,7 +166,7 @@ function build(spec: Spec): Combatant {
   }
   // cantrips: Eldritch Blast is the `attack` action; the rest of the two / three / four, then the Tome's three, then the patron's own
   const cantrips = ["chill-touch", "poison-spray"].filter((id) => !!SPELLS_BY_ID[id]?.build).slice(0, Math.max(0, cantripsKnown("warlock", level) - 1));
-  if (!blade && level >= 3) cantrips.push(...TOME_CANTRIPS.filter((id) => !!SPELLS_BY_ID[id]?.build).slice(0, 3));
+  if (effBoon === "tome" && boonActive) cantrips.push(...TOME_CANTRIPS.filter((id) => !!SPELLS_BY_ID[id]?.build).slice(0, 3));
   if (patron === "celestial") cantrips.push(...["sacred-flame", "light"].filter((id) => !!SPELLS_BY_ID[id]?.build && !cantrips.includes(id)));
 
   // ---- riders that ride on a hit: Genie's Wrath, Lifedrinker, Grave Touched (every hit, once a turn where the book says so) and the once-a-turn saves (Form of Dread's fear)
@@ -156,7 +174,11 @@ function build(spec: Spec): Combatant {
   const everyHitWeapon: AutomationNode[] = [];
   const firstHit: AutomationNode[] = [];
   if (genieType) { const w: AutomationNode = { type: "damage", amount: String(pb), damageType: genieType, oncePerTurn: "genies-wrath" }; everyHitBlast.push(w); everyHitWeapon.push(w); }
-  if (blade && has("lifedrinker")) everyHitWeapon.push({ type: "damage", amount: String(Math.max(1, cha)), damageType: "necrotic" });
+  if (pactBlade && has("lifedrinker")) everyHitWeapon.push({ type: "damage", amount: String(Math.max(1, cha)), damageType: "necrotic" });
+  // Grasp of Hadar and Lance of Lethargy (once on each of your turns when you hit with the blast) and Repelling Blast (every hit): pull, slow and push
+  if (has("grasp-of-hadar")) everyHitBlast.push({ type: "move", kind: "pull", distance: 10, oncePerTurn: "grasp-of-hadar" });
+  if (has("lance-of-lethargy")) everyHitBlast.push({ type: "applyEffect", name: "lance-of-lethargy", durationRounds: 1, mods: { speedBonusFt: -10, untilSourceNextTurn: true }, oncePerTurn: "lance-of-lethargy" });
+  if (has("repelling-blast")) everyHitBlast.push({ type: "move", kind: "push", distance: 10 });
   if (patron === "undead") {
     if (level >= 6) {
       everyHitBlast.push({ type: "branch", if: "self.has('form-of-dread')", then: [{ type: "damage", amount: "1d10", damageType: "necrotic", oncePerTurn: "grave-touched" }] });
@@ -181,15 +203,15 @@ function build(spec: Spec): Combatant {
   const blast = (id: string): Action => ({ id, name: "Eldritch Blast", cost: { action: 1 }, recharge: "none", isSpell: true, school: "evocation", spellLevel: 0, ranged: true, automation: blastNodes });
 
   // ---- the pact weapon (Pact of the Blade): a longsword for the Hexblade (Charisma), a rapier for the rest (Dexterity); Thirsting Blade makes two attacks
-  const improved = blade && has("improved-pact-weapon") ? 1 : 0;
+  const improved = pactBlade && has("improved-pact-weapon") ? 1 : 0;
   const weaponMod = hexblade ? cha : DEX;
   const weaponAttack = (extraOnFirst: AutomationNode[] = []): AutomationNode[] => {
     const dmg: DamageType = hexblade ? "slashing" : "piercing";
     const one = (): AutomationNode => ({ type: "attack", bonus: pb + weaponMod + improved, onHit: [{ type: "damage", amount: `1d8+${weaponMod + improved}`, damageType: dmg }] });
-    const swings = blade && has("thirsting-blade") ? 2 : 1;
+    const swings = pactBlade && has("thirsting-blade") ? 2 : 1;
     return [{ type: "target", who: { who: "aiChoice" }, effects: withRiders(Array.from({ length: swings }, one), everyHitWeapon, [...firstHit, ...extraOnFirst]) }];
   };
-  const weapon: Action[] = blade ? [{ id: "attack", name: hexblade ? "Pact Longsword" : "Pact Rapier", cost: { action: 1 }, recharge: "none", automation: weaponAttack() }] : [];
+  const weapon: Action[] = wieldsWeapon ? [{ id: "attack", name: hexblade ? "Pact Longsword" : "Pact Rapier", cost: { action: 1 }, recharge: "none", automation: weaponAttack() }] : [];
 
   const actions: Action[] = [];
   const bonusRoutine: string[] = [];
@@ -200,10 +222,10 @@ function build(spec: Spec): Combatant {
   const resistances: DamageType[] = [];
   const conditionImmunities: NonNullable<Combatant["conditionImmunities"]> = [];
 
-  actions.push(blade ? blast("cast-eldritch-blast") : blast("attack"), ...weapon);
+  actions.push(wieldsWeapon ? blast("cast-eldritch-blast") : blast("attack"), ...weapon);
 
   // Eldritch Smite (5th, Blade): once a turn, a pact-weapon hit spends a slot for 1d8 + 1d8 a slot level of force damage, and a Huge or smaller creature is knocked prone
-  if (blade && has("eldritch-smite")) {
+  if (pactBlade && has("eldritch-smite")) {
     actions.push({
       id: "attack-eldritch-smite", name: "Eldritch Smite", cost: { action: 1 }, recharge: "none", limitedUse: { resource: "pactSlot", amount: 1 },
       automation: weaponAttack([{ type: "damage", amount: `${1 + pact}d8`, damageType: "force", oncePerTurn: "eldritch-smite" }, { type: "applyCondition", condition: "prone", durationRounds: 1 }]),
@@ -233,6 +255,58 @@ function build(spec: Spec): Combatant {
     bonusRoutine.push("maddening-hex");
   }
   if (has("eldritch-mind")) rules.push({ rule: "concentrationAdvantage" });
+
+  // Relentless Hex (7th): a bonus action to teleport beside the creature cursed by the warlock's Hex or curse (only worth it once that creature is out of reach)
+  if (has("relentless-hex")) {
+    actions.push({
+      id: "relentless-hex", name: "Relentless Hex", cost: { bonus: 1 }, recharge: "none",
+      automation: [{ type: "branch", if: "self.curse_out_of_reach", then: [{ type: "move", kind: "teleportSelf", distance: 30, nearEffects: ["hex", "hexblades-curse"] }] }],
+    });
+    bonusRoutine.push("relentless-hex");
+  }
+
+  // ---- Pact of the Chain (3rd): a familiar — the imp, the best of the four special forms — that takes the Help action on its own turn ("A familiar can't attack"); with Investment of the Chain Master
+  // the warlock orders it to sting as a bonus action, and the sting forces the warlock's own save DC
+  if (boon === "chain" && boonActive) {
+    const invest = has("investment-of-the-chain-master");
+    traits.push({ id: "familiar", name: "Familiar (Pact of the Chain)", trigger: "encounterStart", automation: [{ type: "summon", statBlock: impFamiliarFor(invest ? dc : 11), count: "1", max: 1 }] });
+    if (invest) {
+      actions.push({
+        id: "command-familiar", name: "Command the familiar (Attack)", cost: { bonus: 1 }, recharge: "none",
+        automation: [{ type: "branch", if: "self.has_companion", then: [{ type: "commandSummon", action: "sting", limit: 1 }] }],
+      });
+      bonusRoutine.push("command-familiar");
+      reactions.push({ id: "chain-master-resistance", name: "Investment of the Chain Master (resistance)", cost: { reaction: 1 }, recharge: "none", trigger: "the familiar takes damage", automation: [{ type: "note", text: "resistance for the familiar (engine hook)" }] });
+    }
+    if (has("gift-of-the-ever-living-ones")) rules.push({ rule: "familiarGift" });
+    // Chains of Carceri (15th): Hold Monster at will, without a slot, on a celestial, fiend or elemental — and not again on the same creature until a long rest
+    const hold = SPELLS_BY_ID["hold-monster"];
+    const holdBuilt = hold?.build ? spellActions(hold, cc).find((a) => a.id === "cast-hold-monster") : undefined;
+    if (has("chains-of-carceri") && holdBuilt) {
+      actions.push({
+        ...holdBuilt, id: "cast-hold-monster-chains", name: "Hold Monster (Chains of Carceri)", limitedUse: undefined,
+        automation: holdBuilt.automation.map((n): AutomationNode => (n.type === "target"
+          ? { ...n, filter: { types: ["celestial", "fiend", "elemental"], strictTypes: true, notEffects: ["chains-of-carceri"] }, effects: [...n.effects, { type: "applyEffect", name: "chains-of-carceri", durationRounds: 999999 }] }
+          : n)),
+      });
+    }
+  }
+
+  // ---- Pact of the Talisman (3rd): an amulet on the sturdiest ally (or the warlock, alone) — the wearer adds a d4 to a failed ability check, proficiency-bonus times a long rest. Rebuke of the
+  // Talisman (a reaction when the wearer is hit), Protection of the Talisman (7th: the same d4 on a failed save) and Bond of the Talisman (12th: teleport to the wearer)
+  if (boon === "talisman" && boonActive) {
+    resources.talisman_checks = { max: pb, recharge: "longRest" };
+    traits.push({ id: "talisman", name: "Talisman (Pact of the Talisman)", trigger: "encounterStart", automation: [{ type: "target", who: { who: "eachAlly", limit: 1 }, effects: [{ type: "applyEffect", name: "talisman", durationRounds: 999999 }] }] });
+    if (has("rebuke-of-the-talisman")) reactions.push({ id: "rebuke-of-the-talisman", name: "Rebuke of the Talisman", cost: { reaction: 1 }, recharge: "none", trigger: "the talisman's wearer is hit", automation: [{ type: "note", text: "Rebuke of the Talisman (engine hook)" }] });
+    if (has("protection-of-the-talisman")) resources.protection_of_the_talisman = { max: pb, recharge: "longRest" };
+    if (has("bond-of-the-talisman")) {
+      resources.bond_of_the_talisman = { max: pb, recharge: "longRest" };
+      actions.push({
+        id: "bond-of-the-talisman", name: "Bond of the Talisman", cost: { action: 1 }, recharge: "none", limitedUse: { resource: "bond_of_the_talisman", amount: 1 },
+        automation: [{ type: "move", kind: "teleportSelf", distance: 9999, nearEffects: ["talisman"] }],
+      });
+    }
+  }
 
   // ---- the invocations that cast a spell once a long rest
   for (const key of inv) {
@@ -291,7 +365,7 @@ function build(spec: Spec): Combatant {
 
   if (patron === "fathomless") {
     const tentacleDice = level >= 10 ? "2d8" : "1d8";
-    const tentacleAttack: AutomationNode = { type: "attack", bonus: pb + cha, onHit: [{ type: "damage", amount: tentacleDice, damageType: "cold" }] };
+    const tentacleAttack: AutomationNode = { type: "attack", bonus: pb + cha, onHit: [{ type: "damage", amount: tentacleDice, damageType: "cold" }, { type: "applyEffect", name: "tentacle-slow", durationRounds: 1, mods: { speedBonusFt: -10, untilSourceNextTurn: true } }] }; // "reduces its speed by 10 feet until the start of your next turn"
     actions.push({
       id: "tentacle-of-the-deeps", name: "Tentacle of the Deeps", cost: { bonus: 1 }, recharge: "none", ranged: true, limitedUse: pool("tentacle_of_the_deeps", pb, "longRest"),
       automation: [{ type: "branch", if: "self.hasnt('tentacle')", then: [
@@ -358,7 +432,7 @@ function build(spec: Spec): Combatant {
 
   if (hexblade) {
     resources.hexblades_curse = { max: 1, recharge: "shortRest" };
-    const curseMods = { extraDamageWhenHitBySource: { amount: String(pb), damageType: (blade ? "slashing" : "force") as DamageType }, critRangeAgainstBySource: 19 };
+    const curseMods = { extraDamageWhenHitBySource: { amount: String(pb), damageType: (wieldsWeapon ? "slashing" : "force") as DamageType }, critRangeAgainstBySource: 19 };
     const curseOn: AutomationNode = { type: "target", who: { who: "aiChoice" }, effects: [{ type: "applyEffect", name: "hexblades-curse", durationRounds: 10, mods: curseMods }] };
     actions.push({ id: "hexblades-curse", name: "Hexblade's Curse", cost: { bonus: 1 }, recharge: "none", limitedUse: { resource: "hexblades_curse", amount: 1 }, automation: [curseOn] });
     bonusRoutine.unshift("hexblades-curse");
@@ -419,7 +493,7 @@ function build(spec: Spec): Combatant {
     proficientSaves: ["wis", "cha"],
     prepared: [...known, ...arcanum], cantrips,
     extraActions: actions, extraReactions: reactions, extraTraits: traits,
-    keepDistance: !blade, targetPriority: "lowestHp", opener: [],
+    keepDistance: !wieldsWeapon, targetPriority: "lowestHp", opener: [],
   });
 
   // Hex is cast only when nothing else holds the concentration and no creature carries it already; Radiant Soul (Celestial, 6th) rides on the spells
@@ -454,11 +528,11 @@ const PATRON_IDS: [Patron, string][] = [
 ];
 
 export const WARLOCK_BUILDERS: Record<string, (level: number) => Combatant> = {};
+const BOONS: Boon[] = ["tome", "blade", "chain", "talisman"];
 for (const [patron, stem] of PATRON_IDS) {
   const primary: Boon = patron === "hexblade" ? "blade" : "tome";
-  const other: Boon = primary === "blade" ? "tome" : "blade";
   WARLOCK_BUILDERS[`${stem}-warlock`] = (level) => build({ patron, boon: primary, level });
-  WARLOCK_BUILDERS[`${stem}-warlock-${other}`] = (level) => build({ patron, boon: other, level });
+  for (const other of BOONS.filter((b) => b !== primary)) WARLOCK_BUILDERS[`${stem}-warlock-${other}`] = (level) => build({ patron, boon: other, level });
 }
 // the pre-rebuild id, still the Fiend patron
 WARLOCK_BUILDERS.warlock = (level) => build({ patron: "fiend", boon: "tome", level, idOverride: "warlock" });

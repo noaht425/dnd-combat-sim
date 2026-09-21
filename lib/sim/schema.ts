@@ -237,7 +237,7 @@ export type AutomationNode =
   | { type: "applyCondition"; condition: Condition; durationRounds?: number; saveEnds?: z.infer<typeof saveEndsSchema>; endsOnDamage?: boolean }
   | { type: "applyEffect"; name: string; durationRounds?: number; mods?: EffectMods; tick?: AutomationNode[]; saveEnds?: z.infer<typeof saveEndsSchema>; oneShot?: boolean; oncePerTurn?: string }
   | { type: "removeEffect"; name: string }
-  | { type: "move"; kind: "pull" | "push" | "teleportSelf" | "teleportSelfToMarked" | "withdraw"; distance?: number; provokes?: boolean }
+  | { type: "move"; kind: "pull" | "push" | "teleportSelf" | "teleportSelfToMarked" | "withdraw"; distance?: number; provokes?: boolean; /** teleport to a space within 5 ft of a creature carrying one of these effects that this creature applied (Relentless Hex, Bond of the Talisman) */ nearEffects?: string[]; /** at most once each turn, under this key (Grasp of Hadar) */ oncePerTurn?: string }
   | { type: "mark"; note?: string }
   | { type: "branch"; if: string; then: AutomationNode[]; else?: AutomationNode[] }
   /** `amount` is how much to spend (default 1); NEGATIVE gains that much instead. `from: "party"`
@@ -358,6 +358,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       kind: z.enum(["pull", "push", "teleportSelf", "teleportSelfToMarked", "withdraw"]),
       distance: z.number().int().optional(),
       provokes: z.boolean().optional(), // withdraw/step-away provokes unless set false
+      nearEffects: z.array(z.string()).optional(),
+      oncePerTurn: z.string().optional(),
     }),
     z.object({ type: z.literal("mark"), note: z.string().optional() }),
     z.object({
@@ -501,6 +503,8 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("blazingRevival"), resource: z.string() }),
   // Nature's Sanctuary (Land, 14th): a beast or plant attacking the druid makes a Wisdom save against the druid's spell save DC or must choose another target (or the attack misses)
   z.object({ rule: z.literal("natureSanctuary"), types: z.array(creatureTypeSchema).optional() }), // `types` overrides beast/plant (Among the Dead: undead)
+  // Gift of the Ever-Living Ones (Pact of the Chain invocation): with the familiar within 100 feet, the dice of any hit points the holder regains count as their maximum
+  z.object({ rule: z.literal("familiarGift") }),
   // Eldritch Mind (invocation): advantage on the Constitution saves that keep a spell going
   z.object({ rule: z.literal("concentrationAdvantage") }),
   // Dark One's Own Luck (Fiend, 6th): a die added to a saving throw that would otherwise fail, once per rest

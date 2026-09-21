@@ -68,7 +68,7 @@ const attackNodes = (a: Action) => JSON.stringify(a.automation).match(/"type":"a
 
 describe("warlock — validity and parsing", () => {
   it("every patron and pact boon builds a schema-valid PC at every level", () => {
-    expect(ALL).toHaveLength(25);
+    expect(ALL).toHaveLength(49); // twelve patrons x four pact boons, and the pre-rebuild `warlock`
     for (const id of ALL) {
       for (let lvl = 1; lvl <= 20; lvl++) {
         const r = validateCombatant(makeTemplate(id, lvl));
@@ -154,8 +154,10 @@ describe("the Warlock table", () => {
     expect(makeTemplate("fiend-warlock", 1).ac).toBe(14);
     expect(makeTemplate("fiend-warlock", 2).ac).toBe(15);
     expect(makeTemplate("hexblade-warlock", 1).ac).toBe(18);
-    expect(makeTemplate("fiend-warlock-blade", 2).ac).toBe(14); // a Blade build takes Armor of Shadows later
-    expect(makeTemplate("fiend-warlock-blade", 12).ac).toBe(15);
+    expect(makeTemplate("fiend-warlock-blade", 2).ac).toBe(15); // no pact boon yet: the same Eldritch Blast caster as any other
+    expect(makeTemplate("fiend-warlock-blade", 3).ac).toBe(14); // a Blade build takes Armor of Shadows later...
+    expect(makeTemplate("fiend-warlock-blade", 8).ac).toBe(14);
+    expect(makeTemplate("fiend-warlock-blade", 9).ac).toBe(15); // ...once its first four are chosen (Armor of Shadows is the fifth)
   });
 });
 
@@ -258,23 +260,26 @@ describe("Hex, Armor of Agathys and Hellish Rebuke", () => {
 
 describe("Eldritch Invocations", () => {
   it("the Warlock table gives 2 at 2nd, 3 at 5th, 4 at 7th, 5 at 9th, 6 at 12th, 7 at 15th, 8 at 18th", () => {
-    // observable through the Tome build's list: Agonizing Blast, Armor of Shadows, Eldritch Mind, Maddening Hex, Fiendish Vigor, then the once-a-day spells
+    // observable through the Tome build's list, in the order it takes them: Agonizing Blast, Armor of Shadows, Repelling Blast, Maddening Hex, Eldritch Mind, Lance of Lethargy, Fiendish Vigor, Mire the Mind
     const seen = (level: number) => {
       const c = makeTemplate("fiend-warlock", level);
+      const blast = JSON.stringify(c.actions.find((a) => a.id === "attack")!.automation);
       return [
-        JSON.stringify(c.actions.find((a) => a.id === "attack")!.automation).includes('"1d10+4"'),
+        /"1d10\+[45]"/.test(blast),
         c.ac === 15,
-        c.specialRules.some((r) => r.rule === "concentrationAdvantage"),
+        blast.includes('"kind":"push"'),
         c.actions.some((a) => a.id === "maddening-hex"),
+        c.specialRules.some((r) => r.rule === "concentrationAdvantage"),
+        blast.includes("lance-of-lethargy"),
         c.traits.some((t) => t.id === "fiendish-vigor"),
         c.actions.some((a) => a.id === "cast-slow-mire-the-mind"),
       ].filter(Boolean).length;
     };
-    expect([1, 2, 4, 5, 7, 9, 11, 12, 14].map(seen)).toEqual([0, 2, 2, 3, 4, 5, 5, 6, 6]);
+    expect([1, 2, 4, 5, 7, 9, 12, 15, 18].map(seen)).toEqual([0, 2, 2, 3, 4, 5, 6, 7, 8]);
   });
 
   it("Fiendish Vigor: false life at will, as a 1st-level spell — 1d4 + 4 temporary hit points at the start of a fight", () => {
-    const w = wlk("fiend-warlock", 9);
+    const w = wlk("fiend-warlock", 15);
     const s = state();
     put(s, w, foe("f"));
     fireEncounterStartTraits(s);
@@ -283,7 +288,7 @@ describe("Eldritch Invocations", () => {
 
   it("Eldritch Mind: advantage on the Constitution saves that hold a concentration spell", () => {
     const modes: string[] = [];
-    const w = wlk("fiend-warlock", 5);
+    const w = wlk("fiend-warlock", 9);
     const a = foe("a");
     const s = state(15, modes);
     put(s, w, a);
@@ -305,7 +310,7 @@ describe("Eldritch Invocations", () => {
   });
 
   it("Mire the Mind and its kin: the spell once a long rest, using a pact slot — and never twice", () => {
-    const w = wlk("fiend-warlock", 14);
+    const w = wlk("fiend-warlock", 18);
     const a = foe("a");
     const { s } = arena(1, w, a);
     const slow = action(w, "cast-slow-mire-the-mind");
@@ -321,11 +326,12 @@ describe("Eldritch Invocations", () => {
     const weapon = (level: number) => makeTemplate("fiend-warlock-blade", level).actions.find((a) => a.id === "attack")!;
     expect(attackNodes(weapon(4))).toBe(1);
     expect(attackNodes(weapon(5))).toBe(2);
+    expect(makeTemplate("fiend-warlock-blade", 2).actions.some((a) => a.id === "attack" && a.name.startsWith("Pact"))).toBe(false); // the boon comes at the 3rd level
     // a rapier and Dexterity, +1 from Improved Pact Weapon: pb 2 + 2 + 1 to hit, 1d8 + 2 + 1 damage
-    expect(JSON.stringify(weapon(2).automation)).toContain('"bonus":5');
-    expect(JSON.stringify(weapon(2).automation)).toContain('"amount":"1d8+3"');
-    expect(JSON.stringify(weapon(11).automation)).not.toContain("necrotic");
-    expect(JSON.stringify(weapon(12).automation)).toContain('"amount":"4","damageType":"necrotic"'); // Charisma modifier extra necrotic on each hit
+    expect(JSON.stringify(weapon(3).automation)).toContain('"bonus":5');
+    expect(JSON.stringify(weapon(3).automation)).toContain('"amount":"1d8+3"');
+    expect(JSON.stringify(weapon(17).automation)).not.toContain("necrotic");
+    expect(JSON.stringify(weapon(18).automation)).toContain('"amount":"5","damageType":"necrotic"'); // Charisma modifier (5 at 20) extra necrotic on each hit — the eighth invocation
   });
 
   it("Eldritch Smite (5th, Blade): a pact-weapon hit spends a slot for 1d8 + 1d8 a slot level of force damage and knocks a Huge or smaller creature prone", () => {

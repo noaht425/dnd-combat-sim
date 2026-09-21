@@ -304,6 +304,8 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/target\.incapacitated/i, () => !!tgt && isIncapacitated(tgt)],
     // an incapacitated creature of a kind (Create Thrall: "an incapacitated humanoid")
     [/any_?enemy\.incapacitated\('([a-z]+)'\)/i, () => livingEnemies(st, s).some((e) => isIncapacitated(e) && isCreatureType(e.ref, RegExp.$1 as never))],
+    // the creature carrying the warlock's Hex or Curse is out of reach: battle mode, farther than 5 feet (Relentless Hex teleports beside it)
+    [/self\.curse_?out_?of_?reach/i, () => !!st.distanceFt && livingEnemies(st, s).some((e) => e.effects.some((x) => (x.name === "hex" || x.name === "hexblades-curse") && x.sourceId === s.id) && st.distanceFt!(s, e) > 5.001)],
     // a creature carries the warlock's Hex or Hexblade's Curse (Maddening Hex needs one)
     [/self\.has_?curse/i, () => livingEnemies(st, s).some((e) => e.effects.some((x) => (x.name === "hex" || x.name === "hexblades-curse") && x.sourceId === s.id))],
     [/party\.has_?downed/i, () => [...st.units.values()].some((u) => u.side === s.side && u.alive && u.downed && u.summonerId === undefined)],
@@ -685,7 +687,10 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const t = ctx.scope[0] ?? source;
         // Circle of Mortality (a creature at 0 hit points) / Supreme Healing: "use the highest number possible for each die"
         const mr = source.ref.specialRules.find((r) => r.rule === "maxHealing");
-        const maximise = !!mr && mr.rule === "maxHealing" && (mr.always || t.downed || t.hp <= 0);
+        // Gift of the Ever-Living Ones: whoever regains hit points with their familiar within 100 feet (the healing is theirs, whoever casts it)
+        const gift = t.ref.specialRules.some((r) => r.rule === "familiarGift") &&
+          [...state.units.values()].some((u) => u.alive && u.summonerId === t.id && u.ref.id.startsWith("familiar-") && (!state.distanceFt || state.distanceFt(t, u) <= 100.001));
+        const maximise = gift || (!!mr && mr.rule === "maxHealing" && (mr.always || t.downed || t.hp <= 0));
         applyHealing(state, t, maximise ? maxOfDice(node.amount) : rollDamage(state, node.amount)); // draws on the per-round heal budget
         break;
       }
@@ -751,11 +756,23 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       }
 
       case "move": {
+        if (node.oncePerTurn && !claimOncePerTurn(state, source, `move:${node.oncePerTurn}`)) break;
         if (node.kind === "teleportSelf" || node.kind === "teleportSelfToMarked") {
           source.conditions.delete("restrained");
           source.conditions.delete("grappled");
+          // "within 5 feet of the target cursed by your hex" / "closest to the talisman's wearer": the creatures the caster put an effect on
+          const marked = node.kind === "teleportSelfToMarked" && source.markedTargetId ? [state.units.get(source.markedTargetId)].filter((u): u is CombatantState => !!u && u.alive) : undefined;
+          // (a teleport "beside" someone with nobody to go beside goes nowhere: `near` is empty, not undefined)
+          const near = node.nearEffects
+            ? [...state.units.values()].filter((u) => u.alive && u.id !== source.id && u.effects.some((e) => e.sourceId === source.id && node.nearEffects!.includes(e.name)))
+            : node.kind === "teleportSelfToMarked" ? marked ?? [] : undefined;
+          state.moveCreature?.({ kind: "teleportSelf", source, distance: node.distance ?? 30, near });
         } else if (node.kind === "withdraw" && node.provokes !== false) {
           provokeOpportunityAttacks(state, source);
+        } else if (node.kind === "push" || node.kind === "pull") {
+          // forced movement: "you can push the creature up to 10 feet away from you in a straight line" — the creature that was just hit
+          const t = ctx.scope[0];
+          if (t && t.alive && t.id !== source.id) state.moveCreature?.({ kind: node.kind, source, target: t, distance: node.distance ?? 10 });
         }
         break;
       }

@@ -272,7 +272,8 @@ export function commandOnlyPlan(state: CombatState, u: CombatantState): { handle
   if (!u.ref.commandOnly || u.summonerId === undefined) return { handled: false };
   const summoner = state.units.get(u.summonerId);
   if (!summoner || !summoner.alive || isIncapacitated(summoner)) return { handled: false };
-  return { handled: true, dodge: u.commandedRound === state.round ? undefined : u.ref.actions.find((a) => a.id === "dodge") };
+  // (a familiar's turn is the Help action; the rest just Dodge)
+  return { handled: true, dodge: u.commandedRound === state.round ? undefined : u.ref.actions.find((a) => a.id === "help") ?? u.ref.actions.find((a) => a.id === "dodge") };
 }
 
 export function takePcTurn(state: CombatState, u: CombatantState, level: number): void {

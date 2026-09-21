@@ -75,7 +75,7 @@ outcome, so the tree can nest as deep as an ability needs.
 | `applyEffect` | a named rider — an aura, a curse, ongoing damage, a stat change (AC, save bonus, can't‑heal, max‑HP loss, no reactions). Optional `tick` runs every turn. |
 | `branch` | `if <formula> then [...] else [...]` — phase triggers, "if the target is frightened", HP thresholds |
 | `spendResource` / `rechargeRoll` | use up / try to recharge a pool |
-| `move` | pull, push, teleport to self / to the marked foe |
+| `move` | pull, push, teleport to self / to the marked foe / beside a creature carrying an effect (`nearEffects`); `oncePerTurn`. On the battle grid these really move creatures (`battle/forced.ts`: straight-line push/pull that stops at walls and creatures, teleports chosen by stance); Monte-Carlo has no positions, so they do nothing there |
 | `mark` | swear vengeance on / choose a foe |
 | `useAction` | run another action (this is how Multiattack works) |
 | `summon` | bring in N of a stat block (from the minion registry) |

@@ -176,7 +176,7 @@ export function planForAction(state: BattleState, u: CombatantState, action: Act
 
 // ---------------------------------------------------------------- move / kite
 
-function occupiedByOthers(state: BattleState, selfId: string): Set<string> {
+export function occupiedByOthers(state: BattleState, selfId: string): Set<string> {
   const s = new Set<string>();
   for (const x of state.units.values()) {
     if (x.id === selfId || !x.alive) continue;

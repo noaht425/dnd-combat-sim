@@ -143,6 +143,9 @@ export interface CombatState {
   turnSerial?: number;
   /** Entropic Ward: the warlock whose ward just imposed disadvantage on the attack being rolled (advantage on their next attack if it misses) */
   pendingEntropicWard?: string;
+  /** battle mode only (Monte-Carlo has no positions): push or pull a creature along a straight line, or teleport one — the interpreter's `move` node calls this.
+   *  `near` = the creatures a teleport should land beside (Relentless Hex, Bond of the Talisman, a marked target). */
+  moveCreature?: (req: { kind: "push" | "pull" | "teleportSelf"; source: CombatantState; target?: CombatantState; distance: number; near?: CombatantState[]; escape?: boolean }) => void;
   units: Map<string, CombatantState>;
   rng: Rng;
   log: LogEntry[];

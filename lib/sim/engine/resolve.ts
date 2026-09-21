@@ -31,6 +31,8 @@ import {
   hawkSpirit,
   protectiveBond,
   guardianCoil,
+  chainMasterResistance,
+  talismanBoost,
   warGodsBlessing,
   wardingFlare,
   projectedWard,
@@ -554,6 +556,10 @@ function rollSaveImpl(
   if (!passed && darkOnesOwnLuck(state, target, face + mod, dc)) {
     return { passed: true, usedLegendaryResistance: false };
   }
+  // Protection of the Talisman: the amulet's wearer adds a d4 to a failed saving throw
+  if (!passed && talismanBoost(state, target, face + mod, dc, "protection_of_the_talisman")) {
+    return { passed: true, usedLegendaryResistance: false };
+  }
   // an ally artificer's Flash of Genius (+INT) may turn this failure into a success
   if (!passed && reactToFailedSave(state, target, face + mod, dc, mod, stakes)) {
     return { passed: true, usedLegendaryResistance: false };
@@ -788,6 +794,8 @@ export function applyDamage(
   if (dmg <= 0) return 0;
   // Guardian Coil (Fathomless, 6th): a reaction to reduce the damage a creature near the tentacle takes by 1d8 (2d8 from the 10th level)
   dmg = guardianCoil(state, target, dmg);
+  if (dmg <= 0) return 0;
+  dmg = chainMasterResistance(state, target, dmg); // a warlock's familiar (Investment of the Chain Master)
   if (dmg <= 0) return 0;
 
   // Bastion of Law — the warded creature expends d8s from its ward, rolling each and reducing the

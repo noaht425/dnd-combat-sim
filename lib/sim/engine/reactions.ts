@@ -60,6 +60,8 @@ type RKind =
   | "armorOfHexes"  // Armor of Hexes — the Hexblade's cursed target hits: a d6, and a 4 or higher turns it into a miss
   | "mistyEscape"    // Misty Escape — hurt, turn invisible and slip away
   | "guardianCoil"   // Guardian Coil — shave 1d8 off damage near the tentacle
+  | "talismanRebuke" // Rebuke of the Talisman — the amulet's wearer is hit: psychic damage to the attacker, and it is pushed away
+  | "chainResist"    // Investment of the Chain Master — the familiar takes damage: resistance to it
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
   | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
   | "deflectMissiles" // Monk — reduce a ranged weapon attack's damage
@@ -129,6 +131,8 @@ function classify(r: Action): RKind {
   if (id === "armor-of-hexes") return "armorOfHexes";
   if (id === "misty-escape") return "mistyEscape";
   if (id === "guardian-coil") return "guardianCoil";
+  if (id === "rebuke-of-the-talisman") return "talismanRebuke";
+  if (id === "chain-master-resistance") return "chainResist";
   if (id === "dampen-elements") return "dampenElements";
   if (id === "war-gods-blessing") return "warGodsBlessing";
   if (id === "wrath-of-the-storm") return "retaliateOnMeleeHit";
@@ -809,6 +813,7 @@ export function reactToAttackResolved(
 ): void {
   const t = p.target;
   if (state.inReaction || !t.alive || t.downed || !p.attacker.alive) return;
+  if (p.hit) rebukeOfTheTalisman(state, p.attacker, t);
   for (const r of t.ref.reactions) {
     if (!ready(state, t, r)) continue;
     const k = classify(r);
@@ -903,6 +908,7 @@ export function reactToDamageTaken(
       t.conditions.delete("restrained");
       t.zone = "ranged";
       say(state, `${t.name} vanishes in a swirl of mist (Misty Escape)`, t.id);
+      state.moveCreature?.({ kind: "teleportSelf", source: t, distance: 60, escape: true }); // battle mode: really to the far side of the fight
       return;
     }
     if (k === "onBigHit" && p.amount >= 30) {
@@ -1270,6 +1276,57 @@ export function natureSanctuary(state: CombatState, attacker: CombatantState, ta
     : others[state.rng.int(0, others.length - 1)];
   say(state, `${attacker.name} hesitates and turns on ${pick.name} instead (${feature})`, target.id);
   return pick;
+}
+
+/**
+ * Rebuke of the Talisman (Pact of the Talisman invocation): "When the wearer of your talisman is hit by an attacker you can see within 30 feet of you, you can use your reaction to cause
+ * the attacker to take psychic damage equal to your proficiency bonus, and you can push the attacker up to 10 feet away from the talisman's wearer." The reaction is the warlock's, not the wearer's.
+ */
+function rebukeOfTheTalisman(state: CombatState, attacker: CombatantState, wearer: CombatantState): void {
+  const amulet = wearer.effects.find((e) => e.name === "talisman");
+  if (!amulet) return;
+  const w = state.units.get(amulet.sourceId);
+  if (!w || !w.alive || w.downed || w.side !== wearer.side) return;
+  const r = w.ref.reactions.find((x) => classify(x) === "talismanRebuke");
+  if (!r || !ready(state, w, r)) return;
+  if (state.distanceFt && state.distanceFt(w, attacker) > 30.001) return;
+  const ok = decideReaction(state, w, "retaliate", `${attacker.name} hit ${wearer.name}, who wears your talisman — Rebuke of the Talisman deals ${w.ref.pb} psychic damage and pushes it away.`, "Rebuke of the Talisman", "Hold reaction");
+  if (!ok) return;
+  consume(w, r);
+  say(state, `${w.name}'s talisman lashes out at ${attacker.name} (Rebuke of the Talisman)`, w.id);
+  applyDamage(state, attacker, w.ref.pb, "psychic", { sourceId: w.id, attackerMagical: true });
+  if (attacker.alive) state.moveCreature?.({ kind: "push", source: wearer, target: attacker, distance: 10 });
+}
+
+/**
+ * The amulet's d4 (Pact of the Talisman, and Protection of the Talisman): "When the wearer fails an ability check [a saving throw, for Protection], they can add a d4 to the roll, potentially turning
+ * the roll into a success." Uses come from the warlock's own pool (proficiency bonus times, back on a long rest). Spent on a failure the die can turn: at most 4 short.
+ */
+export function talismanBoost(state: CombatState, wearer: CombatantState, rollTotal: number, dc: number, resource: "talisman_checks" | "protection_of_the_talisman"): boolean {
+  const amulet = wearer.effects.find((e) => e.name === "talisman");
+  const w = amulet ? state.units.get(amulet.sourceId) : undefined;
+  if (!w || !w.alive || (w.resources.get(resource) ?? 0) <= 0) return false;
+  const shortfall = dc - rollTotal;
+  if (shortfall <= 0 || shortfall > 4) return false;
+  w.resources.set(resource, (w.resources.get(resource) ?? 0) - 1);
+  const d = state.rng.dice(1, 4);
+  say(state, `${wearer.name}'s talisman adds a d4 (+${d}${d >= shortfall ? "" : ", not enough"})`, wearer.id);
+  return d >= shortfall;
+}
+
+/**
+ * Investment of the Chain Master (Pact of the Chain invocation): "When the familiar takes damage, you can use your reaction to grant it resistance against that damage."
+ * Returns the damage that still lands.
+ */
+export function chainMasterResistance(state: CombatState, familiar: CombatantState, amount: number): number {
+  if (state.inReaction || familiar.summonerId === undefined || !familiar.ref.id.startsWith("familiar-") || amount < 2) return amount;
+  const w = state.units.get(familiar.summonerId);
+  const r = w?.ref.reactions.find((x) => classify(x) === "chainResist");
+  if (!w || !r || !ready(state, w, r)) return amount;
+  consume(w, r);
+  const kept = Math.floor(amount / 2);
+  say(state, `${w.name} shields ${familiar.name} (resistance, ${amount - kept} less)`, w.id);
+  return kept;
 }
 
 /**

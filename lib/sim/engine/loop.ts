@@ -9,7 +9,7 @@ import { takeLairAction, takeLegendaryActions, takeMonsterTurn, takePcTurn } fro
 import { fireEncounterStartTraits, runAutomation } from "./interpreter";
 import { chooseFocusTarget } from "./score";
 import { REVERTS_ON_SUMMONER_DEATH } from "./minions";
-import { haloOfSpores } from "./reactions";
+import { haloOfSpores, talismanBoost } from "./reactions";
 import { isCreatureType } from "./creatureType";
 import {
   CombatState,
@@ -246,7 +246,8 @@ export function startOfTurn(state: CombatState, u: CombatantState): void {
       Math.floor((u.ref.abilities.str - 10) / 2),
       Math.floor((u.ref.abilities.dex - 10) / 2),
     );
-    if (state.rng.d20() + best + Math.floor(u.ref.pb / 2) >= escapeDc) {
+    const escapeRoll = state.rng.d20() + best + Math.floor(u.ref.pb / 2);
+    if (escapeRoll >= escapeDc || talismanBoost(state, u, escapeRoll, escapeDc, "talisman_checks")) { // (an ability check: the amulet's d4)
       u.conditions.delete("grappled");
       u.effects = u.effects.filter((e) => !(/grip|grasp|jaws|grapple|hold/i.test(e.name) && e.sourceId === grap.sourceId));
       say(state, `${u.name} breaks free of the grapple`, u.id);

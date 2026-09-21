@@ -420,7 +420,7 @@ export function eldritchCannonFor(variant: CannonVariant, level: number, int: nu
         ? {
             id: "activate", name: "Force Ballista", cost: {}, recharge: "none",
             text: "Ranged spell attack, range 120 ft: 2d8 force damage, pushed up to 5 feet.",
-            // the 5-foot push is not simulated (the interpreter's "move" push/pull nodes are no-ops)
+            // the 5-foot push happens in battle mode (forced movement on the grid); Monte-Carlo has no positions
             automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{
               type: "attack", bonus: pb + int, onHit: [
                 { type: "damage", amount: dmg, damageType: "force" },
@@ -643,6 +643,48 @@ export function accursedSpecterFor(chaBonus: number): string {
       id: "attack", name: "Life Drain", cost: { action: 1 }, recharge: "none",
       automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: 4 + chaBonus, onHit: [{ type: "damage", amount: "3d6", damageType: "necrotic" }] }] }],
     }],
+  });
+  return id;
+}
+
+/**
+ * A warlock's familiar under Pact of the Chain: the Monster Manual's imp (the best of the four special forms — imp, pseudodragon, quasit, sprite): Tiny fiend, armor class 13, 10 hit points, walk 20 ft.
+ * and fly 40 ft., Sting (+5, 1d4 + 3 piercing, and a Constitution save for 3d6 poison, half on a success), resistant to cold and to nonmagical bludgeoning, piercing and slashing, immune to fire and poison,
+ * with Magic Resistance. "A familiar can't attack, but it can take other actions as normal": on its own turn it takes the Help action (an ally's next attack against a creature beside it has advantage),
+ * and it stings only when the warlock commands it — the Attack action a Chain warlock with Investment of the Chain Master orders as a bonus action. `dc` is the save the Sting forces: 11, or the
+ * warlock's own spell save DC with that invocation.
+ */
+export function impFamiliarFor(dc: number): string {
+  const id = `familiar-imp-D${dc}`;
+  if (PC_SUMMONS[id]) return id;
+  PC_SUMMONS[id] = minion({
+    id, creatureType: "fiend", name: "Imp", cr: "1", size: "tiny",
+    ac: 13, maxHp: 10,
+    speeds: { walk: 20, fly: 40 },
+    abilities: { str: 6, dex: 17, con: 13, int: 11, wis: 12, cha: 14 },
+    pb: 2,
+    resistances: ["cold"], resistancesNonmagical: ["bludgeoning", "piercing", "slashing"],
+    immunities: ["fire", "poison"], conditionImmunities: ["poisoned"],
+    specialRules: [{ rule: "magicResistance" }],
+    commandOnly: true,
+    actions: [
+      dodgeAction,
+      {
+        id: "help", name: "Help", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: [
+          { type: "applyEffect", name: "helped", durationRounds: 1, mods: { attacksAgainstItAdvantage: "adv", consumeOnAttacked: true, untilSourceNextTurn: true } },
+        ] }],
+      },
+      {
+        id: "sting", name: "Sting", cost: { action: 1 }, recharge: "none",
+        automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{
+          type: "attack", bonus: 5, onHit: [
+            { type: "damage", amount: "1d4+3", damageType: "piercing" },
+            { type: "save", ability: "con", dc, onFail: [{ type: "damage", amount: "3d6", damageType: "poison" }], onSuccess: [{ type: "damage", amount: "3d6", damageType: "poison", half: true }] },
+          ],
+        }] }],
+      },
+    ],
   });
   return id;
 }
