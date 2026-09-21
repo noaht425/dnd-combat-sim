@@ -13,12 +13,18 @@ import type { Action, AutomationNode, Condition, DamageType } from "../schema";
 import { actionBranchGateFails, runAction, runAutomation } from "./interpreter";
 import { applyDamage, rollSave } from "./resolve";
 import { isCreatureType } from "./creatureType";
-import { applyHealing, CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, livingEnemies, say, syncExhaustion, type ReactionAsk } from "./state";
+import { applyHealing, CombatantState, CombatState, canTakeReactions, claimOncePerTurn, isIncapacitated, livingAllies, livingEnemies, say, syncExhaustion, type ActiveEffect, type ReactionAsk } from "./state";
+import { inspireAc } from "./bardic";
 
 /** the five damage types Absorb Elements answers */
 const ELEMENTAL: readonly DamageType[] = ["acid", "cold", "fire", "lightning", "thunder"];
 
 /** Bardic Inspiration die average by character level (d6 / d8 / d10 / d12) */
+/** the faces of the Bardic Inspiration die at this bard level: d6, d8 from 5th, d10 from 10th, d12 from 15th */
+export function bardicDieSides(level: number): number {
+  return level >= 15 ? 12 : level >= 10 ? 10 : level >= 5 ? 8 : 6;
+}
+
 function bardicDieAverage(level: number): number {
   if (level >= 15) return 6.5;
   if (level >= 10) return 5.5;
@@ -60,6 +66,7 @@ type RKind =
   | "armorOfHexes"  // Armor of Hexes — the Hexblade's cursed target hits: a d6, and a 4 or higher turns it into a miss
   | "mistyEscape"    // Misty Escape — hurt, turn invisible and slip away
   | "guardianCoil"   // Guardian Coil — shave 1d8 off damage near the tentacle
+  | "infectious"    // Infectious Inspiration — a die that worked hands another to a friend
   | "talismanRebuke" // Rebuke of the Talisman — the amulet's wearer is hit: psychic damage to the attacker, and it is pushed away
   | "chainResist"    // Investment of the Chain Master — the familiar takes damage: resistance to it
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
@@ -132,6 +139,7 @@ function classify(r: Action): RKind {
   if (id === "misty-escape") return "mistyEscape";
   if (id === "guardian-coil") return "guardianCoil";
   if (id === "rebuke-of-the-talisman") return "talismanRebuke";
+  if (id === "infectious-inspiration") return "infectious";
   if (id === "chain-master-resistance") return "chainResist";
   if (id === "dampen-elements") return "dampenElements";
   if (id === "war-gods-blessing") return "warGodsBlessing";
@@ -425,6 +433,8 @@ export function reactToIncomingAttack(
   if (!wouldHit) return { negated: false, shielded: false };
   // Sentinel at Death's Door: a critical hit becomes a normal one (and the hit itself may still be answered below)
   if (p.crit && sentinelAtDeathsDoor(state, t)) return { negated: false, shielded: false, crit: false };
+  // Combat Inspiration (Valor): a held Bardic Inspiration die added to armor class as a reaction
+  if (!p.crit && inspireAc(state, t, p.hitMargin)) return { negated: true, shielded: false };
 
   for (const r of t.ref.reactions) {
     if (!ready(state, t, r)) continue;
@@ -1327,6 +1337,73 @@ export function chainMasterResistance(state: CombatState, familiar: CombatantSta
   const kept = Math.floor(amount / 2);
   say(state, `${w.name} shields ${familiar.name} (resistance, ${amount - kept} less)`, w.id);
   return kept;
+}
+
+/**
+ * Infectious Inspiration (Eloquence, 14th): "When a creature within 60 feet of you adds one of your Bardic Inspiration dice to its ability check, attack roll, or saving throw and the roll succeeds, you can
+ * use your reaction to encourage a different creature (other than yourself) that can hear you within 60 feet, giving it a Bardic Inspiration die without expending any of your Bardic Inspiration uses."
+ */
+export function infectiousInspiration(state: CombatState, holder: CombatantState, used: ActiveEffect): void {
+  if (state.inReaction) return;
+  const bard = state.units.get(used.sourceId);
+  if (!bard || !bard.alive || bard.downed || bard.id === holder.id) return;
+  const r = bard.ref.reactions.find((x) => classify(x) === "infectious");
+  if (!r || !ready(state, bard, r)) return;
+  if (state.distanceFt && state.distanceFt(bard, holder) > 60.001) return;
+  const friend = livingAllies(state, bard).find((a) => a.id !== holder.id && a.id !== bard.id && a.summonerId === undefined && !a.effects.some((x) => x.mods?.inspirationDie) &&
+    (!state.distanceFt || state.distanceFt(bard, a) <= 60.001));
+  if (!friend) return;
+  consume(bard, r);
+  friend.effects.push({ name: "bardic-inspiration", expiresRound: used.expiresRound, sourceId: bard.id, mods: { ...used.mods } });
+  say(state, `${bard.name}'s inspiration is infectious: ${friend.name} takes up a die (Infectious Inspiration)`, bard.id);
+}
+
+/**
+ * Cutting Words, against a damage roll (Lore, 3rd): "you can use your reaction to diminish the result of an attack roll, ability check, or damage roll ... roll a Bardic Inspiration die and subtract it".
+ * (The attack-roll use is handled with the other ally reactions above.) Returns the damage that still lands.
+ */
+export function cuttingWordsDamage(state: CombatState, target: CombatantState, amount: number, sourceId: string | undefined): number {
+  const src = sourceId ? state.units.get(sourceId) : undefined;
+  if (state.inReaction || !src || src.side === target.side) return amount;
+  for (const ally of livingAllies(state, target)) {
+    const r = ally.ref.reactions.find((x) => x.id === "cutting-words");
+    if (!r || !ready(state, ally, r)) continue;
+    if (state.distanceFt && state.distanceFt(ally, src) > 60.001) continue;
+    if (amount < bardicDieAverage(ally.ref.level ?? 1) * 2.2) continue; // only a big blow is worth the die
+    const ok = decideReaction(state, ally, "cuttingWords", `${src.name} is about to deal ${amount} to ${target.name} — ${ally.name}'s Cutting Words can subtract a die from the damage.`, "Use Cutting Words", "Let it land");
+    if (!ok) continue;
+    consume(ally, r);
+    const cut = Math.min(amount, state.rng.dice(1, bardicDieSides(ally.ref.level ?? 1)));
+    say(state, `${ally.name}'s Cutting Words take ${cut} off the blow`, ally.id);
+    return amount - cut;
+  }
+  return amount;
+}
+
+/**
+ * Unbreakable Majesty (Glamour, 14th): "the first time on a turn that a creature attacks you, that creature must make a Charisma saving throw against your spell save DC. On a failed save, the creature
+ * can't attack you on this turn, and it must choose a new target for its attack or the attack is wasted. On a successful save, the creature can attack you on this turn, but it has disadvantage on any
+ * saving throw it makes against your spells on your next turn." Returns the creature it turns on instead, "miss" if there is no one else, or undefined if the attack goes ahead.
+ */
+export function unbreakableMajesty(state: CombatState, attacker: CombatantState, target: CombatantState): CombatantState | "miss" | undefined {
+  if (state.inReaction || attacker.side === target.side) return undefined;
+  const m = target.effects.find((e) => e.name === "unbreakable-majesty");
+  if (!m || isIncapacitated(target)) return undefined;
+  const barred = attacker.effects.some((e) => e.name === "majesty-barred" && e.sourceId === target.id && e.expiresRound >= state.round);
+  if (!barred) {
+    if (!claimOncePerTurn(state, attacker, `majesty:${target.id}`)) return undefined; // it has already tried, and passed
+    const save = rollSave(state, attacker, "cha", m.mods?.inspirationDc ?? 13, { magical: true, stakes: "control", sourceId: target.id });
+    if (save.passed) {
+      attacker.effects.push({ name: "majesty-shaken", expiresRound: state.round + 1, sourceId: target.id, mods: { saveDisadvantageAgainstSource: true } });
+      return undefined;
+    }
+    attacker.effects.push({ name: "majesty-barred", expiresRound: state.round, sourceId: target.id });
+  }
+  const others = [...state.units.values()].filter((u) => u.alive && !u.downed && u.side === target.side && u.id !== target.id && u.id !== attacker.id);
+  if (!others.length) { say(state, `${attacker.name} can't bring itself to strike ${target.name} (Unbreakable Majesty)`, target.id); return "miss"; }
+  const pick = state.distanceFt ? others.sort((a, b) => state.distanceFt!(attacker, a) - state.distanceFt!(attacker, b))[0] : others[state.rng.int(0, others.length - 1)];
+  say(state, `${attacker.name} turns on ${pick.name} instead (Unbreakable Majesty)`, target.id);
+  return pick;
 }
 
 /**

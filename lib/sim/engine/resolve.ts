@@ -5,6 +5,7 @@
 import type { Ability, AdvMode, Condition, DamageType } from "../schema";
 import { abilityMod } from "../math";
 import { creatureTypeOf } from "./creatureType";
+import { inspireAttack, inspireSave } from "./bardic";
 import {
   CombatantState,
   CombatState,
@@ -33,6 +34,7 @@ import {
   guardianCoil,
   chainMasterResistance,
   talismanBoost,
+  cuttingWordsDamage,
   warGodsBlessing,
   wardingFlare,
   projectedWard,
@@ -371,6 +373,9 @@ function rollAttackImpl(
     } else if (attacker.side === "party" && warGodsBlessing(state, attacker, deficit)) toHit += 10;
   }
 
+  // Bardic Inspiration: a die the attacker is carrying, added after the d20 is seen
+  if (!autoMiss && !crit && face + toHit < ac) toHit += inspireAttack(state, attacker, ac - (face + toHit), target);
+
   // Cosmic Omen — Weal (Stars): a d6 added to a friend's attack that just missed
   if (!autoMiss && !crit && face + toHit < ac && attacker.side === "party" && cosmicWeal(state, attacker, ac - (face + toHit))) toHit += ac - (face + toHit);
 
@@ -510,6 +515,7 @@ function rollSaveImpl(
     if (e.mods?.saveAdvantage === "adv") adv = combineAdv(adv, "adv");
     if (e.mods?.saveAdvantage === "dis") adv = combineAdv(adv, "dis");
     if (e.mods?.saveAdvantageOn?.includes(ability)) adv = combineAdv(adv, "adv"); // Rage: Strength saves
+    if (e.mods?.saveAdvantageAgainst?.some((c) => opts.conditions?.includes(c))) adv = combineAdv(adv, "adv"); // Countercharm
     if (e.mods?.saveDisadvantageAgainstSource && opts.sourceId && e.sourceId === opts.sourceId) adv = combineAdv(adv, "dis"); // the Hound of Ill Omen's mark
     if (e.mods?.disadvantageOnFirstD20EachRound) adv = combineAdv(adv, "dis"); // "doomed" — simplification
   }
@@ -539,6 +545,8 @@ function rollSaveImpl(
   const floor = Math.max(opts.d20Floor ?? 0, target.effects.reduce((n, e) => Math.max(n, e.mods?.d20Floor ?? 0), 0));
   if (used < floor) used = floor; // Trance of Order, the Dragon constellation on a concentration save
   for (const e of target.effects) if (e.mods?.saveBonusDice) mod += rollBonusDice(state, e.mods.saveBonusDice);
+  // Unsettling Words (Eloquence): "the target must subtract the number rolled from the next saving throw it makes before the start of your next turn"
+  for (const e of [...target.effects]) if (e.mods?.saveMalusDie) { mod -= rollBonusDice(state, e.mods.saveMalusDie); target.effects = target.effects.filter((x) => x !== e); }
   // Supernatural Defense: +1d6 on saves against effects from the creature designated as your prey
   if (opts.sourceId && target.ref.specialRules.some((r) => r.rule === "supernaturalDefense") &&
       state.units.get(opts.sourceId)?.effects.some((e) => e.name === "slayers-prey" && e.sourceId === target.id)) mod += state.rng.dice(1, 6);
@@ -554,6 +562,10 @@ function rollSaveImpl(
   }
   // Dark One's Own Luck: "you can use this feature to add a d10 to your roll" — spent on a save it can plausibly turn
   if (!passed && darkOnesOwnLuck(state, target, face + mod, dc)) {
+    return { passed: true, usedLegendaryResistance: false };
+  }
+  // Bardic Inspiration: a die the creature is carrying, added to a save it would fail
+  if (!passed && inspireSave(state, target, dc - (face + mod))) {
     return { passed: true, usedLegendaryResistance: false };
   }
   // Protection of the Talisman: the amulet's wearer adds a d4 to a failed saving throw
@@ -796,6 +808,8 @@ export function applyDamage(
   dmg = guardianCoil(state, target, dmg);
   if (dmg <= 0) return 0;
   dmg = chainMasterResistance(state, target, dmg); // a warlock's familiar (Investment of the Chain Master)
+  if (dmg <= 0) return 0;
+  if (opts.viaAttack) dmg = cuttingWordsDamage(state, target, dmg, opts.sourceId); // a Lore bard's reaction against the damage roll
   if (dmg <= 0) return 0;
 
   // Bastion of Law — the warded creature expends d8s from its ward, rolling each and reducing the

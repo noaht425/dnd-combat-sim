@@ -157,6 +157,21 @@ export const effectModsSchema = z.object({
   endsOnDealingDamage: z.boolean().optional(),
   /** the holder has disadvantage on saving throws against effects the creature that applied this came from (the Hound of Ill Omen's mark) */
   saveDisadvantageAgainstSource: z.boolean().optional(),
+  /** a Bardic Inspiration die the holder is carrying (a die string, "1d8"): added, after seeing the roll, to an attack roll or saving throw it would otherwise fail */
+  inspirationDie: diceSchema.optional(),
+  /** ...College of Valor: the die may also be added to a weapon damage roll, or to the holder's AC against an attack (as a reaction) */
+  combatInspiration: z.boolean().optional(),
+  /** ...College of Eloquence (6th): a die spent on a roll that fails is kept */
+  unfailingInspiration: z.boolean().optional(),
+  /** ...College of Creation: the mote — on an attack roll the die also burns the target and its neighbours; on a saving throw it gives temporary hit points */
+  moteOfPotential: z.boolean().optional(),
+  /** the bard's spell save DC and Charisma modifier, carried on the die for the mote's effects */
+  inspirationDc: z.number().int().optional(),
+  inspirationCha: z.number().int().optional(),
+  /** a die the holder subtracts from its next saving throw (Unsettling Words) */
+  saveMalusDie: diceSchema.optional(),
+  /** advantage on saving throws against being given these conditions (Countercharm) */
+  saveAdvantageAgainst: z.array(conditionSchema).optional(),
   /** damage can't make the holder lose concentration while this lasts (Grasping Tentacles: "you can't lose concentration on it from taking damage") */
   noConcentrationLoss: z.boolean().optional(),
   /** a natural d20 lower than this counts as this (Trance of Order: 10) on the holder's attack rolls, saving throws and checks */
@@ -505,6 +520,8 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("natureSanctuary"), types: z.array(creatureTypeSchema).optional() }), // `types` overrides beast/plant (Among the Dead: undead)
   // Gift of the Ever-Living Ones (Pact of the Chain invocation): with the familiar within 100 feet, the dice of any hit points the holder regains count as their maximum
   z.object({ rule: z.literal("familiarGift") }),
+  // Song of Rest (Bard, 2nd): after a short rest, every creature that spent Hit Dice regains an extra die of this many faces
+  z.object({ rule: z.literal("songOfRest"), faces: z.number().int() }),
   // Eldritch Mind (invocation): advantage on the Constitution saves that keep a spell going
   z.object({ rule: z.literal("concentrationAdvantage") }),
   // Dark One's Own Luck (Fiend, 6th): a die added to a saving throw that would otherwise fail, once per rest
@@ -628,7 +645,12 @@ export const actionSchema = z.object({
   concentration: z.boolean().optional(), // the ongoing effect ends if the caster loses concentration
   // gate: the AI may only choose this action while a living enemy has one of these
   // conditions (e.g. an "execute" usable only vs a grappled / incapacitated target).
-  usableWhen: z.object({ enemyHasCondition: z.array(conditionSchema).nonempty().optional(), allyHpBelow: z.number().positive().max(1).optional() }).optional(),
+  usableWhen: z.object({
+    enemyHasCondition: z.array(conditionSchema).nonempty().optional(),
+    allyHpBelow: z.number().positive().max(1).optional(),
+    /** only while more than `over` of `resource` is left — a reserve the AI keeps back (a bard's last use of Bardic Inspiration for its college feature) */
+    resourceAbove: z.object({ resource: z.string(), over: z.number().int().min(0) }).optional(),
+  }).optional(),
   automation: z.array(automationNodeSchema),
   text: z.string().optional(),
 });
@@ -652,6 +674,7 @@ export const aiSchema = z.object({
   targetPriority: z.enum(["lowestHp", "squishiest", "marked", "nearest", "highestThreat"]).default("highestThreat"),
   aoeMinTargets: z.number().int().positive().default(2),          // only breathe/AoE if it catches at least this many
   opener: z.array(z.string()).default([]),                        // action ids to prefer on round 1 (Frightful Presence, a mark-a-foe opener)
+  bonusAfterSpell: z.array(z.string()).optional(),                // bonus-action ids an AI-run PC takes right AFTER it casts a spell with its action (Battle Magic's weapon attack)
   bonusAfterAttack: z.array(z.string()).optional(),               // bonus-action ids an AI-run PC takes right AFTER its `attack` action (Soulknife's second Psychic Blade), first match wins
   bonusRoutine: z.array(z.string()).optional(),                  // bonus-action ids an AI-run PC takes EVERY turn when available, first match wins (command a companion, an extra attack)
   saveLegendaryResistanceFor: z.array(z.string()).default(["stunned", "paralyzed", "banished", "save-or-die", "controlled"]),

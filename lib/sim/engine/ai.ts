@@ -61,6 +61,7 @@ export function actionAvailable(state: CombatState, u: CombatantState, a: Action
     const below = a.usableWhen.allyHpBelow;
     if (![...state.units.values()].some((x) => x.side === u.side && x.alive && x.summonerId === undefined && (x.downed || x.hp < x.maxHp * below))) return false;
   }
+  if (a.usableWhen?.resourceAbove && (u.resources.get(a.usableWhen.resourceAbove.resource) ?? 0) <= a.usableWhen.resourceAbove.over) return false;
   if (a.usableWhen?.enemyHasCondition) {
     const conds = a.usableWhen.enemyHasCondition;
     const anyFoe = [...state.units.values()].some(
@@ -380,6 +381,7 @@ export function takePcTurn(state: CombatState, u: CombatantState, level: number)
     markEconomy(u, best);
     runAction(state, u, best);
     if (isAttackAction(best) && !state.ended) takeBonusRoutine(state, u, u.ref.ai.bonusAfterAttack);
+    if (best.isSpell && !state.ended) takeBonusRoutine(state, u, u.ref.ai.bonusAfterSpell); // Battle Magic
   }
 }
 

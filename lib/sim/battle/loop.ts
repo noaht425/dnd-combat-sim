@@ -340,6 +340,7 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
     templateCells: usedPlan.templateCells,
   });
   if (isAttackAction(action)) runBonusRoutine(state, u, u.ref.ai.bonusAfterAttack); // e.g. the second Psychic Blade
+  if (action.isSpell && !state.ended) runBonusRoutine(state, u, u.ref.ai.bonusAfterSpell); // Battle Magic's weapon attack
 }
 
 function partyHpFraction(state: BattleState): number {

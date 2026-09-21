@@ -7,7 +7,8 @@ import { MINIONS, PC_SUMMONS } from "./minions";
 import { addFlatBonus, maxOfDice } from "../spells/spellTransforms";
 import { creatureTypeOf, crValue, isCreatureType, matchesFilter } from "./creatureType";
 import { BEAST_FORMS, shapedAs } from "./beastForms";
-import { instinctiveCharm, natureSanctuary, reactToDeath, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, violentAttraction } from "./reactions";
+import { heldDie, inspireDamage } from "./bardic";
+import { unbreakableMajesty, instinctiveCharm, natureSanctuary, reactToDeath, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, violentAttraction } from "./reactions";
 import {
   CombatantState,
   CombatState,
@@ -302,8 +303,14 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     // a warlock with nothing else to concentrate on and no creature already carrying its Hex (the spell is worth a slot again)
     [/self\.needs_?hex/i, () => livingEnemies(st, s).length > 0 && !s.concentratingOn && !livingEnemies(st, s).some((e) => e.effects.some((x) => x.name === "hex" && x.sourceId === s.id))],
     [/target\.incapacitated/i, () => !!tgt && isIncapacitated(tgt)],
+    // an enemy that can give a condition — one of its actions frightens or charms (Countercharm is only worth an action against them)
+    [/any_?enemy\.imposes\('([a-z|]+)'\)/i, () => { const conds = RegExp.$1.split("|"); return livingEnemies(st, s).some((e) => conds.some((c) => JSON.stringify(e.ref.actions).includes(`"condition":"${c}"`))); }],
     // an incapacitated creature of a kind (Create Thrall: "an incapacitated humanoid")
     [/any_?enemy\.incapacitated\('([a-z]+)'\)/i, () => livingEnemies(st, s).some((e) => isIncapacitated(e) && isCreatureType(e.ref, RegExp.$1 as never))],
+    // no enemy carries an effect this creature applied (the mirror of `any_enemy.has`): Unsettling Words is only worth another use on a creature it isn't already on
+    [/no_?enemy\.has\('([^']+)'\)/i, () => !livingEnemies(st, s).some((e) => e.effects.some((x) => x.name === RegExp.$1 && x.sourceId === s.id))],
+    // a bard with more than N uses of Bardic Inspiration left and an ally (not itself, not a summon) who isn't already carrying a die
+    [/self\.can_?inspire\((\d+)\)/i, () => (s.resources.get("bardic_inspiration") ?? 0) > Number(RegExp.$1) && livingAllies(st, s).some((a) => a.id !== s.id && a.summonerId === undefined && !heldDie(a))],
     // the creature carrying the warlock's Hex or Curse is out of reach: battle mode, farther than 5 feet (Relentless Hex teleports beside it)
     [/self\.curse_?out_?of_?reach/i, () => !!st.distanceFt && livingEnemies(st, s).some((e) => e.effects.some((x) => (x.name === "hex" || x.name === "hexblades-curse") && x.sourceId === s.id) && st.distanceFt!(s, e) > 5.001)],
     // a creature carries the warlock's Hex or Hexblade's Curse (Maddening Hex needs one)
@@ -550,6 +557,10 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const hesitates = !ctx.spell ? natureSanctuary(state, source, t) : undefined;
         if (hesitates === "miss") { if (ctx.attackTally) ctx.attackTally.rolled++; break; }
         if (hesitates) t = hesitates;
+        // Unbreakable Majesty (Glamour): the first attack against the bard each turn needs a Charisma save
+        const awed = unbreakableMajesty(state, source, t);
+        if (awed === "miss") { if (ctx.attackTally) ctx.attackTally.rolled++; break; }
+        if (awed) t = awed;
         // Cloak of Shadows: making an attack ends the invisibility
         if (source.effects.some((e) => e.mods?.endsOnAttacking)) {
           source.effects = source.effects.filter((e) => !e.mods?.endsOnAttacking);
@@ -602,6 +613,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
             opportunist(state, source, t);
             const wd = node.onHit.find((n): n is Extract<AutomationNode, { type: "damage" }> => n.type === "damage");
             violentAttraction(state, source, t, (wd?.damageType ?? "bludgeoning") as DamageType); // Graviturgy: +1d10 of the weapon's type
+            inspireDamage(state, source, t, (wd?.damageType ?? "bludgeoning") as DamageType); // Combat Inspiration (Valor): the die added to the weapon damage
           }
           for (const e of [...t.effects]) { // a surge / Spiked Retribution: whoever hits the holder takes damage back
             const hb = e.mods?.hitBackDamage;

@@ -10,6 +10,7 @@ import { WIZARD_BUILDERS } from "./wizardTemplates";
 import { DRUID_BUILDERS } from "./druidTemplates";
 import { CLERIC_BUILDERS } from "./clericTemplates";
 import { WARLOCK_BUILDERS } from "./warlockTemplates";
+import { BARD_BUILDERS } from "./bardTemplates";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
@@ -969,29 +970,6 @@ export function arcaneTricksterRogue(level: number): Combatant {
   };
 }
 
-export function loreBard(level: number): Combatant {
-  const pb = pbFor(level);
-  const cha = pb === 6 ? 5 : 4;
-  const c = makeCaster({
-    id: "lore-bard", name: `Bard ${level}`, level, spellClass: "bard", casterKind: "full", spellAbility: "cha",
-    ac: 16, hp: between(level, 9, 6 * 20 + 12),
-    abilities: { str: score(0), dex: score(2), con: score(2), int: score(1), wis: score(1), cha: score(cha) },
-    proficientSaves: ["con", "dex", "cha"], focus: "balanced",
-    // Cutting Words: when an attack roll against an ally is seen, spend a use
-    // of Bardic Inspiration to subtract the die from it — modeled at the
-    // reaction-decision point in reactions.ts (the only reaction here that
-    // reads from an ALLY's reaction list rather than the target's own).
-    extraReactions: [{
-      id: "cutting-words", name: "Cutting Words", cost: { reaction: 1 }, recharge: "none",
-      trigger: "ally.aboutToBeHitByAttack", limitedUse: { resource: "bardic_inspiration", amount: 1 },
-      automation: [{ type: "note", text: "subtracts a Bardic Inspiration die from the triggering attack roll (engine hook)" }],
-    }],
-    extraActions: stub(`1d8+${2}`, pb + 2), keepDistance: true, targetPriority: "squishiest",
-  });
-  // Bardic Inspiration uses = CHA mod (min 1), short-rest recharge.
-  return { ...c, resources: { ...c.resources, bardic_inspiration: { max: Math.max(1, cha), recharge: "shortRest" } } };
-}
-
 export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   ...WIZARD_BUILDERS,
   ...CLERIC_BUILDERS,
@@ -1011,6 +989,6 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "aberrant-mind-sorcerer": aberrantMindSorcerer,
   "clockwork-soul-sorcerer": clockworkSoulSorcerer,
   ...DRUID_BUILDERS,
-  "lore-bard": loreBard,
+  ...BARD_BUILDERS,
   ...WARLOCK_BUILDERS,
 };

@@ -111,6 +111,8 @@ function arcaneRecovery(s: CombatantState): void {
 }
 
 export function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map<string, number>, level: number): void {
+  // Song of Rest (Bard, 2nd): "if you or any friendly creatures who can hear your performance regain hit points at the end of the short rest by spending one or more Hit Dice, each of those creatures regains an extra" die
+  const song = kind === "short" ? states.filter((b) => b.alive && !b.downed).map((b) => b.ref.specialRules.find((r) => r.rule === "songOfRest")).find((r) => r !== undefined) : undefined;
   for (const s of states) {
     revertShape(undefined, s); // a rest ends any Wild Shape, and the druid's own hit points are what heal
     if (kind !== "none") s.relentlessUses = 0; // Relentless Rage's DC resets on a short or long rest
@@ -166,7 +168,7 @@ export function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map
     const have = hitDice.get(s.id) ?? level;
     const spend = Math.min(want, have, Math.ceil((s.maxHp - s.hp) / Math.max(1, perDie)));
     if (spend > 0) {
-      s.hp = Math.min(s.maxHp, s.hp + Math.round(spend * perDie));
+      s.hp = Math.min(s.maxHp, s.hp + Math.round(spend * perDie) + (song && song.rule === "songOfRest" ? Math.round((song.faces + 1) / 2) : 0));
       hitDice.set(s.id, have - spend);
     }
   }

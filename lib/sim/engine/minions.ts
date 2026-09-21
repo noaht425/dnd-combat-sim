@@ -648,6 +648,31 @@ export function accursedSpecterFor(chaBonus: number): string {
 }
 
 /**
+ * The Dancing Item a College of Creation bard animates (Animating Performance, 6th): a Large-or-smaller construct — armor class 16, 10 + 5 x the bard level hit points, walk 30 ft. and fly 30 ft.
+ * (hover), Strength 18, Dexterity 14, Constitution 16, Intelligence 4, Wisdom 10, Charisma 6; immune to poison and psychic damage and to being charmed, exhausted, poisoned or frightened. Its
+ * Force-Empowered Slam is a melee spell attack — the bard's spell attack modifier to hit, reach 5 ft., 1d10 + the proficiency bonus force damage. "The only action it takes on its turn is the Dodge
+ * action, unless you take a bonus action on your turn to command it to take another action."
+ */
+export function dancingItemFor(level: number, pb: number, spellAttack: number): string {
+  const id = `dancing-item-L${level}`;
+  if (PC_SUMMONS[id]) return id;
+  PC_SUMMONS[id] = minion({
+    id, creatureType: "construct", name: "Dancing Item", size: "medium",
+    ac: 16, maxHp: 10 + 5 * level,
+    speeds: { walk: 30, fly: 30 },
+    abilities: { str: 18, dex: 14, con: 16, int: 4, wis: 10, cha: 6 },
+    pb,
+    immunities: ["poison", "psychic"], conditionImmunities: ["charmed", "exhaustion", "poisoned", "frightened"],
+    commandOnly: true,
+    actions: [dodgeAction, {
+      id: "slam", name: "Force-Empowered Slam", cost: { action: 1 }, recharge: "none",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: spellAttack, onHit: [{ type: "damage", amount: `1d10+${pb}`, damageType: "force" }] }] }],
+    }],
+  });
+  return id;
+}
+
+/**
  * A warlock's familiar under Pact of the Chain: the Monster Manual's imp (the best of the four special forms — imp, pseudodragon, quasit, sprite): Tiny fiend, armor class 13, 10 hit points, walk 20 ft.
  * and fly 40 ft., Sting (+5, 1d4 + 3 piercing, and a Constitution save for 3d6 poison, half on a success), resistant to cold and to nonmagical bludgeoning, piercing and slashing, immune to fire and poison,
  * with Magic Resistance. "A familiar can't attack, but it can take other actions as normal": on its own turn it takes the Help action (an ally's next attack against a creature beside it has advantage),
