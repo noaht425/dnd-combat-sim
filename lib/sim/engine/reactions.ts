@@ -58,6 +58,7 @@ type RKind =
   | "onDrop"         // react to a creature hitting 0 hp
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
   | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
+  | "giantKiller"    // Hunter's Giant Killer — attack a Large or larger creature right after its attack, hit or miss
   | "parry"          // Battle Master — spend a superiority die to reduce melee damage
   | "shadowyDodge"   // Gloom Stalker — impose disadvantage on an attack against you (before the roll)
   | "nemesis"        // Monster Slayer's Magic-User's Nemesis — a Wisdom save or the spell fails
@@ -72,6 +73,7 @@ function classify(r: Action): RKind {
   if (id.includes("uncanny") || id.includes("spectral-defense") || id.includes("swarming-dispersal") || id.includes("reflexive-resistance")) return "halveDamage";
   if (id.includes("shadowy-dodge")) return "shadowyDodge";
   if (id === "parry") return "parry";
+  if (id.includes("giant-killer")) return "giantKiller";
   if (id.includes("magic-users-nemesis")) return "nemesis";
   if (id.includes("counterspell")) return "counterspell";
   if (id.includes("absorb-elements") || id.includes("absorbelements") || tr.includes("tookelementaldamage")) return "absorbElements";
@@ -539,13 +541,14 @@ export function reactToAttackResolved(
     const wants =
       (k === "retaliateOnHit" && p.hit) ||
       (k === "retaliateOnMiss" && !p.hit && p.melee) ||
-      (k === "retaliateOnMeleeHit" && p.hit && p.melee);
+      (k === "retaliateOnMeleeHit" && p.hit && p.melee) ||
+      (k === "giantKiller" && p.melee && ["large", "huge", "gargantuan"].includes(p.attacker.ref.size));
     if (!wants) continue;
     const ok = decideReaction(
       state,
       t,
       "riposte",
-      `${p.attacker.name} ${p.hit ? "hit" : "missed"} ${t.name} — ${r.name} spends a superiority die to strike back.`,
+      `${p.attacker.name} ${p.hit ? "hit" : "missed"} ${t.name} — ${r.name} lets ${t.name} strike back.`,
       r.name,
       "Hold reaction",
     );

@@ -343,6 +343,10 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
       }
       return [pool[0]];
     }
+    case "anotherEnemy": {
+      const others = enemies.filter((e) => e.id !== source.lastAttackTargetId).sort((a, b) => a.ac - b.ac || a.hp - b.hp);
+      return others.length ? [others[0]] : [];
+    }
     case "enemyRank": {
       const pool = enemies.slice().sort((a, b) => a.ac - b.ac || a.hp - b.hp);
       return pool.length ? [pool[Math.min(who.rank, pool.length - 1)]] : [];
@@ -496,6 +500,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           ctx.attackTally.rolled++;
           if (res.hit) ctx.attackTally.hit++;
         }
+        source.lastAttackTargetId = t.id;
         const soloDuel = tweak ? tweak.soloDuel : abstractSoloDuel(state, source, t);
         const next: RunCtx = { ...ctx, last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage, attackDis: res.hadDisadvantage, woundedAtHit: t.hp < t.maxHp, allyAdjacent: tweak?.allyAdjacent, soloDuel, sneakLanded: false, insightMarked: false }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
         if (source.zone === "melee" && source.ref.specialRules.some((r) => r.rule === "fancyFootwork")) {

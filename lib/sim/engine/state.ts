@@ -84,6 +84,8 @@ export interface CombatantState {
   onceTurn?: { serial: number; keys: string[] };
   /** has taken a turn in this combat (Assassinate: advantage against creatures that haven't) */
   hasTakenTurn?: boolean;
+  /** the creature this one last made an attack roll against (Horde Breaker attacks a different one) */
+  lastAttackTargetId?: string;
   /** Fancy Footwork — the creatures it has made a melee attack against this turn (no opportunity attacks from them) */
   footwork?: { serial: number; ids: string[] };
   /** Scout's Ambush Master — already tagged the first creature it hit in round 1 */

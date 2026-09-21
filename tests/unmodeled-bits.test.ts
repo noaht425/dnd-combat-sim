@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import { makeTemplate } from "../lib/sim/engine/templates";
+import { findClassTemplate } from "../lib/combat/classTemplates";
 import { runBattle } from "../lib/sim/battle";
 import { runAction, runAutomation } from "../lib/sim/engine/interpreter";
 import { applyDamage, rollAttack, rollSave } from "../lib/sim/engine/resolve";
@@ -581,5 +582,74 @@ describe("exhaustion from Frenzy, across an adventuring day", () => {
     runCombat([], { partyStates: [b], maxRounds: 0 });
     expect(b.effects.some((e) => e.name === "exhaustion")).toBe(true);
     expect([b.hasTakenTurn, b.sneakSpent, b.zeroHpRaging]).toEqual([false, undefined, false]);
+  });
+});
+
+describe("Hunter's Prey options and Fey Reinforcements", () => {
+  const strike = (s: CombatState, attacker: CombatantState, target: CombatantState) =>
+    runAutomation([{ type: "attack", bonus: 99, onHit: [{ type: "damage", amount: "5", damageType: "bludgeoning" }] } as AutomationNode], { state: s, source: attacker, scope: [target], last: {}, depth: 0 });
+
+  it("Horde Breaker: once a turn an extra attack against a DIFFERENT creature — needs a second enemy", () => {
+    const run = (enemies: number) => {
+      const s = state(15);
+      const r = pc("hunter-horde-breaker-ranger", 5);
+      const foes = Array.from({ length: enemies }, (_, i) => foe(`f${i}`));
+      put(s, r, ...foes);
+      act(s, r, "attack");
+      return foes.map((f) => f.maxHp - f.hp);
+    };
+    const [a, b] = run(2);
+    expect(a + b).toBe(3 * 12); // two shots and the horde shot, each 1d8 + 4
+    expect(a).toBeGreaterThan(0);
+    expect(b).toBeGreaterThan(0); // the extra shot hit the OTHER creature
+    expect(run(1)).toEqual([2 * 12]); // nothing to spread to
+    expect(makeTemplate("hunter-horde-breaker-ranger", 2).actions.find((x) => x.id === "attack")!.automation).toHaveLength(1);
+  });
+
+  it("Giant Killer: a reaction attack against a Large or larger creature after it attacks you — not against a Medium one", () => {
+    const run = (size: "large" | "medium") => {
+      const s = state(15);
+      const r = pc("hunter-giant-killer-ranger", 5);
+      const f = foe();
+      f.zone = "melee";
+      (f as { ref: Combatant }).ref = { ...f.ref, size };
+      put(s, r, f);
+      strike(s, f, r);
+      return { struck: f.maxHp - f.hp, used: r.reactionUsed };
+    };
+    expect(run("large")).toEqual({ struck: 12, used: true });
+    expect(run("medium")).toEqual({ struck: 0, used: false });
+    expect(makeTemplate("hunter-ranger", 5).reactions.some((x) => x.id === "giant-killer")).toBe(false);
+  });
+
+  it("the three Hunter's Prey options are three templates, and the default is still Colossus Slayer", () => {
+    for (const [text, id] of [["horde breaker ranger", "hunter-horde-breaker-ranger"], ["giant killer ranger", "hunter-giant-killer-ranger"], ["hunter ranger", "hunter-ranger"]]) {
+      expect(findClassTemplate(text).match?.templateId, text).toBe(id);
+    }
+    const blob = (id: string) => JSON.stringify(makeTemplate(id, 5).actions.find((a) => a.id === "attack")!.automation);
+    expect(blob("hunter-ranger")).toContain("colossus-slayer");
+    expect(blob("hunter-horde-breaker-ranger")).not.toContain("colossus-slayer");
+  });
+
+  it("Fey Reinforcements (11th): a Fey Spirit summoned once per long rest without a slot — AC 12 + spell level, 30 HP, attacks of half the spell's level", () => {
+    expect(makeTemplate("fey-wanderer-ranger", 10).actions.some((a) => a.id === "fey-reinforcements")).toBe(false);
+    const s = state(15);
+    const r = pc("fey-wanderer-ranger", 11);
+    const f = foe();
+    put(s, r, f);
+    cast(s, r, "fey-reinforcements");
+    const fey = [...s.units.values()].find((u) => u.summonerId === r.id)!;
+    expect(fey.ref.name).toBe("Fey Spirit");
+    expect([fey.ref.ac, fey.maxHp, fey.ref.size]).toEqual([15, 30, "small"]);
+    expect(fey.ref.conditionImmunities).toContain("charmed");
+    expect(r.resources.get("fey_reinforcements")).toBe(0);
+    // a 3rd-level spell: one shortsword attack, 1d6 + 3 + 3 piercing and 1d6 force, at PB 4 + Wis 3, with advantage from Fey Step (Fuming)
+    const blob = JSON.stringify(fey.ref.actions[0].automation);
+    expect(blob).toContain('"bonus":7');
+    expect(blob).toContain('"amount":"1d6+6"');
+    expect((blob.match(/"type":"attack"/g) ?? []).length).toBe(1);
+    expect(makeTemplate("fey-wanderer-ranger", 11).ai.opener).toEqual(["fey-reinforcements"]);
+    const slot = r.ref.actions.find((a) => a.id === "summon-fey")!;
+    expect(slot.limitedUse).toEqual({ resource: "slot3", amount: 1 });
   });
 });

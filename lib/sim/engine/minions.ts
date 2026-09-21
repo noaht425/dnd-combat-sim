@@ -575,3 +575,36 @@ export function drakeFor(level: number, pb: number, essence: import("../schema")
   });
   return id;
 }
+
+/**
+ * Summon Fey (Tasha's), as the Fey Wanderer's Fey Reinforcements (11th) casts it: a Small fey, AC 12 + the spell's level, HP 30 + 10 for
+ * each spell level above 3rd, Multiattack of half the spell's level (rounded down) shortsword attacks at the caster's spell attack
+ * modifier for 1d6 + 3 + the spell's level piercing plus 1d6 force. Fey Step (a bonus action) is assumed used every turn with the
+ * Fuming mood — advantage on its next attack — so its attacks are made with advantage; the teleport isn't modeled. It shares the caster's
+ * initiative, obeys without needing an action, and (Fey Reinforcements) needs no concentration.
+ */
+export function feySpiritFor(spellLevel: number, pb: number, wis: number): string {
+  const id = `fey-spirit-L${spellLevel}-pb${pb}-wis${wis}`; // its attack bonus depends on the caster, so the caster's numbers are part of the key
+  if (PC_SUMMONS[id]) return id;
+  const swings = Math.max(1, Math.floor(spellLevel / 2));
+  PC_SUMMONS[id] = minion({
+    id, name: "Fey Spirit", size: "small",
+    ac: 12 + spellLevel,
+    maxHp: 30 + 10 * (spellLevel - 3),
+    speeds: { walk: 40 },
+    abilities: { str: 13, dex: 16, con: 14, int: 14, wis: 11, cha: 16 },
+    pb,
+    conditionImmunities: ["charmed"],
+    actions: [{
+      id: "multiattack", name: "Shortsword", cost: { action: 1 }, recharge: "none", text: "Melee weapon attack, reach 5 ft.",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: swings }, () => ({
+        type: "attack" as const, bonus: pb + wis, adv: "adv" as const,
+        onHit: [
+          { type: "damage" as const, amount: `1d6+${3 + spellLevel}`, damageType: "piercing" as const },
+          { type: "damage" as const, amount: "1d6", damageType: "force" as const },
+        ],
+      })) }],
+    }],
+  });
+  return id;
+}

@@ -15,7 +15,7 @@
 // Wisdom 16; and each conclave's own optional choices as noted on its builder.
 
 import type { Action, AutomationNode, Combatant, DamageType, EffectMods } from "../schema";
-import { drakeFor, primalBeastFor, rangerCompanionFor, type PrimalBeastKind } from "../engine/minions";
+import { drakeFor, feySpiritFor, primalBeastFor, rangerCompanionFor, type PrimalBeastKind } from "../engine/minions";
 import { between, pbFor, score } from "../engine/pcBase";
 import { makeCaster } from "./caster";
 
@@ -141,18 +141,30 @@ const evasion = { id: "evasion", name: "Evasion", trigger: "always" as const, au
 
 // ----------------------------------------------------------------------------------------------- Hunter (PHB)
 // Hunter's Prey (3rd), Defensive Tactics (7th), Multiattack (11th) and Superior Hunter's Defense (15th) are each a choice among
-// three. Built: Colossus Slayer (an extra 1d8 once per turn against a creature below its hit point maximum), Multiattack Defense
-// (+4 AC against a creature that has hit you, until its next turn), Volley (one ranged attack against each creature within 10 ft of
-// a point) and Evasion. Giant Killer, Horde Breaker, Escape the Horde, Steel Will, Whirlwind Attack, Stand Against the Tide and
-// Uncanny Dodge are the other options and aren't built.
-function hunter(level: number): Combatant {
+// three. Hunter's Prey is built all three ways (three templates): Colossus Slayer (an extra 1d8 once per turn against a creature
+// below its hit point maximum), Horde Breaker (once a turn, a second attack against a different creature) and Giant Killer (a
+// reaction attack against a Large or larger creature after its attack, hit or miss). The other tiers use one option each: Multiattack
+// Defense (+4 AC against a creature that has hit you, until its next turn), Volley (one ranged attack against each creature within
+// 10 ft of a point) and Evasion. Escape the Horde, Steel Will, Whirlwind Attack, Stand Against the Tide and Uncanny Dodge aren't built.
+type HuntersPrey = "colossus-slayer" | "horde-breaker" | "giant-killer";
+function hunter(level: number, prey: HuntersPrey = "colossus-slayer"): Combatant {
   const k = kit(level);
-  const colossus: AutomationNode[] = level >= 3 ? [{
+  const sub = level >= 3;
+  const colossus: AutomationNode[] = sub && prey === "colossus-slayer" ? [{
     type: "branch", if: "target.wounded_at_hit", // below its maximum when the hit lands, before this hit's own damage
     then: [{ type: "damage", amount: "1d8", damageType: "piercing", oncePerTurn: "colossus-slayer" }],
   }] : [];
-  return build(k, "hunter-ranger", {
-    attacks: [attackAction(k, { onHit: colossus })],
+  // Horde Breaker: once a turn, another attack with the same weapon against a different creature beside the first target
+  const horde: AutomationNode[] = sub && prey === "horde-breaker" ? [{
+    type: "branch", if: "enemies >= 2",
+    then: [{ type: "target", who: { who: "anotherEnemy" }, effects: [shot(k)] }],
+  }] : [];
+  const id = prey === "colossus-slayer" ? "hunter-ranger" : prey === "horde-breaker" ? "hunter-horde-breaker-ranger" : "hunter-giant-killer-ranger";
+  return build(k, id, {
+    attacks: [{ ...attackAction(k, { onHit: colossus }), automation: [
+      ...attackAction(k, { onHit: colossus }).automation,
+      ...horde,
+    ] }],
     actions: level >= 11 ? [{
       id: "volley", name: "Volley", cost: { action: 1 }, recharge: "none", ranged: true,
       text: "One ranged attack against any number of creatures within 10 feet of a point you can see.",
@@ -160,6 +172,11 @@ function hunter(level: number): Combatant {
     }] : [],
     specialRules: level >= 7 ? [{ rule: "multiattackDefense" }] : [],
     traits: level >= 15 ? [evasion] : [],
+    reactions: sub && prey === "giant-killer" ? [{
+      id: "giant-killer", name: "Giant Killer", cost: { reaction: 1 }, recharge: "none",
+      trigger: "a Large or larger creature within 5 feet of you hits or misses you with an attack",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [shot(k)] }],
+    }] : [],
   });
 }
 
@@ -314,7 +331,8 @@ function monsterSlayer(level: number): Combatant {
 // Dreadful Strikes (3rd): an extra 1d4 psychic (1d6 at 11th) once per turn on a weapon hit. Beguiling Twist (7th): advantage on saves
 // against being charmed or frightened, and a reaction turns a shrugged-off charm or fear on another creature (frightened, Wisdom save
 // against your spell DC). Misty Wanderer (15th):
-// Misty Step Wisdom-modifier times per long rest. Fey Reinforcements (Summon Fey) isn't built; Otherworldly Glamour is social.
+// Misty Step Wisdom-modifier times per long rest. Fey Reinforcements (11th): Summon Fey once per long rest without a slot (or with a 3rd-level
+// slot), no concentration — a Fey Spirit (see feySpiritFor) fights beside you; the AI summons it first. Otherworldly Glamour is social.
 const FEY_SPELLS: SubclassSpells = [[3, ["charm-person"]], [5, ["misty-step"]], [9, ["dispel-magic"]], [13, ["dimension-door"]], [17, ["mislead"]]];
 function feyWanderer(level: number): Combatant {
   const k = kit(level);
@@ -323,13 +341,30 @@ function feyWanderer(level: number): Combatant {
     spells: FEY_SPELLS,
     attacks: [attackAction(k, { onHit: dreadful })],
     specialRules: level >= 7 ? [{ rule: "advantageOnSavesAgainst", conditions: ["charmed", "frightened"] }] : [],
+    opener: level >= 11 ? ["fey-reinforcements"] : [],
     reactions: level >= 7 ? [reaction("beguiling-twist", "Beguiling Twist", "a creature within 120 ft succeeds on a save against being charmed or frightened", "a different creature makes a Wisdom save or is frightened (engine hook)")] : [],
-    resources: level >= 15 ? { misty_wanderer: { max: WIS, recharge: "longRest" as const } } : {},
-    actions: level >= 15 ? [{
-      id: "misty-wanderer", name: "Misty Step (Misty Wanderer)", cost: { bonus: 1 }, recharge: "none",
-      limitedUse: { resource: "misty_wanderer", amount: 1 },
-      automation: [{ type: "target", who: { who: "self" }, effects: [{ type: "move", kind: "teleportSelf", distance: 30 }] }],
-    }] : [],
+    resources: {
+      ...(level >= 11 ? { fey_reinforcements: { max: 1, recharge: "longRest" as const } } : {}),
+      ...(level >= 15 ? { misty_wanderer: { max: WIS, recharge: "longRest" as const } } : {}),
+    },
+    actions: [
+      ...(level >= 11 ? [{
+        id: "fey-reinforcements", name: "Summon Fey (Fey Reinforcements)", cost: { action: 1 }, recharge: "none" as const,
+        limitedUse: { resource: "fey_reinforcements", amount: 1 },
+        text: "Summon Fey without a spell slot or concentration (a minute), once per long rest.",
+        automation: [{ type: "summon" as const, statBlock: feySpiritFor(3, k.pb, WIS), count: "1", max: 1 }],
+      }, {
+        id: "summon-fey", name: "Summon Fey (3rd-level slot)", cost: { action: 1 }, recharge: "none" as const,
+        limitedUse: { resource: "slot3", amount: 1 },
+        text: "Summon Fey with a 3rd-level spell slot (Fey Reinforcements: no material component, and you may skip concentration).",
+        automation: [{ type: "summon" as const, statBlock: feySpiritFor(3, k.pb, WIS), count: "1", max: 1 }],
+      }] : []),
+      ...(level >= 15 ? [{
+        id: "misty-wanderer", name: "Misty Step (Misty Wanderer)", cost: { bonus: 1 }, recharge: "none" as const,
+        limitedUse: { resource: "misty_wanderer", amount: 1 },
+        automation: [{ type: "target" as const, who: { who: "self" as const }, effects: [{ type: "move" as const, kind: "teleportSelf" as const, distance: 30 }] }],
+      }] : []),
+    ],
   });
 }
 
@@ -399,7 +434,9 @@ function drakewarden(level: number): Combatant {
 }
 
 export const RANGER_BUILDERS: Record<string, (level: number) => Combatant> = {
-  "hunter-ranger": hunter,
+  "hunter-ranger": (l) => hunter(l),
+  "hunter-horde-breaker-ranger": (l) => hunter(l, "horde-breaker"),
+  "hunter-giant-killer-ranger": (l) => hunter(l, "giant-killer"),
   "beastmaster-ranger": beastMaster,
   "beastmaster-land-ranger": (l) => primalBeastMaster(l, "land"),
   "beastmaster-sea-ranger": (l) => primalBeastMaster(l, "sea"),

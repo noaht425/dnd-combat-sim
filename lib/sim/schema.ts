@@ -84,6 +84,8 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   z.object({ who: z.literal("squishiestEnemy"), preferFresh: z.boolean().optional() }),
   // the enemy at this rank when sorted weakest first (0 = squishiest); the last enemy if there are fewer (Distant Strike's three targets)
   z.object({ who: z.literal("enemyRank"), rank: z.number().int().min(0) }),
+  // an enemy other than the creature this one last attacked (Horde Breaker's second target)
+  z.object({ who: z.literal("anotherEnemy") }),
   z.object({ who: z.literal("chosenEnemies"), upTo: z.number().int().positive(), withinFt: z.number().positive().optional() }),
   z.object({
     who: z.literal("area"),
