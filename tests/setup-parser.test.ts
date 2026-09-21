@@ -26,7 +26,7 @@ describe("setup parser — unbuilt subclass regressions", () => {
 
   it("findClassTemplate falls back to the bare class word when the full fuzzy score misses", () => {
     expect(findClassTemplate("eldritch knight fighter").match?.templateId).toBe("gwm-fighter");
-    expect(findClassTemplate("bladesinger wizard").match?.templateId).toBe("blaster-wizard");
+    expect(findClassTemplate("college of glamour bard").match?.templateId).toBe("lore-bard");
     // now genuinely built (not a fallback) — confirms the exact-alias path
     // still wins outright over the bare-word fallback for a real subclass
     expect(findClassTemplate("shadow monk").match?.templateId).toBe("shadow-monk");

@@ -23,6 +23,8 @@ import {
   reactToFailedSave,
   reactToIncomingAttack,
   reduceIncomingDamage,
+  enemySaveDisrupt,
+  projectedWard,
   shadowyDodge,
   slayersCounter,
   beguilingTwist,
@@ -91,6 +93,32 @@ function precogSwap(state: CombatState, roller: CombatantState, used: number, wo
   p.spend();
   say(state, `${p.owner.name} rewrites the moment (${used} -> ${flip})`, p.owner.id);
   return flip;
+}
+
+// ------------------------------------------------------------ Portent (Divination)
+// A Divination wizard's foretelling d20s, rolled once a day: "You can replace any attack roll, saving throw, or ability check made by you or a
+// creature that you can see with one of these foretelling rolls. You must choose to do so before the roll, and you can replace a roll in this way
+// only once per turn." The choice is made before the roll, so a die is only spent where it settles the outcome by itself — a die that fails the roll
+// for a foe, or succeeds it for a friend — and only where the roll matters (the caller decides). Returns the die to use in place of the d20.
+
+const turnKey = (state: CombatState) => `${state.round}:${state.activeIdx}`;
+
+function portentFor(state: CombatState, roller: CombatantState, works: (face: number) => boolean): number | undefined {
+  const key = turnKey(state);
+  for (const w of state.units.values()) {
+    if (!w.alive || w.downed || isIncapacitated(w) || !w.portentDice?.length || w.portentTurnKey === key) continue;
+    if (!w.ref.specialRules.some((r) => r.rule === "portent")) continue;
+    const friendly = w.side === roller.side;
+    // a friend wants the smallest die that succeeds (keeping the big ones); a foe gets the biggest die that still fails
+    const usable = w.portentDice.map((d, i) => ({ d, i })).filter(({ d }) => (friendly ? works(d) : !works(d)));
+    if (!usable.length) continue;
+    const pick = usable.sort((a, b) => (friendly ? a.d - b.d : b.d - a.d))[0];
+    w.portentDice.splice(pick.i, 1);
+    w.portentTurnKey = key;
+    say(state, `${w.name} spends a Portent die (${pick.d}) on ${roller.name}'s roll`, w.id);
+    return pick.d;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------- attack rolls
@@ -270,7 +298,11 @@ function rollAttackImpl(
   // Restore Balance: a Clockwork Soul sorcerer cancels advantage on an enemy's roll / disadvantage on an ally's
   if (adv !== "flat" && restoreBalance(state, attacker, adv)) adv = "flat";
 
-  let used = state.rng.d20mode(adv).used;
+  // Portent: a foe's attack on a hurt party creature can be settled by a foretelling die (a miss)
+  const portent = attacker.side === "monster" && target.hp < target.maxHp * 0.5
+    ? portentFor(state, attacker, (f) => f !== 1 && (f >= critRange || f + toHit >= effectiveAc(target) + extraTargetAc))
+    : undefined;
+  let used = portent ?? state.rng.d20mode(adv).used;
   const rollFloor = attacker.effects.reduce((n, e) => Math.max(n, e.mods?.d20Floor ?? 0), 0);
   if (used < rollFloor) used = rollFloor; // Trance of Order: a d20 of 9 or lower counts as a 10
   // Multiattack Defense: a bonus to AC against the creature that has already hit the target this round
@@ -323,8 +355,9 @@ function rollAttackImpl(
 
   // the target may spend a reaction to change this outcome (Shield, Weight of Ages)
   if (!state.inReaction && !autoMiss) {
-    const rr = reactToIncomingAttack(state, { target, hitMargin: face + toHit - ac, crit });
+    const rr = reactToIncomingAttack(state, { target, hitMargin: face + toHit - ac, crit, face, toHit, ac, critRange });
     if (rr.negated) return { hit: false, crit: false, hadAdvantage: adv === "adv", hadDisadvantage: adv === "dis", nat: face };
+    if (rr.face !== undefined) { face = rr.face; crit = face >= critRange; autoMiss = face === 1; } // Chronal Shift: the attack was rolled again
     if (rr.shielded) ac = effectiveAc(target) + extraTargetAc + acVs; // the +5 Shield effect is now active
   }
 
@@ -356,6 +389,7 @@ export function saveModifierOf(u: CombatantState, ability: Ability): number {
   const prof = u.ref.proficientSaves.includes(ability) ? u.ref.pb : 0;
   let bonus = u.ref.saveBonusAll;
   for (const e of u.effects) if (e.mods?.saveBonusAll) bonus += e.mods.saveBonusAll;
+  if (u.concentratingOn) for (const r of u.ref.specialRules) if (r.rule === "durableMagic") bonus += r.bonus; // Durable Magic
   return base + prof + bonus;
 }
 
@@ -374,7 +408,7 @@ export function rollSave(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number } = {},
 ): SaveResult {
   // Slayer's Counter — a hit on the creature forcing the save makes the save succeed outright
   const forcer = opts.sourceId ? state.units.get(opts.sourceId) : undefined;
@@ -392,6 +426,12 @@ export function rollSave(
       result = rollSaveImpl(state, target, ability, dc, opts);
     }
   }
+  // Chronurgy: a creature that just shrugged off a control effect may be made to roll again, or to fail after all
+  if (result.passed && target.side === "monster" && opts.sourceId) {
+    const disrupt = enemySaveDisrupt(state, target, opts.stakes ?? "damage");
+    if (disrupt === "reroll") result = rollSaveImpl(state, target, ability, dc, opts);
+    else if (disrupt === "fail") result = maybeLegendary(state, target, false, opts);
+  }
   (state.saveLog ??= []).push({ round: state.round, unitId: target.id, ability, passed: result.passed });
   if (result.passed) beguilingTwist(state, target, opts.conditions); // a Fey Wanderer turns a shrugged-off charm or fear on someone else
   return result;
@@ -402,7 +442,7 @@ function rollSaveImpl(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number } = {},
 ): SaveResult {
   const magical = opts.magical ?? true;
 
@@ -416,7 +456,7 @@ function rollSaveImpl(
   }
 
   let adv: AdvMode = "flat";
-  if (magical && ruleActive(target, "magicResistance")) adv = "adv";
+  if (magical && (ruleActive(target, "magicResistance") || ruleActive(target, "spellResistance"))) adv = "adv"; // (Spell Resistance: advantage on saves against spells)
   const advOnSaves = target.ref.specialRules.find((r) => r.rule === "advantageOnSaves");
   if (advOnSaves && advOnSaves.rule === "advantageOnSaves" && advOnSaves.abilities.includes(ability)) adv = "adv";
   for (const e of target.effects) {
@@ -437,10 +477,15 @@ function rollSaveImpl(
   if (adv !== "adv" && spendTides(state, target)) adv = combineAdv(adv, "adv");
   if (adv !== "flat" && restoreBalance(state, target, adv)) adv = "flat";
 
-  let used = state.rng.d20mode(adv).used;
+  const stakes = opts.stakes ?? "damage";
+  let mod = saveModifierOf(target, ability) + (opts.bonus ?? 0);
+  // Portent: a control effect on either side can be settled by a foretelling die — unless Legendary Resistance would just undo a failure
+  const portent = stakes !== "damage" && !(target.side === "monster" && (target.resources.get("__legendaryResistance") ?? 0) > 0)
+    ? portentFor(state, target, (f) => f + mod >= dc)
+    : undefined;
+  let used = portent ?? state.rng.d20mode(adv).used;
   const floor = target.effects.reduce((n, e) => Math.max(n, e.mods?.d20Floor ?? 0), 0);
   if (used < floor) used = floor; // Trance of Order
-  let mod = saveModifierOf(target, ability);
   for (const e of target.effects) if (e.mods?.saveBonusDice) mod += rollBonusDice(state, e.mods.saveBonusDice);
   // Supernatural Defense: +1d6 on saves against effects from the creature designated as your prey
   if (opts.sourceId && target.ref.specialRules.some((r) => r.rule === "supernaturalDefense") &&
@@ -454,7 +499,7 @@ function rollSaveImpl(
     return { passed: true, usedLegendaryResistance: false };
   }
   // an ally artificer's Flash of Genius (+INT) may turn this failure into a success
-  if (!passed && reactToFailedSave(state, target, face + mod, dc)) {
+  if (!passed && reactToFailedSave(state, target, face + mod, dc, mod, stakes)) {
     return { passed: true, usedLegendaryResistance: false };
   }
   return maybeLegendary(state, target, passed, opts);
@@ -518,6 +563,8 @@ export function applyDamage(
     sourceId?: string;
     viaAttack?: boolean;
     viaSpell?: boolean;
+    /** the slot level the spell was cast at (Awakened Spellbook only swaps a damage type on a spell cast with a slot) */
+    spellLevel?: number;
     /** the damage came from a critical hit (Strength of the Grave can't save against one) */
     crit?: boolean;
   } = {},
@@ -577,6 +624,16 @@ export function applyDamage(
     if (srcSide === "party" && state.tuning.partyDamageMult) dmg *= state.tuning.partyDamageMult;
   }
 
+  // Awakened Spellbook (Order of Scribes): a spell cast with a slot can swap its damage type for another the wizard knows — used to get past a resistance or immunity
+  if (opts.viaSpell && (opts.spellLevel ?? 0) > 0 && src && !opts.ignoreResistances) {
+    const swap = src.ref.specialRules.find((r) => r.rule === "spellbookSwap");
+    const blocked = (t: DamageType) => ref.immunities.includes(t) || ref.resistances.includes(t) || target.effects.some((e) => e.mods?.resistTypes?.includes(t));
+    if (swap && swap.rule === "spellbookSwap" && blocked(type)) {
+      const alt = swap.types.find((t) => t !== type && !blocked(t) && !ref.vulnerabilities.includes(t)) ?? swap.types.find((t) => ref.vulnerabilities.includes(t));
+      if (alt) { say(state, `${src.name}'s spellbook rewrites the spell (${type} -> ${alt})`, src.id); type = alt; }
+    }
+  }
+
   if (ref.immunities.includes(type)) return 0;
 
   if (!opts.ignoreResistances) {
@@ -595,6 +652,7 @@ export function applyDamage(
       absorbed ||
       heldBack ||
       target.effects.some((e) => e.mods?.resistTypes?.includes(type)) || // Rage, a totem spirit, a storm's resistance
+      (!!opts.viaSpell && ref.specialRules.some((r) => r.rule === "spellResistance")) || // Spell Resistance: resistance to the damage of spells
 
       (bps && !opts.attackerMagical && ref.resistancesNonmagical.includes(type)) ||
       (bps && !opts.hadAdvantage && ref.specialRules.some((r) => r.rule === "resistNonAdvantageAttacks"));
@@ -610,6 +668,18 @@ export function applyDamage(
   dmg = Math.max(0, Math.floor(dmg));
   if (dmg === 0) return 0;
   target.combatEventSerial = state.turnSerial ?? 0; // "taken damage" — keeps a Rage going
+
+  // Arcane Ward — the ward takes the damage first; whatever it can't hold lands (temporary hit points and hit points come after)
+  if (target.arcaneWard && target.arcaneWard.hp > 0) {
+    const soak = Math.min(target.arcaneWard.hp, dmg);
+    target.arcaneWard.hp -= soak;
+    dmg -= soak;
+    say(state, `${target.name}'s Arcane Ward absorbs ${soak} (${target.arcaneWard.hp}/${target.arcaneWard.maxHp})`, target.id);
+    if (dmg === 0) return 0;
+  }
+  // Projected Ward — another abjurer's ward may take it instead
+  dmg = projectedWard(state, target, dmg);
+  if (dmg <= 0) return 0;
 
   // Bastion of Law — the warded creature expends d8s from its ward, rolling each and reducing the
   // damage by the total (used one at a time until the damage is gone or the ward runs dry)
@@ -666,9 +736,16 @@ export function applyDamage(
 
   // concentration check — a failed CON save ends the ongoing spell (and its effects)
   if (target.concentratingOn && dmg > 0) {
-    const dc = Math.max(10, Math.floor(dmg / 2));
-    const s = rollSave(state, target, "con", dc, { magical: false, stakes: "damage", allowLegendaryResistance: false });
-    if (!s.passed) breakConcentration(state, target, "damage");
+    // Focused Conjuration: damage can't break concentration on a spell of the named schools
+    const conc = target.ref.actions.find((a) => a.id === target.concentratingOn);
+    const immune = target.ref.specialRules.some((r) => r.rule === "concentrationImmune" && !!conc?.school && r.schools.includes(conc.school));
+    if (!immune) {
+      const dc = Math.max(10, Math.floor(dmg / 2));
+      // Bladesong adds Intelligence to the Constitution save
+      const bonus = target.effects.reduce((n, e) => n + (e.mods?.concentrationSaveBonus ?? 0), 0);
+      const s = rollSave(state, target, "con", dc, { magical: false, stakes: "damage", allowLegendaryResistance: false, bonus });
+      if (!s.passed) breakConcentration(state, target, "damage");
+    }
   }
 
   // Strength of the Grave (Shadow Magic) — a Charisma save (DC 5 + the damage taken) to drop to 1 HP
@@ -684,6 +761,25 @@ export function applyDamage(
         say(state, `${target.name} clings to life (Strength of the Grave, 1 HP)`, target.id);
         return dmg;
       }
+    }
+  }
+
+  // One with the Word (Order of Scribes, 14th): damage that would drop you to 0 is negated — you dismiss your manifested mind and lose spells for it:
+  // 3d6 levels of them, taken here from the highest spell slots down
+  if (target.hp <= 0) {
+    const ow = target.ref.specialRules.find((r) => r.rule === "negateLethalDamage");
+    if (ow && ow.rule === "negateLethalDamage" && (target.resources.get(ow.resource) ?? 0) > 0) {
+      target.resources.set(ow.resource, (target.resources.get(ow.resource) ?? 0) - 1);
+      target.hp = hpBefore;
+      let owed = state.rng.dice(3, 6);
+      for (let lvl = 9; lvl >= 1 && owed > 0; lvl--) {
+        while (owed > 0 && (target.resources.get(`slot${lvl}`) ?? 0) > 0) {
+          target.resources.set(`slot${lvl}`, (target.resources.get(`slot${lvl}`) ?? 0) - 1);
+          owed -= lvl;
+        }
+      }
+      say(state, `${target.name} becomes one with the word — the blow is unwritten, and spells go with it`, target.id);
+      return 0;
     }
   }
 

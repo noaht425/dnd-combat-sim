@@ -39,12 +39,13 @@ export interface DayResult {
   resourcesLeftPct: number;
 }
 
-const HIT_DIE: Record<string, number> = {
-  "totem-barbarian": 12, barbarian: 12,
-  "gwm-fighter": 10, fighter: 10, "vengeance-paladin": 10, paladin: 10, "hunter-ranger": 10, ranger: 10, artificer: 8,
-  "blaster-wizard": 6, wizard: 6, "draconic-sorcerer": 6, sorcerer: 6,
-};
-const hitDieOf = (c: Combatant): number => HIT_DIE[c.templateId ?? ""] ?? (/-barbarian$/.test(c.templateId ?? "") ? 12 : /-ranger$/.test(c.templateId ?? "") ? 10 : 8);
+/** hit die by class, read off the template id's suffix ("chronurgy-wizard" -> d6) */
+const HIT_DIE_BY_CLASS: [RegExp, number][] = [
+  [/(^|-)barbarian$/, 12],
+  [/(^|-)(fighter|paladin|ranger)$/, 10],
+  [/(^|-)(wizard|sorcerer)$/, 6],
+];
+const hitDieOf = (c: Combatant): number => HIT_DIE_BY_CLASS.find(([re]) => re.test(c.templateId ?? ""))?.[1] ?? 8;
 
 function partyHpFraction(states: CombatantState[]): number {
   let cur = 0;
@@ -88,6 +89,27 @@ export function settleExhaustion(states: CombatantState[]): void {
 }
 
 /** apply a rest to the carried-forward party states */
+/**
+ * Arcane Recovery (Wizard): "Once per day when you finish a short rest, you can choose expended spell slots to recover. The spell slots can have a
+ * combined level that is equal to or less than half your wizard level (rounded up)" — and none of 6th level or higher. Taken highest-first, the way
+ * a wizard would spend the budget.
+ */
+function arcaneRecovery(s: CombatantState): void {
+  if (s.arcaneRecoveryUsed || !s.ref.specialRules.some((r) => r.rule === "arcaneRecovery")) return;
+  let budget = Math.ceil((s.ref.level ?? 1) / 2);
+  let got = false;
+  for (let lvl = 5; lvl >= 1 && budget > 0; lvl--) {
+    const cap = s.ref.resources[`slot${lvl}`]?.max;
+    if (typeof cap !== "number") continue;
+    while (budget >= lvl && (s.resources.get(`slot${lvl}`) ?? 0) < cap) {
+      s.resources.set(`slot${lvl}`, (s.resources.get(`slot${lvl}`) ?? 0) + 1);
+      budget -= lvl;
+      got = true;
+    }
+  }
+  if (got) s.arcaneRecoveryUsed = true;
+}
+
 export function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map<string, number>, level: number): void {
   for (const s of states) {
     if (kind !== "none") s.relentlessUses = 0; // Relentless Rage's DC resets on a short or long rest
@@ -106,6 +128,10 @@ export function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map
         s.resources.set(name, r.max === "unbounded" ? 999 : (r.start ?? (r.max as number)));
       }
       hitDice.set(s.id, level);
+      // a long rest: Portent is rolled afresh, a new Arcane Ward may be raised, Arcane Recovery is available again
+      s.portentDice = undefined;
+      s.arcaneWard = undefined;
+      s.arcaneRecoveryUsed = false;
       continue;
     }
 
@@ -119,6 +145,10 @@ export function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map
       if (r.recharge === "shortRest" && r.max !== "unbounded") s.resources.set(name, r.max as number);
     }
     if (!s.alive) continue;
+    arcaneRecovery(s);
+    // Power Surge (War Magic): ending a short rest with none gives one
+    const surge = s.ref.specialRules.find((r) => r.rule === "surgeOnCounter");
+    if (surge && surge.rule === "surgeOnCounter" && (s.resources.get(surge.resource) ?? 0) <= 0) s.resources.set(surge.resource, 1);
     const conMod = abilityMod(s.ref.abilities.con);
     const perDie = hitDieOf(s.ref) / 2 + 0.5 + conMod;
     if (s.downed) {

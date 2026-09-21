@@ -168,6 +168,10 @@ export const effectModsSchema = z.object({
   endOnAllyAttack: z.boolean().optional(),
   /** ends at the start of the turn of the creature that applied it ("until the start of your next turn") */
   untilSourceNextTurn: z.boolean().optional(),
+  /** the holder may cast only cantrips while the effect lasts (Arcane Deflection) */
+  cantripsOnly: z.boolean().optional(),
+  /** added to the holder's Constitution saving throws to keep concentration (Bladesong) */
+  concentrationSaveBonus: z.number().int().optional(),
 });
 export type EffectMods = z.infer<typeof effectModsSchema>;
 
@@ -202,7 +206,7 @@ export type AutomationNode =
   | { type: "spendResource"; resource: string; amount?: number; from?: "party" }
   | { type: "rechargeRoll"; resource: string }
   | { type: "useAction"; action: string; times?: number }
-  | { type: "summon"; statBlock: string; count: string; max?: number; note?: string; tempHp?: string }
+  | { type: "summon"; statBlock: string; count: string; max?: number; note?: string; tempHp?: string; hpBonus?: number; damageBonus?: number }
   /** put a damage-absorbing ward on the target: `dice` d8s it can expend, one at a time, to reduce damage
    *  it takes (Clockwork Soul's Bastion of Law); replaces any ward this caster gave someone else */
   | { type: "ward"; dice: number }
@@ -211,6 +215,13 @@ export type AutomationNode =
   | { type: "commandSummon"; action: string; limit?: number; rangeFt?: number }
   /** regain the lowest-level expended spell slot (Wild Magic Surge) */
   | { type: "restoreSlot" }
+  /** Arcane Ward (Abjuration): casting an abjuration spell of 1st level or higher makes the ward (`maxHp` hit points, once until a long rest), or
+   *  restores twice the spell's level to it */
+  | { type: "arcaneWard"; maxHp: number; slotLevel: number }
+  /** Expert Divination: regain the highest expended spell slot lower than `below` (and no higher than 5th) */
+  | { type: "regainSlot"; below: number }
+  /** Portent: roll `dice` d20s and keep them, unless they were already rolled since the last long rest */
+  | { type: "portentRoll"; dice: number }
   /** Inquisitive's Insightful Fighting: `bonus` is the rogue's Wisdom (Insight) modifier, rolled against the
    *  target's Charisma (Deception). On a success the rogue may Sneak Attack that target without advantage. */
   | { type: "insightfulFighting"; bonus: number }
@@ -303,6 +314,9 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     }),
     z.object({ type: z.literal("spendResource"), resource: z.string(), amount: z.number().int().optional(), from: z.literal("party").optional() }),
     z.object({ type: z.literal("restoreSlot") }),
+    z.object({ type: z.literal("arcaneWard"), maxHp: z.number().int().positive(), slotLevel: z.number().int().min(1).max(9) }),
+    z.object({ type: z.literal("regainSlot"), below: z.number().int().min(2).max(9) }),
+    z.object({ type: z.literal("portentRoll"), dice: z.number().int().min(1).max(3) }),
     z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
     z.object({ type: z.literal("spendReaction") }),
     z.object({ type: z.literal("spendBonusAction") }),
@@ -319,6 +333,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       max: z.number().int().positive().optional(), // total of this stat block the summoner may control at once
       note: z.string().optional(),
       tempHp: diceSchema.optional(),               // temporary hit points each summon appears with
+      hpBonus: z.number().int().positive().optional(),     // added to each summon's hit point maximum (Undead Thralls: the wizard's level)
+      damageBonus: z.number().int().positive().optional(), // added to each summon's weapon damage rolls (Undead Thralls: the proficiency bonus)
     }),
     z.object({ type: z.literal("ward"), dice: z.number().int().positive() }),
     z.object({
@@ -402,6 +418,24 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("cancelDisadvantage"), resource: z.string(), cost: z.number().int().positive() }),
   // Unerring Accuracy (Kensei, 17th): once a turn, a missed attack roll is rolled again
   z.object({ rule: z.literal("rerollMissOncePerTurn") }),
+  // Arcane Recovery (Wizard): on a short rest, once a day, regain expended spell slots totalling at most half your wizard level (rounded up), none higher than 5th
+  z.object({ rule: z.literal("arcaneRecovery") }),
+  // Power Surge (War Magic): a Counterspell (or Dispel Magic) you succeed with gives one more surge, up to the cap in `resource`'s max
+  z.object({ rule: z.literal("surgeOnCounter"), resource: z.string() }),
+  // Spell Resistance (Abjuration, 14th): advantage on saving throws against spells, and resistance to spell damage
+  z.object({ rule: z.literal("spellResistance") }),
+  // Durable Magic (War Magic, 10th): +2 AC and +2 to every saving throw while concentrating on a spell
+  z.object({ rule: z.literal("durableMagic"), bonus: z.number().int() }),
+  // Focused Conjuration: damage can't break your concentration on a spell of one of these schools
+  z.object({ rule: z.literal("concentrationImmune"), schools: z.array(z.string()) }),
+  // Portent (Divination): the foretelling d20s rolled by `portentRoll` may replace a d20 rolled by you or a creature you can see, once a turn
+  z.object({ rule: z.literal("portent") }),
+  // Grim Harvest (Necromancy): killing a creature with a spell heals you twice its level (three times for a necromancy spell), not for constructs or undead
+  z.object({ rule: z.literal("grimHarvest") }),
+  // Awakened Spellbook (Scribes): a spell you cast with a slot can swap its damage type for one of these when the target resists or is immune to it
+  z.object({ rule: z.literal("spellbookSwap"), types: z.array(damageTypeSchema) }),
+  // One with the Word (Scribes, 14th): once a day, damage that would drop you to 0 hit points is negated — paid for with spell slots (see the rule's handler)
+  z.object({ rule: z.literal("negateLethalDamage"), resource: z.string() }),
   // Tides of Chaos: the first d20 roll of the fight (an attack roll or a save) is made with advantage, spending the use
   z.object({ rule: z.literal("advantageOnce"), resource: z.string() }),
   // Wolf totem: while raging, allies have advantage on melee attacks against hostile creatures within 5 ft of you
@@ -491,6 +525,9 @@ export const actionSchema = z.object({
   /** its attack rolls are RANGED attacks (a bow, a ranged spell attack): disadvantage while a hostile creature is within 5 ft of the attacker */
   ranged: z.boolean().optional(),
   isSpell: z.boolean().optional(),     // this action is a spell -> Counterspell can negate it
+  /** for a spell: its school of magic and the slot level it is cast at (0 for a cantrip) — Grim Harvest, Arcane Ward, Focused Conjuration, Expert Divination key off these */
+  school: z.string().optional(),
+  spellLevel: z.number().int().min(0).max(9).optional(),
   concentration: z.boolean().optional(), // the ongoing effect ends if the caster loses concentration
   // gate: the AI may only choose this action while a living enemy has one of these
   // conditions (e.g. an "execute" usable only vs a grappled / incapacitated target).

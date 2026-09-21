@@ -51,6 +51,8 @@ export function actionAvailable(state: CombatState, u: CombatantState, a: Action
   if ((a.cost.action ?? 0) > 0 && u.actionUsedThisTurn) return false;
   if ((a.cost.bonus ?? 0) > 0 && u.bonusUsedThisTurn) return false;
   if (isLeveledSpell(a) && u.leveledSpellThisTurn) return false;
+  // Arcane Deflection: nothing but cantrips until the end of the next turn
+  if (a.isSpell && (a.spellLevel ?? 0) > 0 && u.effects.some((e) => e.mods?.cantripsOnly)) return false;
   // usage gate: e.g. an execute that only works on a grappled / incapacitated foe
   if (a.usableWhen?.enemyHasCondition) {
     const conds = a.usableWhen.enemyHasCondition;

@@ -4,6 +4,7 @@ import { TEMPLATE_IDS, makeTemplate } from "../lib/sim/engine/templates";
 import { buildParty, runScenario, runScenarioOnce, standardParty } from "../lib/sim/engine/scenario";
 import { monteCarlo } from "../lib/sim/engine/montecarlo";
 import { MINIONS } from "../lib/sim/engine/minions";
+import { FIXTURES_BY_ID } from "../lib/sim/fixtures";
 
 describe("Phase 3 — PC templates & scenarios", () => {
   it("every template builds a schema-valid PC at every key level", () => {
@@ -54,28 +55,21 @@ describe("Phase 3 — PC templates & scenarios", () => {
     expect(t).toBeGreaterThanOrEqual(g - 0.1);
   });
 
-  it("damage-type immunity matters: a fire-heavy party underperforms vs the fire-immune Adult Red Dragon", () => {
-    // The Adult Red Dragon is immune to fire. A draconic sorcerer party leans on
-    // fire damage (Scorching Ray, Fireball, Empowered/Elemental-affinity fire);
-    // an all-physical party of the same level pays no such tax.
-    const fire = runScenario({
-      party: [
-        { template: "draconic-sorcerer", name: "Ada", level: 16 },
-        { template: "draconic-sorcerer", name: "Dax", level: 16 },
-        { template: "draconic-sorcerer", name: "Eli", level: 16 },
-        { template: "draconic-sorcerer", name: "Fen", level: 16 },
-      ],
-      enemies: ["adult-red-dragon"], trials: 300, seed: 11,
-    });
-    const physical = runScenario({
-      party: [
-        { template: "gwm-fighter", name: "Ada", level: 16 },
-        { template: "hunter-ranger", name: "Dax", level: 16 },
-        { template: "totem-barbarian", name: "Eli", level: 16 },
-        { template: "gwm-fighter", name: "Fen", level: 16 },
-      ],
-      enemies: ["adult-red-dragon"], trials: 300, seed: 11,
-    });
-    expect(fire.partyWinRate + 0.1).toBeLessThan(physical.partyWinRate); // fire immunity bites
-  });
+  it("damage-type immunity matters: a fire-heavy party does worse against the fire-immune Adult Red Dragon than against the same dragon without the immunity", () => {
+    // Compare like with like: the same party against the same stat block, with and without fire immunity. (Comparing two different parties mostly
+    // measures how good each party's play is, which is what changed when casters stopped recasting spells on targets that already had the effect.)
+    const red = FIXTURES_BY_ID["adult-red-dragon"];
+    const open = { ...red, id: "red-open", name: "Red Dragon (no fire immunity)", immunities: red.immunities.filter((t) => t !== "fire") };
+    const party = (templates: string[]) => templates.map((template, i) => ({ template, name: `P${i}`, level: 16 }));
+    const run = (templates: string[], foe: string) =>
+      runScenario({ party: party(templates), enemies: [foe], trials: 400, seed: 11, extraById: { "red-open": open } });
+    const sorcerers = Array(4).fill("draconic-sorcerer");
+    const immune = run(sorcerers, "adult-red-dragon");
+    const vulnerable = run(sorcerers, "red-open");
+    expect(vulnerable.partyWinRate).toBeGreaterThan(immune.partyWinRate + 0.05); // fire immunity bites
+    expect(immune.avgRounds).toBeGreaterThan(vulnerable.avgRounds + 0.5);
+    // ...and an all-physical party doesn't care either way
+    const physical = ["gwm-fighter", "hunter-ranger", "totem-barbarian", "gwm-fighter"];
+    expect(Math.abs(run(physical, "adult-red-dragon").partyWinRate - run(physical, "red-open").partyWinRate)).toBeLessThan(0.03);
+  }, 30000);
 });

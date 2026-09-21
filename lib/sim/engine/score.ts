@@ -129,12 +129,13 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
         if (n.onSuccess) scoreSubtree(n.onSuccess, t, pMul * (1 - pFail));
         else if (n.onFail.some((x) => x.type === "damage")) scoreSubtree(n.onFail, t, pMul * (1 - pFail) * 0.5);
       } else if (n.type === "applyCondition") {
-        if (t.side !== actor.side && !t.ref.conditionImmunities.includes(n.condition)) {
+        // a condition the target already has is worth nothing more (recasting Hold Person on a paralyzed troll)
+        if (t.side !== actor.side && !t.ref.conditionImmunities.includes(n.condition) && !t.conditions.has(n.condition)) {
           // probability it lands: fold in the wrapping save if any (handled above via pMul)
           control += pMul * (CONTROL_WEIGHT[n.condition] ?? 8) * (n.durationRounds && n.durationRounds > 0 ? Math.min(3, n.durationRounds) : 2) / 2;
         }
       } else if (n.type === "applyEffect") {
-        if (t.side !== actor.side && (n.mods?.speedZero || n.mods?.noReactions || n.mods?.saveAdvantage === "dis")) control += pMul * 10;
+        if (t.side !== actor.side && !t.effects.some((e) => e.name === n.name) && (n.mods?.speedZero || n.mods?.noReactions || n.mods?.saveAdvantage === "dis")) control += pMul * 10;
         const tick = n.tick?.find((x) => x.type === "damage");
         if (tick && tick.type === "damage") damage += pMul * (avgDice(tick.amount) ?? 0) * 1.5; // a few ticks
         if (n.mods?.extraDamageOnHit) {
@@ -199,6 +200,15 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
     }
   }
 
-  const score = damage + control * 1.0 + heal * 1.1 + finisher - resPenalty;
+  // a new concentration spell drops the one already up — charge for whatever that one is still doing (creatures held, allies buffed)
+  let dropPenalty = 0;
+  if (action.concentration && actor.concentratingOn) {
+    const mine = new Set(actor.concentrationEffects ?? []);
+    const stillOn = (u: CombatantState) => u.effects.some((e) => mine.has(e.name) && e.sourceId === actor.id) ||
+      [...u.conditions].some(([c, inst]) => mine.has(c) && inst.sourceId === actor.id);
+    dropPenalty = enemies.filter(stillOn).length * 14 + allies.filter(stillOn).length * 10;
+  }
+
+  const score = damage + control * 1.0 + heal * 1.1 + finisher - resPenalty - dropPenalty;
   return { score, damage, control, heal };
 }

@@ -8,9 +8,10 @@ import { makeTemplate } from "../lib/sim/engine/templates";
 
 describe("Subclass audit fixes, round 2", () => {
   it("Evocation Wizard: Empowered Evocation adds INT to one damage-dealing evocation spell per cast", () => {
-    const c = makeTemplate("blaster-wizard", 9);
-    const fireball = c.actions.find((a) => a.isSpell && /Fireball$/.test(a.name))!;
-    expect(JSON.stringify(fireball.automation)).toMatch(/8d6\+4/); // base 8d6 + INT mod
+    // Empowered Evocation is the School of Evocation's 10th-level feature
+    const fire = (level: number) => makeTemplate("blaster-wizard", level).actions.find((a) => a.isSpell && /Fireball$/.test(a.name))!;
+    expect(JSON.stringify(fire(10).automation)).toMatch(/8d6\+4/); // base 8d6 + INT mod
+    expect(JSON.stringify(fire(9).automation)).not.toMatch(/8d6\+4/);
   });
 
   it("Draconic Sorcerer: Elemental Affinity adds CHA to the first fire-damage node of every spell, without splitting the shared AoE roll", () => {

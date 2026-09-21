@@ -124,6 +124,12 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return `restore up to ${n.total} hit points, divided among allies nearby`;
     case "insightfulFighting":
       return "read a foe's tactics (Insight vs Deception) so Sneak Attack lands without advantage";
+    case "arcaneWard":
+      return `raise or feed an Arcane Ward (${n.maxHp} hit points)`;
+    case "regainSlot":
+      return `regain an expended spell slot below ${n.below}${n.below === 2 ? "nd" : n.below === 3 ? "rd" : "th"} level`;
+    case "portentRoll":
+      return "";
     case "note":
     case "restoreSlot":
     case "removeEffect":

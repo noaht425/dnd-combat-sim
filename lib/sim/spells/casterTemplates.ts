@@ -6,102 +6,11 @@ import { DAMAGE_TYPES, type Action, type Combatant } from "../schema";
 import { eldritchCannonFor, houndOfIllOmenFor, steelDefenderFor, type CannonVariant } from "../engine/minions";
 import { rogueKit } from "../engine/rogueKit";
 import { RANGER_BUILDERS } from "./rangerTemplates";
+import { WIZARD_BUILDERS } from "./wizardTemplates";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
-
-/** "cast-fireball-3" -> "fireball"; "cast-fire-bolt" -> "fire-bolt" (cantrips
- *  have no trailing slot number) — the slot suffix is always a bare integer,
- *  which no catalog spell id ends in, so stripping it is unambiguous. */
-function baseSpellId(actionId: string): string {
-  return actionId.replace(/^cast-/, "").replace(/-\d+$/, "");
-}
-
-/** merges `bonus` into a dice-notation amount's existing flat modifier rather
- *  than appending a second one — the schema's amount regex allows only ONE
- *  flat modifier right after the first dice term (e.g. "1d4+1"), so naively
- *  producing "1d4+1+4" fails validation. A bare integer amount just adds. */
-function addFlatBonus(amount: string, bonus: number): string {
-  const pureNum = amount.match(/^\s*(\d+)\s*$/);
-  if (pureNum) return String(parseInt(pureNum[1], 10) + bonus);
-  const m = amount.match(/^(\s*-?\d*d\d+)([+-]\d+)?(.*)$/);
-  if (!m) return `${amount}+${bonus}`;
-  const [, dice, flatStr, rest] = m;
-  const newFlat = (flatStr ? parseInt(flatStr, 10) : 0) + bonus;
-  const flatPart = newFlat === 0 ? "" : newFlat > 0 ? `+${newFlat}` : `${newFlat}`;
-  return `${dice}${flatPart}${rest}`;
-}
-
-/** finds the FIRST rolled node reachable from `nodes` — a damage node (optionally restricted to
- *  one or several `damageType`s) or, with `includeHeal`, a heal node — and adds `bonus` to its dice
- *  string. A number merges into the flat modifier; a string ("1d8") is appended as a dice term.
- *  Used for effects that boost "one roll" of a spell (Empowered Evocation, Elemental Affinity,
- *  Arcane Firearm, Alchemical Savant), which unlike Disciple of Life's flat-HP-node-per-heal only
- *  ever touch a single roll per cast, not every matching node. */
-function injectFirstDamageBonus(
-  nodes: import("../schema").AutomationNode[],
-  bonus: number | string,
-  damageType?: string | string[],
-  includeHeal = false,
-): { nodes: import("../schema").AutomationNode[]; applied: boolean } {
-  type Rolled = Extract<import("../schema").AutomationNode, { type: "damage" | "heal" }>;
-  const types = damageType === undefined ? undefined : Array.isArray(damageType) ? damageType : [damageType];
-  const matches = (n: import("../schema").AutomationNode): n is Rolled =>
-    (n.type === "damage" && (!types || types.includes(n.damageType))) || (includeHeal && n.type === "heal");
-  const withBonus = (amount: string): string => (typeof bonus === "number" ? addFlatBonus(amount, bonus) : `${amount}+${bonus}`);
-  const sameRoll = (a: Rolled, b: Rolled): boolean =>
-    a.type === b.type && a.amount === b.amount && (a.type !== "damage" || a.damageType === (b as typeof a).damageType);
-  let applied = false;
-  const walk = (list: import("../schema").AutomationNode[]): import("../schema").AutomationNode[] => list.map((n) => {
-    if (applied) return n;
-    if (matches(n)) {
-      applied = true;
-      return { ...n, amount: withBonus(n.amount) };
-    }
-    if (n.type === "target") return { ...n, effects: walk(n.effects) };
-    if (n.type === "attack") return { ...n, onHit: walk(n.onHit), onMiss: n.onMiss && walk(n.onMiss) };
-    if (n.type === "save") {
-      // onFail/onSuccess damage nodes for a save-for-half effect share one
-      // rolled value across every target hit by the same cast (a Fireball's
-      // sharedRolls cache keys on the exact amount string) — bumping only
-      // onFail's string would split that into two independent rolls (one
-      // pool for failed saves, a different one for halved successes).
-      // Keeping both strings identical preserves the shared roll.
-      const failIdx = n.onFail.findIndex(matches);
-      if (!applied && failIdx !== -1) {
-        applied = true;
-        const original = n.onFail[failIdx] as Rolled;
-        const amount = withBonus(original.amount);
-        const onFail = n.onFail.map((x, i) => (i === failIdx ? { ...original, amount } : x));
-        const onSuccess = n.onSuccess?.map((x) =>
-          matches(x) && sameRoll(x, original) ? { ...x, amount } : x,
-        );
-        return { ...n, onFail, onSuccess };
-      }
-      return { ...n, onFail: walk(n.onFail), onSuccess: n.onSuccess && walk(n.onSuccess) };
-    }
-    if (n.type === "branch") return { ...n, then: walk(n.then), else: n.else && walk(n.else) };
-    return n;
-  });
-  return { nodes: walk(nodes), applied };
-}
-
-/** Empowered Evocation: add INT to the damage of one Evocation spell you
- *  cast. Cross-references the catalog's own school tag, since the built
- *  Action doesn't carry it — only spells actually rolled as "evocation" in
- *  the catalog qualify, not a blanket bonus to every damage spell. */
-function withEmpoweredEvocation(c: Combatant, int: number): Combatant {
-  return {
-    ...c,
-    actions: c.actions.map((a) => {
-      if (!a.isSpell) return a;
-      const sp = SPELLS_BY_ID[baseSpellId(a.id)];
-      if (!sp || sp.school !== "evocation" || sp.role !== "damage") return a;
-      const { nodes, applied } = injectFirstDamageBonus(a.automation, int);
-      return applied ? { ...a, automation: nodes } : a;
-    }),
-  };
-}
+import { injectFirstDamageBonus } from "./spellTransforms";
 
 const score = (mod: number) => 10 + mod * 2;
 const between = (lvl: number, a: number, b: number) => Math.round(a + ((b - a) * (Math.max(1, Math.min(20, lvl)) - 1)) / 19);
@@ -113,18 +22,6 @@ function stub(dmg: string, bonus: number): Combatant["actions"] {
     id: "attack", name: "Weapon", cost: { action: 1 }, recharge: "none",
     automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus, onHit: [{ type: "damage", amount: dmg, damageType: "bludgeoning" }] }] }],
   }];
-}
-
-export function blasterWizard(level: number): Combatant {
-  const pb = pbFor(level);
-  const int = pb === 6 ? 5 : 4;
-  return withEmpoweredEvocation(makeCaster({
-    id: "blaster-wizard", name: `Wizard ${level}`, level, spellClass: "wizard", casterKind: "full", spellAbility: "int",
-    ac: 15, hp: between(level, 8, 5 * 20 + 10),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(int), wis: score(1), cha: score(0) },
-    proficientSaves: ["con", "int", "wis"], focus: "blaster",
-    extraActions: stub(`1d4+${1}`, pb + 2), keepDistance: true, targetPriority: "squishiest",
-  }), int);
 }
 
 /** recursively finds every "heal" node reachable from `nodes` and adds a
@@ -1204,7 +1101,7 @@ export function warlock(level: number): Combatant {
 }
 
 export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
-  "blaster-wizard": blasterWizard,
+  ...WIZARD_BUILDERS,
   "life-cleric": lifeCleric,
   "vengeance-paladin": vengeancePaladin,
   ...RANGER_BUILDERS,

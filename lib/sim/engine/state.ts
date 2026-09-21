@@ -57,6 +57,13 @@ export interface CombatantState {
   /** Bastion of Law — a pool of d8s that reduce damage the warded creature takes, until a long rest
    *  or until the artificer creates a new ward */
   ward?: { dice: number; sourceId: string };
+  /** Arcane Ward (Abjuration): the ward's hit points now and at most. It stays (at 0 once broken) until a long rest — it can't be raised again before then */
+  arcaneWard?: { hp: number; maxHp: number };
+  /** Portent (Divination): the foretelling d20s rolled since the last long rest and not yet used, and the turn one was last used on */
+  portentDice?: number[];
+  portentTurnKey?: string;
+  /** Arcane Recovery has been used today */
+  arcaneRecoveryUsed?: boolean;
   lastSangRound?: number;  // last round this combatant used a "song" action
   d20SwapsLeft?: number;   // d20Replacement — uses left this round
   meleeHitSinceMyTurn?: boolean; // a melee PC has connected -> a keep-distance monster will withdraw (provoking)
@@ -405,6 +412,8 @@ export function initCombatant(ref: Combatant, side: "party" | "monster", idSuffi
 export function effectiveAc(u: CombatantState): number {
   let ac = u.ac;
   for (const e of u.effects) if (e.mods?.acBonus) ac += e.mods.acBonus;
+  // Durable Magic: +2 AC while concentrating on a spell
+  if (u.concentratingOn) for (const r of u.ref.specialRules) if (r.rule === "durableMagic") ac += r.bonus;
   return ac;
 }
 

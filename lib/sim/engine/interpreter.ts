@@ -4,7 +4,8 @@ import { SIZES, type Action, type AutomationNode, type Condition, type DamageTyp
 
 import { applyDamage, critRangeFor, rollAttack, rollSave, type AttackResult } from "./resolve";
 import { MINIONS, PC_SUMMONS } from "./minions";
-import { isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved } from "./reactions";
+import { addFlatBonus } from "../spells/spellTransforms";
+import { instinctiveCharm, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, violentAttraction } from "./reactions";
 import {
   CombatantState,
   CombatState,
@@ -58,6 +59,9 @@ interface RunCtx {
   inAttack?: boolean;
   /** true while resolving a spell action — damage counts as "from a spell" */
   spell?: boolean;
+  /** the spell being cast: its school and the slot level it was cast at (0 for a cantrip) */
+  spellSchool?: string;
+  spellLevel?: number;
   /** effect / condition names applied during this action (for concentration linkage) */
   appliedNames?: string[];
   /** battle mode only: geometry-aware target picker. Return null to fall back to
@@ -191,6 +195,32 @@ function fireOnKillTraits(state: CombatState, source: CombatantState): void {
       id: trait.id, name: trait.name, cost: {}, recharge: "none", automation: trait.automation,
     }, { asReaction: true, skipIncapacitatedCheck: true });
   }
+}
+
+/** a copy of a stat block whose weapon damage rolls all carry `bonus` (the first damage node of every attack) */
+function withDamageBonus(ref: import("../schema").Combatant, bonus: number): import("../schema").Combatant {
+  const bump = (nodes: AutomationNode[]): AutomationNode[] => nodes.map((n): AutomationNode => {
+    if (n.type === "attack") {
+      const first = n.onHit.findIndex((x) => x.type === "damage");
+      return { ...n, onHit: n.onHit.map((x, i) => (i === first && x.type === "damage" ? { ...x, amount: addFlatBonus(x.amount, bonus) } : x)) };
+    }
+    if (n.type === "target") return { ...n, effects: bump(n.effects) };
+    if (n.type === "branch") return { ...n, then: bump(n.then), else: n.else && bump(n.else) };
+    return n;
+  });
+  return { ...ref, actions: ref.actions.map((a) => ({ ...a, automation: bump(a.automation) })) };
+}
+
+/** creatures Grim Harvest gives nothing for: constructs and undead */
+const NO_HARVEST = /undead|construct|zombie|skeleton|ghoul|ghast|wight|wraith|specter|spectre|vampire|lich|mummy|golem|homunculus|guardian|animated/i;
+
+/** Grim Harvest (Necromancy): killing a creature with a spell of 1st level or higher heals twice the spell's level (three times for a necromancy spell) */
+function grimHarvest(state: CombatState, source: CombatantState, slain: CombatantState, ctx: RunCtx): void {
+  if (!ctx.spell || !ctx.spellLevel || !source.ref.specialRules.some((r) => r.rule === "grimHarvest")) return;
+  if (NO_HARVEST.test(`${slain.ref.flavor?.type ?? ""} ${slain.ref.id}`)) return;
+  const amount = ctx.spellLevel * (ctx.spellSchool === "necromancy" ? 3 : 2);
+  const healed = applyHealing(state, source, amount);
+  if (healed > 0) say(state, `${source.name} harvests ${healed} hit points (Grim Harvest)`, source.id);
 }
 
 /** a "hurts you back" trait (Corrosive Form, Corrosive Hide, ...) — fires whenever
@@ -481,8 +511,11 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       }
 
       case "attack": {
-        const t = ctx.scope[0];
+        let t = ctx.scope[0];
         if (!t) break;
+        // Instinctive Charm: an attacker that fails the Wisdom save must swing at another creature instead
+        const diverted = !ctx.spell ? instinctiveCharm(state, source, t) : undefined;
+        if (diverted) t = diverted;
         // Cloak of Shadows: making an attack ends the invisibility
         if (source.effects.some((e) => e.mods?.endsOnAttacking)) {
           source.effects = source.effects.filter((e) => !e.mods?.endsOnAttacking);
@@ -503,7 +536,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         }
         source.lastAttackTargetId = t.id;
         const soloDuel = tweak ? tweak.soloDuel : abstractSoloDuel(state, source, t);
-        const next: RunCtx = { ...ctx, last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage, attackDis: res.hadDisadvantage, woundedAtHit: t.hp < t.maxHp, allyAdjacent: tweak?.allyAdjacent, soloDuel, sneakLanded: false, insightMarked: false }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
+        const next: RunCtx = { ...ctx, scope: [t], last: { ...ctx.last, attackHit: res.hit, attackCrit: res.crit, attackAdv: res.hadAdvantage, attackDis: res.hadDisadvantage, woundedAtHit: t.hp < t.maxHp, allyAdjacent: tweak?.allyAdjacent, soloDuel, sneakLanded: false, insightMarked: false }, crit: res.crit, inAttack: true, depth: ctx.depth + 1 };
         if (source.zone === "melee" && source.ref.specialRules.some((r) => r.rule === "fancyFootwork")) {
           const serial = state.turnSerial ?? 0;
           if (!source.footwork || source.footwork.serial !== serial) source.footwork = { serial, ids: [] };
@@ -518,7 +551,12 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
             t.effects = t.effects.filter((e) => !(e.name === "multiattack-defense" && e.sourceId === source.id));
             t.effects.push({ name: "multiattack-defense", mods: { acBonusAgainstSource: 4, untilSourceNextTurn: true }, expiresRound: Infinity, sourceId: source.id });
           }
-          if (!ctx.spell && t.alive) { infusedStrikes(state, source, t); opportunist(state, source, t); }
+          if (!ctx.spell && t.alive) {
+            infusedStrikes(state, source, t);
+            opportunist(state, source, t);
+            const wd = node.onHit.find((n): n is Extract<AutomationNode, { type: "damage" }> => n.type === "damage");
+            violentAttraction(state, source, t, (wd?.damageType ?? "bludgeoning") as DamageType); // Graviturgy: +1d10 of the weapon's type
+          }
           for (const e of [...t.effects]) { // a surge / Spiked Retribution: whoever hits the holder takes damage back
             const hb = e.mods?.hitBackDamage;
             if (!hb || !t.alive || !source.alive || (hb.meleeOnly && source.zone !== "melee")) continue;
@@ -582,12 +620,16 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           sourceId: source.id,
           viaAttack: ctx.inAttack,
           viaSpell: ctx.spell,
+          spellLevel: ctx.spellLevel,
           crit: ctx.crit,
         });
         source.damageDealt += t.downed || !t.alive ? Math.min(dealt, room) : dealt;
         if (wasUp && (!t.alive || t.downed)) {
           fireOnDeathTraits(state, t);
-          if (t.side !== source.side) fireOnKillTraits(state, source);
+          if (t.side !== source.side) {
+            fireOnKillTraits(state, source);
+            grimHarvest(state, source, t, ctx);
+          }
         }
         break;
       }
@@ -763,6 +805,42 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         break;
       }
 
+      case "arcaneWard": {
+        const w = source.arcaneWard;
+        if (!w) {
+          if ((source.resources.get("arcane_ward") ?? 0) <= 0) break;
+          source.resources.set("arcane_ward", 0);
+          source.arcaneWard = { hp: node.maxHp, maxHp: node.maxHp };
+          say(state, `${source.name} raises an Arcane Ward (${node.maxHp} HP)`, source.id);
+        } else if (w.hp < w.maxHp) {
+          w.hp = Math.min(w.maxHp, w.hp + 2 * node.slotLevel);
+          say(state, `${source.name}'s Arcane Ward regains ${2 * node.slotLevel} (${w.hp}/${w.maxHp})`, source.id);
+        }
+        break;
+      }
+
+      case "regainSlot": {
+        for (let lvl = Math.min(5, node.below - 1); lvl >= 1; lvl--) {
+          const cap = source.ref.resources[`slot${lvl}`]?.max;
+          if (typeof cap !== "number" || cap <= 0) continue;
+          const cur = source.resources.get(`slot${lvl}`) ?? 0;
+          if (cur < cap) {
+            source.resources.set(`slot${lvl}`, cur + 1);
+            say(state, `${source.name} regains a ${lvl}${lvl === 1 ? "st" : lvl === 2 ? "nd" : lvl === 3 ? "rd" : "th"}-level slot (Expert Divination)`, source.id);
+            break;
+          }
+        }
+        break;
+      }
+
+      case "portentRoll": {
+        if (!source.portentDice) {
+          source.portentDice = Array.from({ length: node.dice }, () => state.rng.d20());
+          say(state, `${source.name} foretells ${source.portentDice.join(", ")} (Portent)`, source.id);
+        }
+        break;
+      }
+
       case "commandSummon": {
         let commanded = 0;
         for (const m of [...state.units.values()]) {
@@ -810,7 +888,10 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const n = Math.min(rolled, room);
         for (let i = 0; i < n; i++) {
           const suffix = `#${state.summonCounter++}`;
-          const ms = initCombatant(ref, source.side, suffix);
+          // Undead Thralls: a bigger hit point maximum and a bonus to weapon damage rolls
+          const made = node.damageBonus ? withDamageBonus(ref, node.damageBonus) : ref;
+          const ms = initCombatant(made, source.side, suffix);
+          if (node.hpBonus) { ms.maxHp += node.hpBonus; ms.hp += node.hpBonus; }
           ms.name = `${ref.name} ${existing + i + 1}`;
           ms.summonerId = source.id;
           if (node.tempHp) ms.tempHp = Math.max(0, Math.round(rollDamage(state, node.tempHp)));
@@ -872,7 +953,7 @@ export function runAction(
   const appliedNames: string[] | undefined = action.concentration ? [] : undefined;
 
   if (!state.verbose) {
-    runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, spell, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
+    runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, spell, spellSchool: action.school, spellLevel: action.spellLevel, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
     if (action.concentration && appliedNames && appliedNames.length) {
       source.concentratingOn = action.id;
       source.concentrationEffects = [...new Set(appliedNames)];
@@ -888,7 +969,7 @@ export function runAction(
   const fxBefore = new Map([...state.units.values()].map((u) => [u.id, new Set(u.effects.map((e) => e.name))]));
   const saveLog = new Map<string, boolean>();
   const attackTally = { rolled: 0, hit: 0, unreachable: false };
-  runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, saveLog, attackTally, spell, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
+  runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, saveLog, attackTally, spell, spellSchool: action.school, spellLevel: action.spellLevel, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
   if (action.concentration && appliedNames && appliedNames.length) {
     source.concentratingOn = action.id;
     source.concentrationEffects = [...new Set(appliedNames)];

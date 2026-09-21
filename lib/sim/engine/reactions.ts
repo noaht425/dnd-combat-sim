@@ -11,8 +11,8 @@
 
 import type { Action, AutomationNode, Condition, DamageType } from "../schema";
 import { actionBranchGateFails, runAction, runAutomation } from "./interpreter";
-import { rollSave } from "./resolve";
-import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, livingEnemies, say, type ReactionAsk } from "./state";
+import { applyDamage, rollSave } from "./resolve";
+import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, livingEnemies, say, syncExhaustion, type ReactionAsk } from "./state";
 
 /** the five damage types Absorb Elements answers */
 const ELEMENTAL: readonly DamageType[] = ["acid", "cold", "fire", "lightning", "thunder"];
@@ -67,6 +67,14 @@ type RKind =
   | "shadowyDodge"   // Gloom Stalker — impose disadvantage on an attack against you (before the roll)
   | "nemesis"        // Monster Slayer's Magic-User's Nemesis — a Wisdom save or the spell fails
   | "tailSwipe"      // Path of the Beast's tail — a d8 bonus to AC against one attack
+  | "arcaneDeflection" // War Magic — +2 AC against one attack that hit / +4 to a failed save, at the price of cantrips only for a turn
+  | "illusorySelf"   // Illusion — an attack against you simply misses
+  | "chronalShift"   // Chronurgy — force a creature to reroll an attack roll or saving throw
+  | "convergentFuture" // Chronurgy — a d20 roll is treated as the least it could have been (or one below the least) to succeed, at a level of exhaustion
+  | "songOfDefense"  // Bladesinging — spend a spell slot to cut damage by 5 per slot level
+  | "violentAttraction" // Graviturgy — add 1d10 to a weapon hit made by a creature near you
+  | "projectedWard"  // Abjuration — your Arcane Ward soaks damage someone else takes
+  | "instinctiveCharm" // Enchantment — an attacker that fails a Wisdom save must attack another creature
   | "unknown";
 
 function classify(r: Action): RKind {
@@ -91,6 +99,14 @@ function classify(r: Action): RKind {
   if (id.includes("storms-fury") || id.includes("retaliation")) return "retaliateOnMeleeHit";
   if (id.includes("raging-storm")) return "retaliateOnMeleeHit";
   if (id.includes("tail-swipe")) return "tailSwipe";
+  if (id === "arcane-deflection") return "arcaneDeflection";
+  if (id === "illusory-self") return "illusorySelf";
+  if (id === "chronal-shift") return "chronalShift";
+  if (id === "convergent-future") return "convergentFuture";
+  if (id === "song-of-defense") return "songOfDefense";
+  if (id === "violent-attraction") return "violentAttraction";
+  if (id === "projected-ward") return "projectedWard";
+  if (id === "instinctive-charm") return "instinctiveCharm";
   if (id.includes("deflect-attack")) return "deflectAttack";
   if (id.includes("cutting-words") || id.includes("cuttingwords") || id.includes("bend-luck")) return "protectAllyAttackRoll";
   if (tr.includes("belowhalf") || tr.includes("reducedtohalf")) return "onBloodied";
@@ -128,6 +144,12 @@ function fire(state: CombatState, u: CombatantState, r: Action, forceTarget?: Co
   } finally {
     state.inReaction = false;
   }
+}
+
+/** a reaction spell whose effect is an engine hook (Counterspell, Absorb Elements) still feeds an Arcane Ward when it is cast */
+function feedWard(state: CombatState, u: CombatantState, r: Action): void {
+  const nodes = r.automation.filter((n) => n.type === "arcaneWard");
+  if (nodes.length) runAutomation(nodes, { state, source: u, scope: [u], last: {}, depth: 0 });
 }
 
 // ---------------------------------------------- before an attack roll is made
@@ -187,7 +209,10 @@ export function deflectAttack(
  * Saving throws only — the sim rolls no ability checks. Range is real feet in battle mode; the
  * Monte-Carlo engine has no distances, so anyone on the side counts as within range.
  */
-export function reactToFailedSave(state: CombatState, target: CombatantState, rollTotal: number, dc: number): boolean {
+export function reactToFailedSave(
+  state: CombatState, target: CombatantState, rollTotal: number, dc: number,
+  mod = 0, stakes: "damage" | "control" | "lock" = "damage",
+): boolean {
   if (state.inReaction) return false;
 
   const boost = target.ref.specialRules.find((r) => r.rule === "boostFailedSave");
@@ -237,7 +262,83 @@ export function reactToFailedSave(state: CombatState, target: CombatantState, ro
     say(state, `${a.name} uses Flash of Genius (+${rule.bonus}) for ${target.name}`, a.id);
     return true;
   }
+
+  // Arcane Deflection (War Magic): +4 to a save you just failed, at the price of cantrips only for a turn — worth it for control, not for damage
+  if (stakes !== "damage") {
+    const ad = target.ref.reactions.find((x) => classify(x) === "arcaneDeflection");
+    if (ad && ready(state, target, ad) && rollTotal + 4 >= dc) {
+      const ok = decideReaction(state, target, "flashOfGenius", `${target.name} fails a saving throw (${rollTotal} vs DC ${dc}) — Arcane Deflection adds +4.`, "Arcane Deflection", "Let it fail");
+      if (ok) {
+        fire(state, target, ad);
+        say(state, `${target.name} deflects the effect (+4)`, target.id);
+        return true;
+      }
+    }
+  }
+
+  // Chronal Shift (Chronurgy): a creature within 30 ft makes the roll again — the new roll stands, but a failure can't get worse
+  if (stakes !== "damage") {
+    for (const a of livingAllies(state, target)) {
+      const r = a.ref.reactions.find((x) => classify(x) === "chronalShift");
+      if (!r || !ready(state, a, r)) continue;
+      if (a.id !== target.id && state.distanceFt && state.distanceFt(a, target) > 30.001) continue;
+      if ((21 - (dc - mod)) / 20 < 0.3) continue; // hardly worth it
+      const ok = decideReaction(state, a, "flashOfGenius", `${target.name} fails a saving throw (${rollTotal} vs DC ${dc}) — ${a.name}'s Chronal Shift makes it roll again.`, "Chronal Shift", "Let it fail");
+      if (!ok) continue;
+      consume(a, r);
+      const again = state.rng.d20();
+      say(state, `${a.name} shifts time for ${target.name} (rerolls ${again}${mod >= 0 ? "+" : ""}${mod})`, a.id);
+      return again + mod >= dc;
+    }
+  }
+
+  // Convergent Future (Chronurgy, 14th): treat the roll as the least that would have succeeded — a level of exhaustion, kept for a save that would take the creature out of the fight
+  if (stakes === "lock") {
+    for (const a of livingAllies(state, target)) {
+      const r = a.ref.reactions.find((x) => classify(x) === "convergentFuture");
+      if (!r || !ready(state, a, r) || (a.exhaustion ?? 0) >= 2) continue;
+      if (state.distanceFt && a.id !== target.id && state.distanceFt(a, target) > 60.001) continue;
+      const ok = decideReaction(state, a, "flashOfGenius", `${target.name} fails a saving throw that would take it out of the fight — ${a.name}'s Convergent Future turns it into a success (a level of exhaustion).`, "Convergent Future", "Let it fail");
+      if (!ok) continue;
+      consume(a, r);
+      a.exhaustion = (a.exhaustion ?? 0) + 1;
+      syncExhaustion(a);
+      say(state, `${a.name} bends the future for ${target.name} (exhaustion ${a.exhaustion})`, a.id);
+      return true;
+    }
+  }
   return false;
+}
+
+/**
+ * Chronal Shift / Convergent Future turned on an ENEMY's saving throw: after a creature within 30 ft makes a saving throw against one of your
+ * side's control effects and succeeds, force it to roll again ("reroll"), or (Convergent Future, for an effect that would take it out of the
+ * fight) treat the roll as one below the minimum needed ("fail"). A save it already passed can't get better, so the reroll is free upside.
+ */
+export function enemySaveDisrupt(state: CombatState, saver: CombatantState, stakes: "damage" | "control" | "lock"): "reroll" | "fail" | undefined {
+  if (state.inReaction || stakes === "damage") return undefined;
+  for (const w of state.units.values()) {
+    if (w.side === saver.side || !w.alive || w.downed) continue;
+    const cs = w.ref.reactions.find((x) => classify(x) === "chronalShift");
+    if (cs && ready(state, w, cs) && (!state.distanceFt || state.distanceFt(w, saver) <= 30.001)) {
+      const ok = decideReaction(state, w, "flashOfGenius", `${saver.name} shrugged off ${w.name}'s spell — Chronal Shift makes it roll again.`, "Chronal Shift", "Let it stand");
+      if (!ok) continue;
+      consume(w, cs);
+      say(state, `${w.name} shifts time — ${saver.name} must roll again`, w.id);
+      return "reroll";
+    }
+    const cf = w.ref.reactions.find((x) => classify(x) === "convergentFuture");
+    if (stakes === "lock" && cf && ready(state, w, cf) && (w.exhaustion ?? 0) < 2 && (!state.distanceFt || state.distanceFt(w, saver) <= 60.001)) {
+      const ok = decideReaction(state, w, "flashOfGenius", `${saver.name} shrugged off ${w.name}'s spell — Convergent Future can turn that into a failure (a level of exhaustion).`, "Convergent Future", "Let it stand");
+      if (!ok) continue;
+      consume(w, cf);
+      w.exhaustion = (w.exhaustion ?? 0) + 1;
+      syncExhaustion(w);
+      say(state, `${w.name} bends the future — ${saver.name} fails after all (exhaustion ${w.exhaustion})`, w.id);
+      return "fail";
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -273,8 +374,8 @@ export function restoreBalance(state: CombatState, roller: CombatantState, adv: 
  */
 export function reactToIncomingAttack(
   state: CombatState,
-  p: { target: CombatantState; hitMargin: number; crit: boolean },
-): { negated: boolean; shielded: boolean } {
+  p: { target: CombatantState; hitMargin: number; crit: boolean; face?: number; toHit?: number; ac?: number; critRange?: number },
+): { negated: boolean; shielded: boolean; face?: number } {
   const t = p.target;
   if (state.inReaction || !t.alive || t.downed) return { negated: false, shielded: false };
   const wouldHit = p.crit || p.hitMargin >= 0;
@@ -299,6 +400,21 @@ export function reactToIncomingAttack(
       const bonus = state.rng.dice(1, 8);
       say(state, `${t.name} swipes their tail (+${bonus} AC)`, t.id);
       return { negated: bonus > p.hitMargin, shielded: false }; // the attack now needs to beat AC + the die
+    }
+    if (k === "illusorySelf" && (p.crit || t.hp <= t.maxHp * 0.75)) {
+      const ok = decideReaction(state, t, "shield", `An attack is about to hit ${t.name} — an illusory double takes it instead.`, "Illusory Self", "Take the hit");
+      if (!ok) continue;
+      consume(t, r);
+      say(state, `${t.name}'s illusory double takes the blow (Illusory Self)`, t.id);
+      return { negated: true, shielded: false };
+    }
+    if (k === "arcaneDeflection" && !p.crit && p.hitMargin < 2 && t.hp < t.maxHp * 0.7) {
+      const ok = decideReaction(state, t, "shield", `An attack hits ${t.name} by ${p.hitMargin} — Arcane Deflection (+2 AC) turns it into a miss, but no more than cantrips until the end of the next turn.`, "Arcane Deflection", "Take the hit");
+      if (!ok) continue;
+      fire(state, t, r); // the cantrips-only lockout
+      t.effects.push({ name: "arcane-deflection", mods: { acBonus: 2 }, expiresRound: state.round + 1, sourceId: t.id });
+      say(state, `${t.name} deflects the blow (+2 AC)`, t.id);
+      return { negated: false, shielded: true };
     }
     if (k === "shieldAc" && !p.crit && p.hitMargin < 5) {
       const ok = decideReaction(
@@ -337,6 +453,36 @@ export function reactToIncomingAttack(
         if (!ok) continue;
         fire(state, ally, r);
         say(state, `${ally.name} undercuts the blow with ${r.name}`, ally.id);
+        return { negated: true, shielded: false };
+      }
+    }
+  }
+
+  // Chronal Shift (Chronurgy): a creature within 30 ft rolls the attack again — the new roll stands, so it can only be worth it when the hit is
+  // close, a crit, or the target is hurt. Convergent Future (14th) simply decides it misses, at a level of exhaustion, for a crit or a near-dead target.
+  if (p.face !== undefined && p.toHit !== undefined && p.ac !== undefined) {
+    const crange = p.critRange ?? 20;
+    for (const a of livingAllies(state, t)) {
+      const cs = a.ref.reactions.find((x) => classify(x) === "chronalShift");
+      if (cs && ready(state, a, cs) && (p.crit || p.hitMargin <= 6 || t.hp < t.maxHp * 0.4) &&
+          (a.id === t.id || !state.distanceFt || state.distanceFt(a, t) <= 30.001)) {
+        const ok = decideReaction(state, a, "shield", `An attack hits ${t.name} (rolled ${p.face}) — ${a.name}'s Chronal Shift makes it roll again.`, "Chronal Shift", "Take the hit");
+        if (!ok) continue;
+        consume(a, cs);
+        const nf = state.rng.d20();
+        const hit2 = nf !== 1 && (nf >= crange || nf + p.toHit >= p.ac);
+        say(state, `${a.name} shifts time — the attack is rerolled (${p.face} -> ${nf})${hit2 ? "" : ", and misses"}`, a.id);
+        return { negated: !hit2, shielded: false, face: nf };
+      }
+      const cf = a.ref.reactions.find((x) => classify(x) === "convergentFuture");
+      if (cf && ready(state, a, cf) && (a.exhaustion ?? 0) < 2 && (p.crit || t.hp < t.maxHp * 0.35) &&
+          (a.id === t.id || !state.distanceFt || state.distanceFt(a, t) <= 60.001)) {
+        const ok = decideReaction(state, a, "shield", `An attack that could finish ${t.name} hits — ${a.name}'s Convergent Future turns it into a miss (a level of exhaustion).`, "Convergent Future", "Take the hit");
+        if (!ok) continue;
+        consume(a, cf);
+        a.exhaustion = (a.exhaustion ?? 0) + 1;
+        syncExhaustion(a);
+        say(state, `${a.name} bends the future — the attack misses (exhaustion ${a.exhaustion})`, a.id);
         return { negated: true, shielded: false };
       }
     }
@@ -481,6 +627,24 @@ export function reduceIncomingDamage(
       say(state, `${target.name} uses ${r.name} (-${Math.min(amount, cut)})`, target.id);
       return Math.max(0, amount - cut);
     }
+    // Song of Defense (Bladesinging, 10th): while the Bladesong is up, a reaction and a spell slot cut the damage by five times the slot's level
+    if (kind === "songOfDefense") {
+      if (!ready(state, target, r) || !target.effects.some((e) => e.name === "bladesong")) continue;
+      let slot = 0; // the smallest slot that soaks all of it, else the biggest there is
+      for (let lvl = 1; lvl <= 9; lvl++) {
+        if ((target.resources.get(`slot${lvl}`) ?? 0) <= 0) continue;
+        slot = lvl;
+        if (5 * lvl >= amount) break;
+      }
+      if (!slot || slot * 5 < 8) continue;
+      const ok = decideReaction(state, target, "uncannyDodge",
+        `${target.name} is about to take ${amount} damage — Song of Defense spends a ${slot}${slot === 1 ? "st" : slot === 2 ? "nd" : slot === 3 ? "rd" : "th"}-level slot to cut it by ${5 * slot}.`, r.name, "Take it full");
+      if (!ok) return amount;
+      consume(target, r);
+      target.resources.set(`slot${slot}`, (target.resources.get(`slot${slot}`) ?? 0) - 1);
+      say(state, `${target.name} sings a Song of Defense (-${Math.min(amount, 5 * slot)})`, target.id);
+      return Math.max(0, amount - 5 * slot);
+    }
     // Parry: a superiority die + Dex off a melee attack's damage
     if (classify(r) === "parry" && melee && ready(state, target, r)) {
       const rule = target.ref.specialRules.find((x) => x.rule === "parry");
@@ -546,6 +710,7 @@ export function reactToElementalDamage(
     consume(target, r);
     target.absorbElements = { type, untilRound: state.round + 1 };
     say(state, `${target.name} casts Absorb Elements (resist ${type})`, target.id);
+    feedWard(state, target, r);
     return;
   }
 }
@@ -741,6 +906,87 @@ export function provokeOpportunityAttacks(state: CombatState, mover: CombatantSt
 export const isSpell = (a: Action): boolean =>
   a.isSpell === true || !!a.limitedUse?.resource?.match(/^slot[1-9]$/);
 
+/**
+ * Instinctive Charm (Enchantment, 6th): "when a creature you can see within 30 feet of you makes an attack roll against you, you can use your
+ * reaction to divert the attack, provided that another creature is within the attack's range. The attacker must make a Wisdom saving throw
+ * against your wizard spell save DC. On a failed save, the attacker must target the creature that is closest to it, not including you or itself.
+ * ... You can't use this feature on the same attacker again until you finish a long rest." Called before the attack roll; returns the creature
+ * the attack goes to instead, if the save fails. (Monte-Carlo has no distances, so the "closest" creature is one in the attacker's own zone.)
+ */
+export function instinctiveCharm(state: CombatState, attacker: CombatantState, target: CombatantState): CombatantState | undefined {
+  if (state.inReaction || attacker.side === target.side) return undefined;
+  const r = target.ref.reactions.find((x) => classify(x) === "instinctiveCharm");
+  if (!r || !ready(state, target, r)) return undefined;
+  if (attacker.ref.conditionImmunities.includes("charmed")) return undefined;
+  if (attacker.effects.some((e) => e.name === "charm-diverted" && e.sourceId === target.id)) return undefined; // once per attacker until a long rest
+  const others = [...state.units.values()].filter((u) => u.alive && !u.downed && u.id !== attacker.id && u.id !== target.id);
+  if (!others.length) return undefined;
+  let pick: CombatantState;
+  if (state.distanceFt) {
+    pick = others.sort((a, b) => state.distanceFt!(attacker, a) - state.distanceFt!(attacker, b))[0];
+  } else {
+    const near = others.filter((u) => u.zone === attacker.zone);
+    const pool = near.length ? near : others;
+    pick = pool[state.rng.int(0, pool.length - 1)];
+  }
+  const ok = decideReaction(state, target, "deflectAttack", `${attacker.name} is attacking ${target.name} — Instinctive Charm can turn it on ${pick.name} (Wisdom save).`, "Instinctive Charm", "Take the attack");
+  if (!ok) return undefined;
+  consume(target, r);
+  attacker.effects.push({ name: "charm-diverted", expiresRound: Infinity, sourceId: target.id });
+  const dc = 8 + target.ref.pb + Math.floor((target.ref.abilities[target.ref.spellAbility ?? "int"] - 10) / 2);
+  const save = rollSave(state, attacker, "wis", dc, { magical: true, stakes: "control", conditions: ["charmed"], sourceId: target.id });
+  if (save.passed) return undefined;
+  say(state, `${attacker.name} is turned on ${pick.name} instead of ${target.name} (Instinctive Charm)`, target.id);
+  return pick;
+}
+
+/**
+ * Projected Ward (Abjuration, 6th): "when a creature that you can see within 30 feet of you takes damage, you can use your reaction to cause
+ * your Arcane Ward to absorb that damage." The ward takes what it can hold; the rest lands. Returns the damage that still gets through.
+ */
+export function projectedWard(state: CombatState, target: CombatantState, amount: number): number {
+  if (state.inReaction || amount < 6) return amount;
+  for (const w of livingAllies(state, target)) {
+    if (w.id === target.id || !w.arcaneWard || w.arcaneWard.hp <= 0) continue;
+    const r = w.ref.reactions.find((x) => classify(x) === "projectedWard");
+    if (!r || !ready(state, w, r)) continue;
+    if (state.distanceFt && state.distanceFt(w, target) > 30.001) continue;
+    const ok = decideReaction(state, w, "spiritShield", `${target.name} is about to take ${amount} damage — ${w.name}'s Projected Ward can soak it.`, "Projected Ward", "Let it land");
+    if (!ok) continue;
+    consume(w, r);
+    const soaked = Math.min(w.arcaneWard.hp, amount);
+    w.arcaneWard.hp -= soaked;
+    say(state, `${w.name}'s ward soaks ${soaked} meant for ${target.name} (${w.arcaneWard.hp}/${w.arcaneWard.maxHp})`, w.id);
+    return amount - soaked;
+  }
+  return amount;
+}
+
+/**
+ * Violent Attraction (Graviturgy, 10th): when a creature within 60 ft of you hits with a weapon attack, your reaction adds 1d10 damage of the
+ * weapon's type (uses equal to your Intelligence modifier, per long rest).
+ */
+export function violentAttraction(state: CombatState, attacker: CombatantState, target: CombatantState, type: DamageType): void {
+  if (state.inReaction || !target.alive) return;
+  for (const w of livingAllies(state, attacker)) {
+    const r = w.ref.reactions.find((x) => classify(x) === "violentAttraction");
+    if (!r || !ready(state, w, r)) continue;
+    if (state.distanceFt && state.distanceFt(w, attacker) > 60.001) continue;
+    const ok = decideReaction(state, w, "riposte", `${attacker.name} hit ${target.name} — ${w.name}'s Violent Attraction adds 1d10.`, "Violent Attraction", "Hold reaction");
+    if (!ok) continue;
+    consume(w, r);
+    const extra = state.rng.dice(1, 10);
+    say(state, `${w.name} pulls the blow in harder (+${extra} ${type})`, w.id);
+    state.inReaction = true;
+    try {
+      applyDamage(state, target, extra, type, { sourceId: attacker.id, viaAttack: true });
+    } finally {
+      state.inReaction = false;
+    }
+    return;
+  }
+}
+
 /** returns true if a PC spends a reaction to Counterspell `action` cast by `caster` */
 export function mayCounterspell(state: CombatState, caster: CombatantState, action: Action): boolean {
   if (state.inReaction || !isSpell(action)) return false;
@@ -765,6 +1011,17 @@ export function mayCounterspell(state: CombatState, caster: CombatantState, acti
       if (!ok) continue;
       consume(u, r);
       say(state, `${u.name} counterspells ${caster.name}'s ${action.name}`, u.id);
+      feedWard(state, u, r);
+      // Power Surge (War Magic): ending a spell with Counterspell steals a surge
+      const sg = u.ref.specialRules.find((x) => x.rule === "surgeOnCounter");
+      if (sg && sg.rule === "surgeOnCounter") {
+        const cap = u.ref.resources[sg.resource]?.max;
+        const cur = u.resources.get(sg.resource) ?? 0;
+        if (typeof cap === "number" && cur < cap) {
+          u.resources.set(sg.resource, cur + 1);
+          say(state, `${u.name} steals a power surge`, u.id);
+        }
+      }
       return true;
     }
   }

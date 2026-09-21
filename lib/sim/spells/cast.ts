@@ -39,7 +39,7 @@ export function spellReaction(sp: Spell, cc: CasterCtx): Action | undefined {
     const dc = 8 + cc.pb + cc.spellMod;
     return {
       id: "hellish-rebuke", name: sp.name, cost: { reaction: 1 }, recharge: "none",
-      trigger: "self.tookDamageFromAttackOrSpell", isSpell: true,
+      trigger: "self.tookDamageFromAttackOrSpell", isSpell: true, school: sp.school, spellLevel: cc.kind === "warlock" ? maxSlotLevel("warlock", cc.level) : wantLevel,
       limitedUse: { resource, amount: 1 },
       automation: [{ type: "target", who: { who: "aiChoice" }, effects: [
         { type: "save", ability: "dex", dc,
@@ -54,7 +54,7 @@ export function spellReaction(sp: Spell, cc: CasterCtx): Action | undefined {
   if (sp.id === "absorb-elements") {
     return {
       id: "absorb-elements", name: sp.name, cost: { reaction: 1 }, recharge: "none",
-      trigger: "self.tookElementalDamage", isSpell: true,
+      trigger: "self.tookElementalDamage", isSpell: true, school: sp.school, spellLevel: wantLevel,
       limitedUse: { resource, amount: 1 },
       automation: [{ type: "note", text: "resist the triggering element until your next turn (engine hook)" }],
     };
@@ -64,7 +64,7 @@ export function spellReaction(sp: Spell, cc: CasterCtx): Action | undefined {
   return {
     id: sp.id === "shield" ? "shield" : sp.id === "counterspell" ? "counterspell" : `react-${sp.id}`,
     name: sp.name, cost: { reaction: 1 }, recharge: "none",
-    trigger, isSpell: true,
+    trigger, isSpell: true, school: sp.school, spellLevel: wantLevel,
     limitedUse: { resource, amount: 1 },
     automation: sp.id === "shield"
       ? [{ type: "target", who: { who: "self" }, effects: [{ type: "applyEffect", name: "shield", durationRounds: 1, mods: { acBonus: 5 } }] }]
@@ -87,7 +87,7 @@ export function spellActions(sp: Spell, cc: CasterCtx): Action[] {
   // cantrip: one free action
   if (sp.level === 0) {
     out.push({
-      id: `cast-${sp.id}`, name: sp.name, cost: costFor(sp), recharge: "none", isSpell: true, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
+      id: `cast-${sp.id}`, name: sp.name, cost: costFor(sp), recharge: "none", isSpell: true, school: sp.school, spellLevel: 0, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
       concentration: sp.concentration || undefined,
       automation: sp.build({ ...ctx0, slotLevel: 0 }),
     });
@@ -98,14 +98,14 @@ export function spellActions(sp: Spell, cc: CasterCtx): Action[] {
     const pact = pactSlotLevel(cc.level);
     if (sp.level <= pact) {
       out.push({
-        id: `cast-${sp.id}`, name: `${sp.name} (pact)`, cost: costFor(sp), recharge: "none", isSpell: true, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
+        id: `cast-${sp.id}`, name: `${sp.name} (pact)`, cost: costFor(sp), recharge: "none", isSpell: true, school: sp.school, spellLevel: pact, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
         concentration: sp.concentration || undefined,
         limitedUse: { resource: "pactSlot", amount: 1 },
         automation: sp.build({ ...ctx0, slotLevel: pact }),
       });
     } else if (sp.level >= 6 && sp.level <= 9) {
       out.push({
-        id: `cast-${sp.id}`, name: `${sp.name} (Arcanum)`, cost: costFor(sp), recharge: "none", isSpell: true, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
+        id: `cast-${sp.id}`, name: `${sp.name} (Arcanum)`, cost: costFor(sp), recharge: "none", isSpell: true, school: sp.school, spellLevel: sp.level, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
         concentration: sp.concentration || undefined,
         limitedUse: { resource: `arcanum${sp.level}`, amount: 1 },
         automation: sp.build({ ...ctx0, slotLevel: sp.level }),
@@ -119,7 +119,7 @@ export function spellActions(sp: Spell, cc: CasterCtx): Action[] {
     out.push({
       id: `cast-${sp.id}-${slot}`,
       name: slot === sp.level ? sp.name : `${sp.name} (${slot}${slot === 1 ? "st" : slot === 2 ? "nd" : slot === 3 ? "rd" : "th"})`,
-      cost: costFor(sp), recharge: "none", isSpell: true, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
+      cost: costFor(sp), recharge: "none", isSpell: true, school: sp.school, spellLevel: slot, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
       concentration: sp.concentration || undefined,
       limitedUse: { resource: `slot${slot}`, amount: 1 },
       automation: sp.build({ ...ctx0, slotLevel: slot }),
