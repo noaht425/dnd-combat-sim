@@ -142,6 +142,7 @@ export function unitReachFt(u: CombatantState): number {
   let r = sizeReachFt(u.ref.size);
   const blob = JSON.stringify(u.ref.actions);
   if (/reach 1[05] ?ft|reach 1[05]\b/i.test(blob)) r = Math.max(r, 10);
+  for (const e of u.effects) r += e.mods?.reachBonusFt ?? 0; // Path of the Giant
   return r;
 }
 

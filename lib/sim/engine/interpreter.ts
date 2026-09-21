@@ -134,6 +134,7 @@ function applyExtraDamageOnHit(state: CombatState, attacker: CombatantState, tar
   for (const e of [...attacker.effects]) {
     const extra = e.mods?.extraDamageOnHit;
     if (!extra) continue;
+    if (e.mods?.extraDamageOncePerTurn && !claimOncePerTurn(state, attacker, `extra:${e.name}`)) continue;
     const amt = rollDamage(state, extra.amount, 1, res.crit);
     applyDamage(state, target, amt, extra.damageType, {
       hadAdvantage: res.hadAdvantage, attackerMagical: true, sourceId: attacker.id, viaAttack: true,
@@ -240,6 +241,13 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/lastsave\.passed/i, () => ctx.last.savePassed === true],
     [/lastattack\.hadadvantage/i, () => ctx.last.attackAdv === true],
     [/target\.size<=(\w+)/i, () => !!tgt && SIZES.indexOf(tgt.ref.size) <= SIZES.indexOf(RegExp.$1.toLowerCase() as (typeof SIZES)[number])],
+    [/self\.hasnt\('([^']+)'\)/i, () => !(s.effects.some((e) => e.name === RegExp.$1) || hasCondition(s, RegExp.$1 as Condition))],
+    // Path of the Beast: in this natural-weapon form, or able to rage into it this turn (so the attack can be chosen in the same
+    // decision as the Rage bonus action that grows the weapon)
+    [/self\.canform\('([^']+)'\)/i, () => s.effects.some((e) => e.name === `form-${RegExp.$1}`) ||
+      (!s.effects.some((e) => e.name === "rage") && (s.resources.get("rage") ?? 0) > 0)],
+    [/self\.reaction_?free/i, () => !s.reactionUsed && !isIncapacitated(s)],
+    [/self\.hp\s*<\s*self\.maxhp\s*\/\s*2/i, () => s.hp < s.maxHp / 2],
     [/self\.has_?ally/i, () => livingAllies(st, s).some((a) => a.id !== s.id && a.summonerId === undefined)],
     [/self\.not_?reading/i, () => !(s.insightTargetId && (s.insightUntilRound ?? 0) >= st.round && st.units.get(s.insightTargetId)?.alive)],
     [/lastattack\.sneaklanded/i, () => ctx.last.sneakLanded === true],
@@ -263,8 +271,9 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
     case "self": return [source];
     case "eachAlly": {
       const r = who.withinFt;
-      if (!r || !state.distanceFt) return allies;
-      return allies.filter((a) => a.id === source.id || state.distanceFt!(source, a) <= r + 0.001);
+      const pool = who.excludeSelf ? allies.filter((a) => a.id !== source.id) : allies;
+      if (!r || !state.distanceFt) return pool;
+      return pool.filter((a) => a.id === source.id || state.distanceFt!(source, a) <= r + 0.001);
     }
     case "lowestHpAlly": {
       const hurt = allies.slice().sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
@@ -315,7 +324,8 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
       return [pool[0]];
     }
     case "chosenEnemies": {
-      const pool = enemies.slice().sort((a, b) => a.hp - b.hp);
+      let pool = enemies.slice().sort((a, b) => a.hp - b.hp);
+      if (who.withinFt && state.distanceFt) pool = pool.filter((e) => state.distanceFt!(source, e) <= who.withinFt! + 0.001);
       return pool.slice(0, Math.min(who.upTo, pool.length));
     }
     case "area": {
@@ -332,6 +342,15 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
     default:
       return enemies.slice(0, 1);
   }
+}
+
+/** a rider that lands at most once per turn under `key` (Divine Fury, a bite's healing, Call the Hunt's d6) */
+function claimOncePerTurn(state: CombatState, u: CombatantState, key: string): boolean {
+  const serial = state.turnSerial ?? 0;
+  if (!u.onceTurn || u.onceTurn.serial !== serial) u.onceTurn = { serial, keys: [] };
+  if (u.onceTurn.keys.includes(key)) return false;
+  u.onceTurn.keys.push(key);
+  return true;
 }
 
 /** Monte-Carlo has no grid, only the abstract melee / ranged zones: "nobody else within 5 ft of me" reads as
@@ -393,6 +412,8 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
   const { state, source } = ctx;
 
   for (const node of nodes) {
+    const once = (node as { oncePerTurn?: string }).oncePerTurn;
+    if (once && !claimOncePerTurn(state, source, once)) continue;
     switch (node.type) {
       case "note":
         break;
@@ -441,6 +462,11 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           runAutomation(node.onHit, next);
           applyExtraDamageOnHit(state, source, t, res);
           fireOnHitTraits(state, t, source);
+          for (const e of [...t.effects]) { // a surge / Spiked Retribution: whoever hits the holder takes damage back
+            const hb = e.mods?.hitBackDamage;
+            if (!hb || !t.alive || !source.alive || (hb.meleeOnly && source.zone !== "melee")) continue;
+            applyDamage(state, source, rollDamage(state, hb.amount), hb.damageType as DamageType, { sourceId: t.id });
+          }
         } else if (node.onMiss) runAutomation(node.onMiss, next);
         reactToAttackResolved(state, { attacker: source, target: t, hit: res.hit, melee: source.zone === "melee" });
         break;
@@ -482,6 +508,10 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         } else {
           const gwf = node.weaponDice && source.ref.specialRules.some((r) => r.rule === "greatWeaponFighting") ? 2 : 0;
           amt = rollDamage(state, node.amount, node.diceMultiplier ?? 1, ctx.crit ?? false, gwf);
+          // Brutal Critical: extra weapon dice on a melee crit (the weapon's own die size, not doubled again)
+          const bc = node.weaponDice && ctx.crit ? source.ref.specialRules.find((r) => r.rule === "brutalCritical") : undefined;
+          const die = bc ? node.amount.match(/\d*d(\d+)/) : null;
+          if (bc && bc.rule === "brutalCritical" && die) amt += state.rng.dice(bc.dice, Number(die[1]));
         }
         if (ctx.halfMode || node.half) amt = Math.floor(amt / 2);
         const wasUp = t.alive && !t.downed;
@@ -510,13 +540,20 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
 
       case "tempHp": {
         const t = ctx.scope[0] ?? source;
-        t.tempHp = Math.max(t.tempHp, rollDamage(state, node.amount));
+        let temp = rollDamage(state, node.amount);
+        if (node.perAlly) { // Call the Hunt: so many temporary HP for each companion who joins in
+          const near = livingAllies(state, source).filter((a) => a.id !== source.id && a.summonerId === undefined &&
+            (!state.distanceFt || state.distanceFt(source, a) <= 30.001)).length;
+          temp = node.perAlly.each * Math.min(node.perAlly.max, near);
+        }
+        t.tempHp = Math.max(t.tempHp, temp);
         break;
       }
 
       case "applyCondition": {
         const t = ctx.scope[0];
         if (!t || t.ref.conditionImmunities.includes(node.condition) || !t.alive) break;
+        if (t.effects.some((e) => e.mods?.immuneConditions?.includes(node.condition))) break; // Mindless Rage
         const expires = node.durationRounds && node.durationRounds > 0 ? state.round + node.durationRounds : Infinity;
         t.conditions.set(node.condition, {
           expiresRound: node.durationRounds === -1 ? Infinity : expires,
@@ -533,6 +570,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const t = ctx.scope[0] ?? source;
         if (!t.alive) break;
         t.effects = t.effects.filter((e) => e.name !== node.name);
+        if (node.name === "rage") { t.rageCheckSerial = (state.turnSerial ?? 0) - 1; t.combatEventSerial = undefined; } // a rage begins; this turn's attacks keep it going
         t.effects.push({
           name: node.name,
           mods: node.mods,
@@ -597,6 +635,10 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         t.ward = { dice: node.dice, sourceId: source.id };
         break;
       }
+
+      case "spendReaction":
+        source.reactionUsed = true;
+        break;
 
       case "contest": {
         const t = ctx.scope[0];

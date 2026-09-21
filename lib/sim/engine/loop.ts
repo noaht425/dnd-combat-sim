@@ -257,6 +257,17 @@ export function startOfTurn(state: CombatState, u: CombatantState): void {
 }
 
 export function endOfTurn(state: CombatState, u: CombatantState): void {
+  // Rage ends early if your turn ends and you haven't attacked a hostile creature or taken damage since your last
+  // turn (Persistent Rage, 15th, drops that condition)
+  if (u.effects.some((e) => e.name === "rage")) {
+    const serial = state.turnSerial ?? 0;
+    const persistent = u.ref.specialRules.some((r) => r.rule === "persistentRage");
+    if (!persistent && (u.combatEventSerial ?? -1) <= (u.rageCheckSerial ?? -1)) {
+      u.effects = u.effects.filter((e) => e.name !== "rage");
+      say(state, `${u.name}'s rage fades (nothing to fight)`, u.id);
+    }
+    u.rageCheckSerial = serial;
+  }
   for (const e of [...u.effects]) {
     if (e.saveEnds && e.saveEnds.at === "endOfTurn") trySaveEnds(state, u, e.name);
     if (state.round > e.expiresRound) u.effects = u.effects.filter((x) => x !== e);

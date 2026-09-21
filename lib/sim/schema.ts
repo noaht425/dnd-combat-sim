@@ -75,14 +75,14 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   z.object({ who: z.literal("eachEnemy"), withinFt: z.number().positive().optional() }),
   // `withinFt` narrows to allies within that many feet of the caster (battle mode's real grid
   // only — the Monte-Carlo engine has no distances, so there it still means the whole side)
-  z.object({ who: z.literal("eachAlly"), withinFt: z.number().positive().optional() }),
+  z.object({ who: z.literal("eachAlly"), withinFt: z.number().positive().optional(), excludeSelf: z.boolean().optional() }),
   z.object({ who: z.literal("lowestHpAlly") }),      // the most-hurt ally (healing spells)
   z.object({ who: z.literal("nearestEnemy") }),
   z.object({ who: z.literal("lowestHpEnemy") }),
   // lowest AC / lowest effective HP. `preferFresh`: skip a creature this one has already Sneak-Attacked this turn when
   // any other is available (Scout's Sudden Strike may Sneak Attack again, but never the same target twice)
   z.object({ who: z.literal("squishiestEnemy"), preferFresh: z.boolean().optional() }),
-  z.object({ who: z.literal("chosenEnemies"), upTo: z.number().int().positive() }),
+  z.object({ who: z.literal("chosenEnemies"), upTo: z.number().int().positive(), withinFt: z.number().positive().optional() }),
   z.object({
     who: z.literal("area"),
     shape: z.enum(["cone", "line", "sphere", "cube", "emanation"]),
@@ -118,6 +118,20 @@ export const effectModsSchema = z.object({
   /** the holder has disadvantage on attack rolls against the creature that applied this effect
    *  (Armorer Infiltrator's Perfected Armor glimmer) */
   disadvantageOnlyTargetingSource: z.boolean().optional(),
+  /** temporary resistance to these damage types while the effect lasts (Rage: bludgeoning / piercing / slashing) */
+  resistTypes: z.array(damageTypeSchema).optional(),
+  /** advantage on saving throws with these abilities (Rage: Strength) */
+  saveAdvantageOn: z.array(abilitySchema).optional(),
+  /** the holder can't gain these conditions while the effect lasts (Mindless Rage) */
+  immuneConditions: z.array(conditionSchema).optional(),
+  /** whoever hits the holder takes this damage back (a wild-magic surge, Spiked Retribution); `meleeOnly` = only from a melee attack */
+  hitBackDamage: z.object({ amount: diceSchema, damageType: damageTypeSchema, meleeOnly: z.boolean().optional() }).optional(),
+  /** extra reach in feet (Path of the Giant) */
+  reachBonusFt: z.number().int().optional(),
+  /** the holder's attacks deal resisted damage to anyone but the creature that applied this effect (Ancestral Protectors) */
+  halveDamageToOthers: z.boolean().optional(),
+  /** extraDamageOnHit lands at most once on each of the holder's turns (Call the Hunt) */
+  extraDamageOncePerTurn: z.boolean().optional(),
   /** spent by the first attack roll made against the holder (the Help action) */
   consumeOnAttacked: z.boolean().optional(),
   /** ends the moment a creature on the applier's side (other than the applier) attacks the holder (Panache) */
@@ -142,11 +156,12 @@ export type AutomationNode =
   | { type: "target"; who: TargetSpec; effects: AutomationNode[] }
   | { type: "attack"; bonus: number | string; adv?: AdvMode; critRange?: number; onHit: AutomationNode[]; onMiss?: AutomationNode[] }
   | { type: "save"; ability: Ability; dc: number | string; adv?: AdvMode; onFail: AutomationNode[]; onSuccess?: AutomationNode[] }
-  | { type: "damage"; amount: string; damageType: DamageType; half?: boolean; ignoreResistances?: boolean; diceMultiplier?: number; requiresSneakAttack?: boolean; weaponDice?: boolean }
-  | { type: "heal"; amount: string }
-  | { type: "tempHp"; amount: string }
+  | { type: "damage"; amount: string; damageType: DamageType; half?: boolean; ignoreResistances?: boolean; diceMultiplier?: number; requiresSneakAttack?: boolean; weaponDice?: boolean; oncePerTurn?: string }
+  | { type: "heal"; amount: string; oncePerTurn?: string }
+  /** `perAlly`: instead of `amount`, `each` temp HP for every other living ally within 30 ft (up to `max` of them) — Call the Hunt */
+  | { type: "tempHp"; amount: string; perAlly?: { each: number; max: number } }
   | { type: "applyCondition"; condition: Condition; durationRounds?: number; saveEnds?: z.infer<typeof saveEndsSchema> }
-  | { type: "applyEffect"; name: string; durationRounds?: number; mods?: EffectMods; tick?: AutomationNode[]; saveEnds?: z.infer<typeof saveEndsSchema>; oneShot?: boolean }
+  | { type: "applyEffect"; name: string; durationRounds?: number; mods?: EffectMods; tick?: AutomationNode[]; saveEnds?: z.infer<typeof saveEndsSchema>; oneShot?: boolean; oncePerTurn?: string }
   | { type: "removeEffect"; name: string }
   | { type: "move"; kind: "pull" | "push" | "teleportSelf" | "teleportSelfToMarked" | "withdraw"; distance?: number; provokes?: boolean }
   | { type: "mark"; note?: string }
@@ -169,6 +184,8 @@ export type AutomationNode =
   /** Inquisitive's Insightful Fighting: `bonus` is the rogue's Wisdom (Insight) modifier, rolled against the
    *  target's Charisma (Deception). On a success the rogue may Sneak Attack that target without advantage. */
   | { type: "insightfulFighting"; bonus: number }
+  /** the source spends its reaction (a rider that IS a reaction: Raging Storm's wave) */
+  | { type: "spendReaction" }
   /** a contested ability check: the source rolls d20 + `bonus`, the target d20 + its `theirs` modifier; only a strictly
    *  higher roll wins (a tie leaves things as they were), and `onSuccess` then runs against the target (Panache) */
   | { type: "contest"; bonus: number; theirs: Ability; onSuccess: AutomationNode[] }
@@ -212,9 +229,11 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       requiresSneakAttack: z.boolean().optional(),
       /** these are the weapon's own damage dice (Great Weapon Fighting may reroll a 1 or 2 on them) */
       weaponDice: z.boolean().optional(),
+      /** lands at most once per turn under this key (Divine Fury: the first creature you hit each turn) */
+      oncePerTurn: z.string().optional(),
     }),
-    z.object({ type: z.literal("heal"), amount: diceSchema }),
-    z.object({ type: z.literal("tempHp"), amount: diceSchema }),
+    z.object({ type: z.literal("heal"), amount: diceSchema, oncePerTurn: z.string().optional() }),
+    z.object({ type: z.literal("tempHp"), amount: diceSchema, perAlly: z.object({ each: z.number().int().positive(), max: z.number().int().positive() }).optional() }),
     z.object({
       type: z.literal("applyCondition"),
       condition: conditionSchema,
@@ -230,6 +249,7 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       saveEnds: saveEndsSchema.optional(),
       // consumed the moment its extraDamageOnHit lands on an attack (smites, Ensnaring Strike, ...)
       oneShot: z.boolean().optional(),
+      oncePerTurn: z.string().optional(),
     }),
     z.object({ type: z.literal("removeEffect"), name: z.string() }),
     z.object({
@@ -248,6 +268,7 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     z.object({ type: z.literal("spendResource"), resource: z.string(), amount: z.number().int().optional(), from: z.literal("party").optional() }),
     z.object({ type: z.literal("restoreSlot") }),
     z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
+    z.object({ type: z.literal("spendReaction") }),
     z.object({ type: z.literal("contest"), bonus: z.number().int(), theirs: abilitySchema, onSuccess: z.array(automationNodeSchema) }),
     z.object({ type: z.literal("commandSummon"), action: z.string(), limit: z.number().int().positive().optional(), rangeFt: z.number().positive().optional() }),
     z.object({ type: z.literal("rechargeRoll"), resource: z.string() }),
@@ -310,6 +331,18 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("surviveDrop"), ability: abilitySchema, baseDc: z.number().int(), resource: z.string(), excludeTypes: z.array(damageTypeSchema).default([]), excludeCrit: z.boolean().default(true) }),
   // Clockwork Soul's Restore Balance: reaction, cancel advantage/disadvantage on a d20 rolled by a creature within range
   z.object({ rule: z.literal("restoreBalance"), resource: z.string(), rangeFt: z.number().positive() }),
+  // Persistent Rage (15th): a rage ends early only if you fall unconscious or choose to end it
+  z.object({ rule: z.literal("persistentRage") }),
+  // Relentless Rage (11th): dropping to 0 while raging, a Constitution save (DC 10, +5 for each use since the last rest) to stay at 1 HP
+  z.object({ rule: z.literal("relentlessRage") }),
+  // Brutal Critical: this many extra weapon damage dice on a melee critical hit
+  z.object({ rule: z.literal("brutalCritical"), dice: z.number().int().positive() }),
+  // reroll a failed save (Fanatical Focus: once per rage) — only while the named effect is up; each reroll spends one `resource`
+  z.object({ rule: z.literal("rerollFailedSave"), resource: z.string(), whileEffect: z.string() }),
+  // Totemic Attunement (Bear): while raging, hostile creatures within 5 ft of you have disadvantage on attacks against anyone but you (or another with this feature)
+  z.object({ rule: z.literal("bearAttunement") }),
+  // Spirit Shield (Ancestral Guardian): while raging, reaction — reduce damage another creature within 30 ft takes by `dice`; `vengeful` (14th) sends the prevented amount back as force damage
+  z.object({ rule: z.literal("spiritShield"), dice: z.string(), vengeful: z.boolean().default(false) }),
   // Assassin's Assassinate: advantage on attack rolls against any creature that hasn't taken a turn in the combat yet
   z.object({ rule: z.literal("assassinate") }),
   // Fighting Style: Great Weapon Fighting — a 1 or 2 on the weapon's damage dice is rerolled once

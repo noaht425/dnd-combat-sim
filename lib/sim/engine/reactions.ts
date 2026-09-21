@@ -10,7 +10,7 @@
 // reactions off. Reactions never trigger reactions (`state.inReaction`).
 
 import type { Action, AutomationNode, DamageType } from "../schema";
-import { runAction, runAutomation } from "./interpreter";
+import { actionBranchGateFails, runAction, runAutomation } from "./interpreter";
 import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, say, type ReactionAsk } from "./state";
 
 /** the five damage types Absorb Elements answers */
@@ -57,6 +57,7 @@ type RKind =
   | "onDrop"         // react to a creature hitting 0 hp
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
   | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
+  | "tailSwipe"      // Path of the Beast's tail — a d8 bonus to AC against one attack
   | "unknown";
 
 function classify(r: Action): RKind {
@@ -69,7 +70,9 @@ function classify(r: Action): RKind {
   if (id.includes("absorb-elements") || id.includes("absorbelements") || tr.includes("tookelementaldamage")) return "absorbElements";
   if (id.includes("hellish-rebuke") || id.includes("hellishrebuke")) return "onDamaged";
   if (id.includes("riposte")) return tr.includes("missed") ? "retaliateOnMiss" : "retaliateOnHit";
-  if (id.includes("storms-fury")) return "retaliateOnMeleeHit";
+  if (id.includes("storms-fury") || id.includes("retaliation")) return "retaliateOnMeleeHit";
+  if (id.includes("raging-storm")) return "retaliateOnMeleeHit";
+  if (id.includes("tail-swipe")) return "tailSwipe";
   if (id.includes("deflect-attack")) return "deflectAttack";
   if (id.includes("cutting-words") || id.includes("cuttingwords")) return "protectAllyAttackRoll";
   if (tr.includes("belowhalf") || tr.includes("reducedtohalf")) return "onBloodied";
@@ -85,6 +88,7 @@ function ready(state: CombatState, u: CombatantState, r: Action): boolean {
   if (u.reactionUsed) return false;
   if (!canTakeReactions(u)) return false;
   if (r.limitedUse && (u.resources.get(r.limitedUse.resource) ?? 0) < r.limitedUse.amount) return false;
+  if (actionBranchGateFails(state, u, r)) return false; // a reaction gated on a condition (only while raging, only in tail form)
   return true;
 }
 
@@ -250,6 +254,18 @@ export function reactToIncomingAttack(
       say(state, `${t.name} unmakes the blow (${r.name})`, t.id);
       return { negated: true, shielded: false };
     }
+    if (k === "tailSwipe" && !p.crit && p.hitMargin < 8) {
+      const ok = decideReaction(
+        state, t, "tailSwipe",
+        `An attack hits ${t.name} by ${p.hitMargin} — swiping the tail adds a d8 to AC and may turn it into a miss.`,
+        "Swipe the tail", "Take the hit",
+      );
+      if (!ok) continue;
+      consume(t, r);
+      const bonus = state.rng.dice(1, 8);
+      say(state, `${t.name} swipes their tail (+${bonus} AC)`, t.id);
+      return { negated: bonus > p.hitMargin, shielded: false }; // the attack now needs to beat AC + the die
+    }
     if (k === "shieldAc" && !p.crit && p.hitMargin < 5) {
       const ok = decideReaction(
         state,
@@ -295,6 +311,42 @@ export function reactToIncomingAttack(
 }
 
 // --------------------------------------------------- damage about to be applied
+
+/**
+ * Spirit Shield (Path of the Ancestral Guardian): while raging, use your reaction to reduce damage another creature
+ * you can see within 30 ft is about to take by 2d6 (3d6 at 10th, 4d6 at 14th). Vengeful Ancestors (14th) sends the
+ * prevented amount back at the attacker as force damage. Returns the (possibly reduced) amount.
+ */
+export function spiritShield(state: CombatState, target: CombatantState, amount: number, sourceId?: string): number {
+  if (state.inReaction || amount < 5) return amount;
+  for (const b of livingAllies(state, target)) {
+    if (b.id === target.id || b.reactionUsed || !canTakeReactions(b) || isIncapacitated(b)) continue;
+    const rule = b.ref.specialRules.find((r) => r.rule === "spiritShield");
+    if (!rule || rule.rule !== "spiritShield" || !b.effects.some((e) => e.name === "rage")) continue;
+    if (state.distanceFt && state.distanceFt(b, target) > 30.001) continue;
+    const ok = decideReaction(
+      state, b, "spiritShield",
+      `${target.name} is about to take ${amount} damage — ${b.name}'s Spirit Shield (${rule.dice}) can soak some of it.`,
+      "Use Spirit Shield", "Let it land",
+    );
+    if (!ok) continue;
+    b.reactionUsed = true;
+    const m = rule.dice.match(/(\d+)d(\d+)/);
+    const soaked = Math.min(amount, m ? state.rng.dice(Number(m[1]), Number(m[2])) : 0);
+    say(state, `${b.name}'s ancestral spirits soak ${soaked} damage meant for ${target.name}`, b.id);
+    const src = sourceId ? state.units.get(sourceId) : undefined;
+    if (rule.vengeful && src && src.alive && src.side !== b.side && soaked > 0) {
+      state.inReaction = true;
+      try {
+        runAutomation([{ type: "damage", amount: String(soaked), damageType: "force" }], { state, source: b, scope: [src], last: {}, depth: 0 });
+      } finally {
+        state.inReaction = false;
+      }
+    }
+    return amount - soaked;
+  }
+  return amount;
+}
 
 /** Uncanny Dodge — halve a single attack's damage. Returns the (possibly reduced) amount. */
 export function reduceIncomingDamage(

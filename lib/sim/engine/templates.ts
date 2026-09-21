@@ -4,52 +4,11 @@
 //
 // `makeTemplate("blaster-wizard", 15)` -> a schema-valid Combatant.
 
-import type { Ability, AutomationNode, Combatant } from "../schema";
+import type { AutomationNode, Combatant } from "../schema";
+import { between, pbFor, pc, score } from "./pcBase";
+import { BARBARIAN_BUILDERS } from "./barbarians";
 import { CASTER_BUILDERS } from "../spells/casterTemplates";
 import { rogueKit, type RogueKit } from "./rogueKit";
-
-const pbFor = (lvl: number) => 2 + Math.floor((lvl - 1) / 4);
-const score = (mod: number) => 10 + mod * 2;
-/** linear interpolate a stat from its value `a` at level 1 to its value `b` at
- *  level 20. IMPORTANT: `b` is the LEVEL-20 value, a constant — do NOT pass a
- *  level-dependent expression (that was a long-standing HP bug that crushed
- *  low-to-mid-level PCs to ~1/3 of their real hit points). */
-const between = (lvl: number, a: number, b: number, atA = 1, atB = 20) =>
-  Math.round(a + ((b - a) * (Math.max(atA, Math.min(atB, lvl)) - atA)) / (atB - atA));
-
-function pc(base: {
-  id: string; name: string; level: number; ac: number; hp: number;
-  abilities: Combatant["abilities"]; proficientSaves: Ability[];
-  saveBonusAll?: number;
-  resources?: Combatant["resources"]; traits?: Combatant["traits"];
-  actions: Combatant["actions"]; reactions?: Combatant["reactions"];
-  specialRules?: Combatant["specialRules"];
-  keepDistance?: boolean; opener?: string[]; targetPriority?: Combatant["ai"]["targetPriority"];
-  /** walking speed in feet (default 30) */
-  speed?: number;
-  initiativeBonus?: number;
-  /** bonus-action ids the AI takes before its main action / right after its Attack action */
-  bonusRoutine?: string[]; bonusAfterAttack?: string[];
-}): Combatant {
-  return {
-    id: base.id, name: base.name, kind: "pc", size: "medium", level: base.level,
-    templateId: base.id, ac: base.ac, maxHp: base.hp, speeds: { walk: base.speed ?? 30 },
-    ...(base.initiativeBonus !== undefined ? { initiativeBonus: base.initiativeBonus } : {}),
-    abilities: base.abilities, pb: pbFor(base.level), proficientSaves: base.proficientSaves,
-    saveBonusAll: base.saveBonusAll ?? 0,
-    resistances: [], resistancesNonmagical: [], immunities: [], vulnerabilities: [],
-    conditionImmunities: [], specialRules: base.specialRules ?? [],
-    resources: base.resources ?? {}, traits: base.traits ?? [],
-    actions: base.actions, reactions: base.reactions ?? [],
-    ai: {
-      targetPriority: base.targetPriority ?? "lowestHp", aoeMinTargets: 2,
-      opener: base.opener ?? [], saveLegendaryResistanceFor: [],
-      keepDistance: base.keepDistance ?? false, neverRetreat: true, focusFire: true,
-      ...(base.bonusRoutine ? { bonusRoutine: base.bonusRoutine } : {}),
-      ...(base.bonusAfterAttack ? { bonusAfterAttack: base.bonusAfterAttack } : {}),
-    },
-  };
-}
 
 // ─────────────────────────────────────────────────────────────── the templates
 
@@ -418,42 +377,6 @@ function soulknifeRogue(level: number): Combatant {
   });
 }
 
-function totemBarbarian(level: number): Combatant {
-  const pb = pbFor(level);
-  const str = pb === 6 ? 5 : 4;
-  const attacks = level >= 5 ? 2 : 1;
-  const dmg = `2d6+${str + 3}`; // greatsword + Rage damage
-  return pc({
-    id: "totem-barbarian", name: `Barbarian ${level}`, level,
-    ac: 16, hp: between(level, 15, 10 * 20 + 20), // d12 + Con + Tough-ish
-    abilities: { str: score(str), dex: score(2), con: score(pb === 6 ? 5 : 4), int: score(-1), wis: score(1), cha: score(0) },
-    proficientSaves: ["str", "con"],
-    // Danger Sense — advantage on Dex saves.
-    specialRules: [{ rule: "advantageOnSaves", abilities: ["dex"] }],
-    resources: { rage: { max: level >= 17 ? 6 : level >= 12 ? 5 : 4, recharge: "longRest" } },
-    actions: [
-      {
-        id: "rage", name: "Rage", cost: { bonus: 1 }, recharge: "none",
-        limitedUse: { resource: "rage", amount: 1 },
-        automation: [{ type: "target", who: { who: "self" }, effects: [
-          // Totem Spirit: Bear (3rd level) upgrades bare Rage's resistance to
-          // physical damage only into resistance to everything but psychic —
-          // modeled as a flat multiplier since EffectMods has no per-type
-          // resistance list, reasonable since it only applies while raging.
-          { type: "applyEffect", name: "rage", durationRounds: 10, mods: { damageTakenMultiplier: level >= 3 ? 0.5 : 0.75 } },
-        ] }],
-      },
-      {
-        id: "attack", name: "Reckless Multiattack", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: attacks + (level >= 5 ? 1 : 0) }, () => (
-          { type: "attack" as const, bonus: pb + str, adv: "adv" as const, onHit: [{ type: "damage" as const, amount: dmg, damageType: "slashing" as const }] }
-        )) }],
-      },
-    ],
-    opener: ["rage"], targetPriority: "lowestHp",
-  });
-}
-
 function openHandMonk(level: number): Combatant {
   const pb = pbFor(level);
   const dex = pb === 6 ? 5 : 4;
@@ -563,7 +486,7 @@ const BUILDERS: Record<string, (level: number) => Combatant> = {
   "inquisitive-rogue": inquisitiveRogue,
   "scout-rogue": scoutRogue,
   "soulknife-rogue": soulknifeRogue,
-  "totem-barbarian": totemBarbarian,
+  ...BARBARIAN_BUILDERS,
   "open-hand-monk": openHandMonk,
   ...CASTER_BUILDERS,
 };

@@ -114,6 +114,8 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return "unpredictable — a random effect";
     case "contest":
       return `win a contested ${n.theirs.toUpperCase()} check against the target, then ${describeNodes(n.onSuccess, siblings, depth + 1).join(", ") || "it takes effect"}`;
+    case "spendReaction":
+      return "";
     case "insightfulFighting":
       return "read a foe's tactics (Insight vs Deception) so Sneak Attack lands without advantage";
     case "note":

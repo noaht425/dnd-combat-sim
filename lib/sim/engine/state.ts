@@ -68,6 +68,14 @@ export interface CombatantState {
   /** Inquisitive's Insightful Fighting — the creature currently read, and the round the minute runs out */
   insightTargetId?: string;
   insightUntilRound?: number;
+  /** turnSerial of the last attack this creature made or damage it took (Rage ends if a turn passes with neither) */
+  combatEventSerial?: number;
+  /** turnSerial at the end of this creature's previous turn, or just before it began raging */
+  rageCheckSerial?: number;
+  /** times Relentless Rage has been used since the last rest (each adds 5 to the DC) */
+  relentlessUses?: number;
+  /** keys of once-per-turn riders already used, and the turn they were used on */
+  onceTurn?: { serial: number; keys: string[] };
   /** has taken a turn in this combat (Assassinate: advantage against creatures that haven't) */
   hasTakenTurn?: boolean;
   /** Fancy Footwork — the creatures it has made a melee attack against this turn (no opportunity attacks from them) */
@@ -173,7 +181,7 @@ export interface CombatState {
 /** the question `state.askReaction` is handed at a reaction decision point */
 export interface ReactionAsk {
   unitId: string;
-  kind: "shield" | "counterspell" | "riposte" | "uncannyDodge" | "absorbElements" | "retaliate" | "cuttingWords" | "deflectAttack" | "flashOfGenius";
+  kind: "shield" | "counterspell" | "riposte" | "uncannyDodge" | "absorbElements" | "retaliate" | "cuttingWords" | "deflectAttack" | "flashOfGenius" | "spiritShield" | "tailSwipe";
   /** one human sentence describing the trigger and what the reaction would do */
   prompt: string;
   /** button label for spending the reaction / for declining it */

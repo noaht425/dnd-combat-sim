@@ -279,20 +279,30 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
   }
 
   let action = plan.action;
+  let usedPlan = plan;
+  let usedGeo = geo;
   if (action && !actionAvailable(state, u, action)) {
-    action = u.ref.actions.find((a) => a.id === "attack" && actionAvailable(state, u, a));
+    // the opener / a bonus action changed what's on offer (a rage that grows claws) — plan the turn again
+    const fresh = planTurn(state, u);
+    if (fresh.action && actionAvailable(state, u, fresh.action)) {
+      action = fresh.action;
+      usedPlan = fresh;
+      usedGeo = { geoTargets: geoTargetsFor(state, u, fresh), attackMods: attackModsFor(state, u, fresh.needsMelee) };
+    } else {
+      action = u.ref.actions.find((a) => a.id === "attack" && actionAvailable(state, u, a));
+    }
   }
   if (!action) return;
 
   spend(u, action);
   markEconomy(u, action);
-  const text = runActionLogged(state, u, action, { geo }, `${u.name} uses ${action.name}`);
+  const text = runActionLogged(state, u, action, { geo: usedGeo }, `${u.name} uses ${action.name}`);
   recordFrame(state, {
     kind: "action",
     actorId: u.id,
     text,
-    targetIds: plan.templateHitIds ?? (plan.targetId ? [plan.targetId] : undefined),
-    templateCells: plan.templateCells,
+    targetIds: usedPlan.templateHitIds ?? (usedPlan.targetId ? [usedPlan.targetId] : undefined),
+    templateCells: usedPlan.templateCells,
   });
   if (action.id === "attack") runBonusRoutine(state, u, u.ref.ai.bonusAfterAttack); // e.g. the second Psychic Blade
 }

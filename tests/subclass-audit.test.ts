@@ -13,17 +13,20 @@ describe("Subclass audit fixes", () => {
     expect(makeTemplate("assassin-rogue", 5).specialRules).not.toContainEqual({ rule: "ambush" });
   });
 
-  it("Path of the Totem Warrior (Bear): rage resistance upgrades to all-but-psychic at level 3+", () => {
-    const rageAt = (level: number) => {
+  it("Path of the Totem Warrior (Bear): rage resists bludgeoning / piercing / slashing, and everything but psychic from 3rd level", () => {
+    const resist = (level: number) => {
       const a = makeTemplate("totem-barbarian", level).actions.find((x) => x.id === "rage")!;
-      const target = a.automation[0];
+      const gate = a.automation[0];
+      if (gate.type !== "branch") throw new Error("unexpected shape");
+      const target = gate.then[0];
       if (target.type !== "target") throw new Error("unexpected shape");
       const effect = target.effects[0];
       if (effect.type !== "applyEffect") throw new Error("unexpected shape");
-      return effect.mods?.damageTakenMultiplier;
+      return effect.mods?.resistTypes ?? [];
     };
-    expect(rageAt(1)).toBe(0.75);
-    expect(rageAt(5)).toBe(0.5);
+    expect(resist(1).sort()).toEqual(["bludgeoning", "piercing", "slashing"]);
+    expect(resist(3)).toContain("fire");
+    expect(resist(3)).not.toContain("psychic");
   });
 
   it("Way of the Open Hand: Open Hand Technique knocks a Flurry of Blows target prone", () => {

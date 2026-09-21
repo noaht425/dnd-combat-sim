@@ -21,6 +21,7 @@ import {
   reactToFailedSave,
   reactToIncomingAttack,
   reduceIncomingDamage,
+  spiritShield,
 } from "./reactions";
 
 function combineAdv(...parts: Array<AdvMode | undefined>): AdvMode {
@@ -98,6 +99,19 @@ export interface AttackResult {
   nat: number;
 }
 
+/** Is `attacker` held by a raging Bear-totem barbarian beside it (and not attacking that barbarian or another with the feature)? */
+function bearAttunementApplies(state: CombatState, attacker: CombatantState, target: CombatantState): boolean {
+  if (target.ref.specialRules.some((r) => r.rule === "bearAttunement")) return false;
+  if (attacker.ref.conditionImmunities.includes("frightened") || hasCondition(attacker, "blinded") || hasCondition(attacker, "deafened")) return false; // it must see or hear the barbarian, and be frightenable
+  for (const b of state.units.values()) {
+    if (b.side === attacker.side || b.id === target.id || !b.alive || b.downed) continue;
+    if (!b.ref.specialRules.some((r) => r.rule === "bearAttunement") || !b.effects.some((e) => e.name === "rage")) continue;
+    const close = state.distanceFt ? state.distanceFt(b, attacker) <= 5.001 : b.zone === "melee" && attacker.zone === "melee";
+    if (close) return true;
+  }
+  return false;
+}
+
 /** thin wrapper so every attack roll (whichever internal path it resolves
  *  through) lands in state.attackLog for the post-fight whiff/AC readout,
  *  without threading logging through every early return below. */
@@ -111,6 +125,7 @@ export function rollAttack(
   extraTargetAc = 0,
 ): AttackResult {
   const result = rollAttackImpl(state, attacker, target, toHit, intrinsicAdv, critRange, extraTargetAc);
+  attacker.combatEventSerial = state.turnSerial ?? 0; // "attacked a hostile creature" — keeps a Rage going
   (state.attackLog ??= []).push({ round: state.round, attackerId: attacker.id, targetId: target.id, hit: result.hit });
   return result;
 }
@@ -153,8 +168,10 @@ function rollAttackImpl(
   for (const e of target.effects) {
     if (e.mods?.attacksAgainstItAdvantage === "dis") adv = combineAdv(adv, "dis");
     // "attack rolls against that target have advantage" — only for the side that put it there (Help, Ambush Master)
-    if (e.mods?.attacksAgainstItAdvantage === "adv" && state.units.get(e.sourceId)?.side === attacker.side) adv = combineAdv(adv, "adv");
+    if (e.mods?.attacksAgainstItAdvantage === "adv" && (e.sourceId === target.id || state.units.get(e.sourceId)?.side === attacker.side)) adv = combineAdv(adv, "adv");
   }
+  // Totemic Attunement (Bear): a hostile creature beside a raging barbarian has disadvantage on attacks against anyone else
+  if (bearAttunementApplies(state, attacker, target)) adv = combineAdv(adv, "dis");
   // Panache: a companion of the rogue attacking the creature ends the hold the rogue had on it
   if (target.effects.some((e) => e.mods?.endOnAllyAttack && e.sourceId !== attacker.id && state.units.get(e.sourceId)?.side === attacker.side)) {
     target.effects = target.effects.filter((e) => !(e.mods?.endOnAllyAttack && e.sourceId !== attacker.id && state.units.get(e.sourceId)?.side === attacker.side));
@@ -282,7 +299,16 @@ export function rollSave(
   dc: number,
   opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[] } = {},
 ): SaveResult {
-  const result = rollSaveImpl(state, target, ability, dc, opts);
+  let result = rollSaveImpl(state, target, ability, dc, opts);
+  // Fanatical Focus — fail a save while raging and you may reroll it, using the new roll (once per rage)
+  if (!result.passed) {
+    const ff = target.ref.specialRules.find((r) => r.rule === "rerollFailedSave");
+    if (ff && ff.rule === "rerollFailedSave" && target.effects.some((e) => e.name === ff.whileEffect) && (target.resources.get(ff.resource) ?? 0) > 0) {
+      target.resources.set(ff.resource, (target.resources.get(ff.resource) ?? 0) - 1);
+      say(state, `${target.name} rerolls the failed save (Fanatical Focus)`, target.id);
+      result = rollSaveImpl(state, target, ability, dc, opts);
+    }
+  }
   (state.saveLog ??= []).push({ round: state.round, unitId: target.id, ability, passed: result.passed });
   return result;
 }
@@ -312,6 +338,7 @@ function rollSaveImpl(
   for (const e of target.effects) {
     if (e.mods?.saveAdvantage === "adv") adv = combineAdv(adv, "adv");
     if (e.mods?.saveAdvantage === "dis") adv = combineAdv(adv, "dis");
+    if (e.mods?.saveAdvantageOn?.includes(ability)) adv = combineAdv(adv, "adv"); // Rage: Strength saves
     if (e.mods?.disadvantageOnFirstD20EachRound) adv = combineAdv(adv, "dis"); // "doomed" — simplification
   }
   // restrained imposes disadvantage on Dexterity saving throws
@@ -428,6 +455,9 @@ export function applyDamage(
 
   // Uncanny Dodge — the target spends a reaction to halve an attack's damage
   rawAmount = reduceIncomingDamage(state, target, rawAmount, opts.viaAttack ?? false);
+  // Spirit Shield — a raging Ancestral Guardian nearby soaks some of it
+  rawAmount = spiritShield(state, target, rawAmount, opts.sourceId);
+  if (rawAmount <= 0) return 0;
   // Absorb Elements — a reaction to elemental damage; sets a temp resistance the
   // block below honours (so the triggering hit is halved too)
   reactToElementalDamage(state, target, rawAmount, type);
@@ -454,9 +484,14 @@ export function applyDamage(
     // resistance is applied at most once even from multiple sources
     const absorbed =
       target.absorbElements?.type === type && state.round < target.absorbElements.untilRound;
+    const heldBack = !!opts.viaAttack && !!opts.sourceId &&
+      !!state.units.get(opts.sourceId)?.effects.some((e) => e.mods?.halveDamageToOthers && e.sourceId !== target.id); // Ancestral Protectors
     const resisted =
       ref.resistances.includes(type) ||
       absorbed ||
+      heldBack ||
+      target.effects.some((e) => e.mods?.resistTypes?.includes(type)) || // Rage, a totem spirit, a storm's resistance
+
       (bps && !opts.attackerMagical && ref.resistancesNonmagical.includes(type)) ||
       (bps && !opts.hadAdvantage && ref.specialRules.some((r) => r.rule === "resistNonAdvantageAttacks"));
     if (resisted) dmg = Math.floor(dmg * 0.5);
@@ -470,6 +505,7 @@ export function applyDamage(
 
   dmg = Math.max(0, Math.floor(dmg));
   if (dmg === 0) return 0;
+  target.combatEventSerial = state.turnSerial ?? 0; // "taken damage" — keeps a Rage going
 
   // Bastion of Law — the warded creature expends d8s from its ward, rolling each and reducing the
   // damage by the total (used one at a time until the damage is gone or the ward runs dry)
@@ -547,6 +583,19 @@ export function applyDamage(
     }
   }
 
+  // Relentless Rage — dropping to 0 while raging: a Constitution save (DC 10, +5 per use since the last rest) to stay at 1 HP
+  if (target.hp <= 0 && target.effects.some((e) => e.name === "rage") && target.ref.specialRules.some((r) => r.rule === "relentlessRage") &&
+      -target.hp < target.maxHp) { // damage that leaves you at -maxHp or worse kills outright
+    const uses = target.relentlessUses ?? 0;
+    const s = rollSave(state, target, "con", 10 + 5 * uses, { magical: false, allowLegendaryResistance: false });
+    target.relentlessUses = uses + 1;
+    if (s.passed) {
+      target.hp = 1;
+      say(state, `${target.name}'s rage keeps them on their feet (Relentless Rage, 1 HP)`, target.id);
+      return dmg;
+    }
+  }
+
   if (target.hp <= 0) {
     handleDropToZero(state, target);
   } else {
@@ -581,6 +630,7 @@ function handleDropToZero(state: CombatState, target: CombatantState): void {
     say(state, `${target.name} is destroyed`, target.id);
   } else {
     target.downed = true;
+    target.effects = target.effects.filter((e) => e.name !== "rage"); // knocked unconscious: the rage ends
     target.concentratingOn = undefined;
     say(state, `${target.name} drops to 0 HP`, target.id);
     if (state.firstPartyDownRound === undefined) {
