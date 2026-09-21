@@ -1,4 +1,5 @@
 import type { Combatant, DamageType } from "../schema";
+import { SRD_TYPES } from "./creatureTypes";
 
 export type Automation = Combatant["actions"][number]["automation"];
 
@@ -26,6 +27,7 @@ export type SrdBase = Pick<
 export function srd(base: SrdBase): Combatant {
   return {
     kind: "monster",
+    ...(SRD_TYPES[base.id] ? { creatureType: SRD_TYPES[base.id] } : {}),
     size: "medium",
     speeds: { walk: 30 },
     proficientSaves: [],

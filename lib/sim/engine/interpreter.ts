@@ -5,6 +5,7 @@ import { SIZES, type Action, type AutomationNode, type Condition, type DamageTyp
 import { applyDamage, critRangeFor, rollAttack, rollSave, type AttackResult } from "./resolve";
 import { MINIONS, PC_SUMMONS } from "./minions";
 import { addFlatBonus } from "../spells/spellTransforms";
+import { creatureTypeOf, isCreatureType, matchesFilter } from "./creatureType";
 import { instinctiveCharm, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, violentAttraction } from "./reactions";
 import {
   CombatantState,
@@ -211,13 +212,10 @@ function withDamageBonus(ref: import("../schema").Combatant, bonus: number): imp
   return { ...ref, actions: ref.actions.map((a) => ({ ...a, automation: bump(a.automation) })) };
 }
 
-/** creatures Grim Harvest gives nothing for: constructs and undead */
-const NO_HARVEST = /undead|construct|zombie|skeleton|ghoul|ghast|wight|wraith|specter|spectre|vampire|lich|mummy|golem|homunculus|guardian|animated/i;
-
 /** Grim Harvest (Necromancy): killing a creature with a spell of 1st level or higher heals twice the spell's level (three times for a necromancy spell) */
 function grimHarvest(state: CombatState, source: CombatantState, slain: CombatantState, ctx: RunCtx): void {
   if (!ctx.spell || !ctx.spellLevel || !source.ref.specialRules.some((r) => r.rule === "grimHarvest")) return;
-  if (NO_HARVEST.test(`${slain.ref.flavor?.type ?? ""} ${slain.ref.id}`)) return;
+  if (isCreatureType(slain.ref, "construct", "undead")) return; // "This benefit doesn't apply to constructs or undead."
   const amount = ctx.spellLevel * (ctx.spellSchool === "necromancy" ? 3 : 2);
   const healed = applyHealing(state, source, amount);
   if (healed > 0) say(state, `${source.name} harvests ${healed} hit points (Grim Harvest)`, source.id);
@@ -277,6 +275,7 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     // so it counts as "singing" from round 1 until it drops.
     [/self\.(is_?singing|singing)/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
     [/self\.sang_?since_?last_?turn/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
+    [/target\.is\('([a-z]+)'\)/i, () => !!tgt && isCreatureType(tgt.ref, RegExp.$1 as never)],
     [/target\.has\('([^']+)'\)/i, () => !!tgt && (tgt.effects.some((e) => e.name === RegExp.$1) || hasCondition(tgt, RegExp.$1 as Condition))],
     [/target\.hp\s*<\s*target\.maxhp/i, () => !!tgt && tgt.hp < tgt.maxHp],
     [/target\.hp\s*<=\s*(\d+)/i, () => !!tgt && tgt.hp <= Number(RegExp.$1)],
@@ -318,8 +317,10 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
 
 function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: RunCtx): CombatantState[] {
   const { state, source } = ctx;
-  const enemies = livingEnemies(state, source);
-  const allies = livingAllies(state, source);
+  // a spell's printed restriction is applied to the pool BEFORE anything is chosen from it (Hold Person never picks a troll)
+  const eligible = (u: CombatantState) => matchesFilter(u.ref, node.filter);
+  const enemies = livingEnemies(state, source).filter(eligible);
+  const allies = livingAllies(state, source).filter(eligible);
   const who = node.who;
   switch (who.who) {
     case "self": return [source];
@@ -330,9 +331,9 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
       return pool.filter((a) => a.id === source.id || state.distanceFt!(source, a) <= r + 0.001);
     }
     case "lowestHpAlly": {
-      const pool = who.includeDowned ? [...state.units.values()].filter((x) => x.side === source.side && x.alive && x.summonerId === undefined) : allies;
+      const pool = who.includeDowned ? [...state.units.values()].filter((x) => x.side === source.side && x.alive && x.summonerId === undefined && eligible(x)) : allies;
       const hurt = pool.slice().sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
-      return hurt ? [hurt] : [source];
+      return hurt ? [hurt] : node.filter ? [] : [source]; // (a filtered heal with nobody eligible heals no one, not the caster)
     }
     case "eachEnemy": {
       if (who.withinFt && state.distanceFt) {
@@ -357,7 +358,7 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
     }
     case "marked": {
       const m = source.markedTargetId ? state.units.get(source.markedTargetId) : undefined;
-      return m && m.alive && !m.downed ? [m] : enemies.slice(0, 1);
+      return m && m.alive && !m.downed && eligible(m) ? [m] : enemies.slice(0, 1);
     }
     case "aiChoice": {
       if (!enemies.length) return [];
@@ -366,7 +367,7 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
         : source.ref.ai.focusFire ? state.monsterFocusId : undefined;
       if (sharedFocus) {
         const f = state.units.get(sharedFocus);
-        if (f && f.alive && !f.downed && f.side !== source.side) return [f];
+        if (f && f.alive && !f.downed && f.side !== source.side && eligible(f)) return [f];
       }
       const p = source.ref.ai.targetPriority;
       const pool = enemies.slice();
@@ -374,7 +375,7 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
       else if (p === "squishiest") pool.sort((a, b) => a.ac - b.ac || a.hp - b.hp);
       else if (p === "marked" && source.markedTargetId) {
         const m = state.units.get(source.markedTargetId);
-        if (m && m.alive && !m.downed) return [m];
+        if (m && m.alive && !m.downed && eligible(m)) return [m];
       }
       return [pool[0]];
     }
@@ -495,7 +496,8 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         break;
 
       case "target": {
-        const targets = ctx.forceScope ?? ctx.geoTargets?.(node, source) ?? selectTargets(node, ctx);
+        const picked = ctx.forceScope ?? ctx.geoTargets?.(node, source) ?? selectTargets(node, ctx);
+        const targets = node.filter ? picked.filter((u) => u.id === source.id || matchesFilter(u.ref, node.filter)) : picked; // (battle mode's own picker may not know the restriction)
         // an area / multi-target effect rolls its damage dice once and shares
         // the total across every creature caught (each still saves for its own half)
         const multi = targets.length > 1;
@@ -574,7 +576,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const dc = typeof node.dc === "number" ? node.dc : 18;
         // the conditions this save is against (Psychic Defenses: advantage vs charmed/frightened)
         const conditions = node.onFail.flatMap((n) => (n.type === "applyCondition" ? [n.condition] : []));
-        const sr = rollSave(state, t, node.ability, dc, { magical: true, stakes: saveStakes(node.onFail), conditions, sourceId: source.id });
+        const sr = rollSave(state, t, node.ability, dc, { magical: true, stakes: saveStakes(node.onFail), conditions, sourceId: source.id, adv: node.adv });
         if (ctx.saveLog) ctx.saveLog.set(t.id, sr.passed);
         const next: RunCtx = { ...ctx, last: { ...ctx.last, savePassed: sr.passed }, depth: ctx.depth + 1 };
         if (!sr.passed) {
@@ -656,6 +658,11 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const t = ctx.scope[0];
         if (!t || t.ref.conditionImmunities.includes(node.condition) || !t.alive) break;
         if (t.effects.some((e) => e.mods?.immuneConditions?.includes(node.condition))) break; // Mindless Rage
+        // Protection from Evil and Good: creatures of the named types can't charm or frighten the warded creature
+        if ((node.condition === "charmed" || node.condition === "frightened") && t.side !== source.side) {
+          const st = creatureTypeOf(source.ref);
+          if (st && t.effects.some((e) => e.mods?.protectedFromTypes?.includes(st))) break;
+        }
         const expires = node.durationRounds && node.durationRounds > 0 ? state.round + node.durationRounds : Infinity;
         t.conditions.set(node.condition, {
           expiresRound: node.durationRounds === -1 ? Infinity : expires,

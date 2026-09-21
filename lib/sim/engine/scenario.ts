@@ -83,8 +83,11 @@ export interface ScenarioInput {
  */
 export function resolveEnemies(ids: string[], extraById?: Record<string, Combatant>): Combatant[] {
   const parsed = ids.map((raw) => {
-    const m = /^(.+?)\s*[x*]\s*(\d+)$/.exec(raw.trim());
-    return { id: (m ? m[1] : raw).trim(), count: m ? Math.max(1, Number(m[2])) : 1 };
+    const whole = raw.trim();
+    // an id that exists as written wins over the "name x3" reading (a generated id can end in "x7")
+    if (extraById?.[whole] || FIXTURES_BY_ID[whole] || MINIONS[whole]) return { id: whole, count: 1 };
+    const m = /^(.+?)\s*[x*]\s*(\d+)$/.exec(whole);
+    return { id: (m ? m[1] : whole).trim(), count: m ? Math.max(1, Number(m[2])) : 1 };
   });
   // how many of each id in total (across every entry) — decides whether to suffix
   const totals = new Map<string, number>();

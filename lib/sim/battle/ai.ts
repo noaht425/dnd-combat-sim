@@ -3,7 +3,8 @@
 // away), and expose geometry seams so the shared interpreter resolves targets
 // and cover on the grid.
 
-import type { Action, AutomationNode } from "../schema";
+import type { Action, AutomationNode, TargetFilter } from "../schema";
+import { matchesFilter } from "../engine/creatureType";
 import { chooseBest } from "../engine/ai";
 import { runAction } from "../engine/interpreter";
 import { provokeOpportunityAttacks } from "../engine/reactions";
@@ -78,8 +79,9 @@ function isRangedAction(a: Action): boolean {
 }
 
 /** the enemy this unit should aim at: the side's shared focus if it's sane, else grid-nearest with sight */
-function pickTarget(state: BattleState, u: CombatantState): CombatantState | undefined {
-  const foes = livingEnemies(state, u);
+function pickTarget(state: BattleState, u: CombatantState, filter?: TargetFilter): CombatantState | undefined {
+  // a spell's printed restriction (a humanoid, not undead) leaves out whoever it can't affect
+  const foes = livingEnemies(state, u).filter((f) => matchesFilter(f.ref, filter));
   if (!foes.length) return undefined;
   const focusId = u.side === "party" ? state.focusId : u.ref.ai.focusFire ? state.monsterFocusId : undefined;
   const focus = focusId ? state.units.get(focusId) : undefined;
@@ -147,7 +149,9 @@ export function planTurn(state: BattleState, u: CombatantState): BattleIntentPla
 
 /** the spatial plan (target, AoE template, melee-or-not) for taking a specific `action` */
 export function planForAction(state: BattleState, u: CombatantState, action: Action | undefined): BattleIntentPlan {
-  const target = pickTarget(state, u);
+  // the first restriction the action carries (Hold Person: humanoids only) steers who the plan aims at
+  const restriction = action?.automation.find((n): n is Extract<AutomationNode, { type: "target" }> => n.type === "target" && !!n.filter)?.filter;
+  const target = pickTarget(state, u, restriction);
   const plan: BattleIntentPlan = { action, targetId: target?.id, needsMelee: false };
   if (!action) return plan;
 
@@ -322,7 +326,7 @@ export function geoTargetsFor(state: BattleState, u: CombatantState, plan: Battl
     const who = node.who.who;
     if (who === "self" || who === "eachAlly" || who === "lowestHpAlly" || who === "chosenEnemies") return null;
     if (who === "eachEnemy" && node.who.withinFt) return null; // resolved by real distance in selectTargets
-    const foes = livingEnemies(state, source);
+    const foes = livingEnemies(state, source).filter((f) => matchesFilter(f.ref, node.filter));
     if (!foes.length) return [];
     const me = boxOfUnit(state, source);
 

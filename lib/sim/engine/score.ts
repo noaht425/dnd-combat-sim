@@ -1,7 +1,8 @@
 // Heuristics the AI uses to choose actions and targets. Everything here is a
 // cheap expected-value estimate against the *current* board — no dice rolled.
 
-import type { Ability, Action, AutomationNode, Condition } from "../schema";
+import type { Ability, Action, AutomationNode, Condition, TargetFilter } from "../schema";
+import { matchesFilter } from "./creatureType";
 import { avgDice, hitChance, saveFailChance } from "../math";
 import { effectiveAc, isIncapacitated, type CombatState, type CombatantState } from "./state";
 import { saveModifierOf } from "./resolve";
@@ -103,14 +104,23 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
   let control = 0;
   let heal = 0;
 
-  const forEachTarget = (who: string, upTo: number, cb: (t: CombatantState) => void) => {
+  const forEachTarget = (who: string, upTo: number, cb: (t: CombatantState) => void, filter?: TargetFilter) => {
+    // a spell's printed restriction (a humanoid, not undead, ...) leaves ineligible creatures out — a Hold Person is worth nothing against a troll
+    const ok = (u: CombatantState) => matchesFilter(u.ref, filter);
+    const foes = filter ? enemies.filter(ok) : enemies;
+    const friends = filter ? allies.filter(ok) : allies;
     if (who === "self") return cb(actor);
-    if (who === "eachAlly") return allies.forEach(cb);
-    if (who === "lowestHpAlly") return cb([...allies].sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0] ?? actor);
-    if (who === "eachEnemy") return enemies.forEach(cb);
-    if (who === "area" || who === "chosenEnemies") return enemies.slice(0, Math.min(upTo || 3, enemies.length)).forEach(cb);
-    if (who === "lowestHpEnemy") return cb([...enemies].sort((a, b) => a.hp - b.hp)[0]);
-    return cb(focus); // aiChoice / nearest / marked / squishiest
+    if (who === "eachAlly") return friends.forEach(cb);
+    if (who === "lowestHpAlly") {
+      const pick = [...friends].sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0] ?? (filter ? undefined : actor);
+      return pick ? cb(pick) : undefined;
+    }
+    if (who === "eachEnemy") return foes.forEach(cb);
+    if (who === "area" || who === "chosenEnemies") return foes.slice(0, Math.min(upTo || 3, foes.length)).forEach(cb);
+    if (who === "lowestHpEnemy") return foes.length ? cb([...foes].sort((a, b) => a.hp - b.hp)[0]) : undefined;
+    // aiChoice / nearest / marked / squishiest: the focus target, or — when it can't be picked by this spell — the first creature that can
+    const pick = ok(focus) ? focus : foes[0];
+    return pick ? cb(pick) : undefined;
   };
 
   const scoreSubtree = (nodes: AutomationNode[], t: CombatantState, pMul = 1) => {
@@ -162,7 +172,7 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
         scoreSubtree(n.then, t, pMul * 0.6);
         if (n.else) scoreSubtree(n.else, t, pMul * 0.4);
       } else if (n.type === "target") {
-        forEachTarget(n.who.who, "upTo" in n.who ? n.who.upTo : 3, (t2) => scoreSubtree(n.effects, t2, pMul));
+        forEachTarget(n.who.who, "upTo" in n.who ? n.who.upTo : 3, (t2) => scoreSubtree(n.effects, t2, pMul), n.filter);
       } else if (n.type === "useAction") {
         const sub = actor.ref.actions.find((a) => a.id === n.action);
         if (sub) for (let i = 0; i < (n.times ?? 1); i++) scoreSubtree(sub.automation, t, pMul);

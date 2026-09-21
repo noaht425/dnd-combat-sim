@@ -1509,7 +1509,7 @@ function martialPc(
   const proficientSaves = cls === "monk" && level >= 14 ? [...ABILITIES] : saves;
 
   return {
-    id: `pc-${cls}`, name, kind: "pc", size: "medium", level, templateId: cls,
+    id: `pc-${cls}`, name, kind: "pc", creatureType: "humanoid", size: "medium", level, templateId: cls,
     ac, maxHp: hp, speeds: { walk: cls === "monk" ? 40 : 30 },
     abilities, pb, proficientSaves, saveBonusAll: 0,
     resistances: [], resistancesNonmagical: cls === "barbarian" || cf.rage ? ["bludgeoning", "piercing", "slashing"] : [],

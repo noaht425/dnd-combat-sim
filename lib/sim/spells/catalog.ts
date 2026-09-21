@@ -3,6 +3,7 @@
 // Class lists are a hand transcription of the SRD — spot-check before trusting
 // an exotic assignment. Utility spells (no `build`) still occupy a prepared slot.
 
+import type { AutomationNode, TargetFilter } from "../schema";
 import type { Spell, SpellClass, SpellRole } from "./types";
 import { atk, saveDmg, saveCond, effect, heal, conjure, cantripDice } from "./types";
 
@@ -108,7 +109,7 @@ export const SPELLS: Spell[] = [
   S_("longstrider", "Longstrider", 1, "transmutation", [B, D, R, W, A]),
   S_("mage-armor", "Mage Armor", 1, "abjuration", [S, W], { role: "buff", build: effect("mage-armor", { acBonus: 3 }, { who: "self" }) }),
   S_("magic-missile", "Magic Missile", 1, "evocation", [S, W], { role: "damage", max: 9, build: (c) => { const darts = 3 + Math.max(0, c.slotLevel - 1); return [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: darts }, () => ({ type: "damage" as const, amount: "1d4+1", damageType: "force" as const })) }]; } }),
-  S_("protection-from-evil-and-good", "Protection from Evil and Good", 1, "abjuration", [C, D, P, W, K, A], { conc: true, role: "defense", build: effect("prot-evil-good", { attacksAgainstItAdvantage: "dis" }, { who: "self" }) }),
+  S_("protection-from-evil-and-good", "Protection from Evil and Good", 1, "abjuration", [C, D, P, W, K, A], { conc: true, role: "defense", build: effect("prot-evil-good", { protectedFromTypes: ["aberration", "celestial", "elemental", "fey", "fiend", "undead"] }, { who: "self" }) }), // "Creatures of those types have disadvantage on attack rolls against the target. The target also can't be charmed, frightened, or possessed by them."
   S_("purify-food-and-drink", "Purify Food and Drink", 1, "transmutation", [C, D, P, A], { rit: true }),
   S_("ray-of-sickness", "Ray of Sickness", 1, "necromancy", [S, W], { role: "damage", max: 9, build: (c) => { const d = 2 + Math.max(0, c.slotLevel - 1); return [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: c.toHit, onHit: [{ type: "damage", amount: `${d}d8`, damageType: "poison" }, { type: "save", ability: "con", dc: c.dc, onFail: [{ type: "applyCondition", condition: "poisoned", durationRounds: 1 }] }] }] }]; } }),
   S_("sanctuary", "Sanctuary", 1, "abjuration", [C, A], { ct: "bonus", role: "defense", build: effect("sanctuary", { attacksAgainstItAdvantage: "dis" }, { who: "self", durationRounds: 3 }) }),
@@ -265,7 +266,15 @@ export const SPELLS: Spell[] = [
   // ─────────────────────────────── level 4 ────────────────────────────────
   S_("arcane-eye", "Arcane Eye", 4, "divination", [W, A], { conc: true }),
   S_("banishment", "Banishment", 4, "abjuration", [C, P, S, W, K], { conc: true, role: "control", max: 9, build: saveCond("cha", "incapacitated", 10, { saveEnds: false, perSlotTargets: 1, targetsAtLevel: 4, spellLevel: 4 }) }),
-  S_("blight", "Blight", 4, "necromancy", [D, S, W, K], { role: "damage", max: 9, build: saveDmg(4, "con", 8, 8, "necrotic", 1, { who: "aiChoice" }) }),
+  S_("blight", "Blight", 4, "necromancy", [D, S, W, K], { role: "damage", max: 9, build: (c) => {
+    // "If you target a plant creature or a magical plant, it makes the saving throw with disadvantage, and the spell deals maximum damage to it."
+    const dice = 8 + Math.max(0, c.slotLevel - 4);
+    const save = (adv: "dis" | undefined, amount: string): AutomationNode => ({
+      type: "save", ability: "con", dc: c.dc, ...(adv ? { adv } : {}),
+      onFail: [{ type: "damage", amount, damageType: "necrotic" }], onSuccess: [{ type: "damage", amount, damageType: "necrotic", half: true }],
+    });
+    return [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "branch", if: "target.is('plant')", then: [save("dis", String(dice * 8))], else: [save(undefined, `${dice}d8`)] }] }];
+  } }),
   S_("compulsion", "Compulsion", 4, "enchantment", [B], { conc: true, role: "control", build: saveCond("wis", "charmed", 10, { who: "area", saveEnds: true }) }),
   S_("confusion", "Confusion", 4, "enchantment", [B, D, S, W], { conc: true, role: "control", max: 9, build: (c) => [{ type: "target", who: { who: "chosenEnemies", upTo: 3 + Math.max(0, c.slotLevel - 4) }, effects: [{ type: "save", ability: "wis", dc: c.dc, onFail: [{ type: "applyCondition", condition: "incapacitated", durationRounds: 10, saveEnds: { ability: "wis", dc: c.dc, at: "endOfTurn" } }] }] }] }),
   S_("conjure-minor-elementals", "Conjure Minor Elementals", 4, "conjuration", [D, W], { conc: true, role: "summon", build: conjure("fire-elemental", "2", 4) }),
@@ -388,7 +397,13 @@ export const SPELLS: Spell[] = [
   S_("delayed-blast-fireball", "Delayed Blast Fireball", 7, "evocation", [S, W], { conc: true, role: "damage", max: 9, build: saveDmg(7, "dex", 12, 6, "fire", 1) }),
   S_("divine-word", "Divine Word", 7, "evocation", [C], { role: "control", build: saveCond("cha", "stunned", 1, { who: { who: "chosenEnemies", upTo: 4 }, saveEnds: false }) }),
   S_("etherealness", "Etherealness", 7, "transmutation", [B, C, S, W, K]),
-  S_("finger-of-death", "Finger of Death", 7, "necromancy", [S, W, K], { role: "damage", build: (c) => [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "save", ability: "con", dc: c.dc, onFail: [{ type: "damage", amount: "7d8+30", damageType: "necrotic" }], onSuccess: [{ type: "damage", amount: "7d8+30", damageType: "necrotic", half: true }] }] }] }),
+  S_("finger-of-death", "Finger of Death", 7, "necromancy", [S, W, K], { role: "damage", build: (c) => {
+    // "A humanoid killed by this spell rises at the start of your next turn as a zombie that is permanently under your command" (raised at once here)
+    const rises: AutomationNode = { type: "branch", if: "target.hp <= 0", then: [{ type: "branch", if: "target.is('humanoid')", then: [{ type: "summon", statBlock: "zombie", count: "1" }] }] };
+    return [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "save", ability: "con", dc: c.dc,
+      onFail: [{ type: "damage", amount: "7d8+30", damageType: "necrotic" }, rises],
+      onSuccess: [{ type: "damage", amount: "7d8+30", damageType: "necrotic", half: true }, rises] }] }];
+  } }),
   S_("fire-storm", "Fire Storm", 7, "evocation", [C, D, S], { role: "damage", max: 9, build: saveDmg(7, "dex", 7, 10, "fire", 1) }),
   S_("forcecage", "Forcecage", 7, "evocation", [B, W, K], { role: "control", build: saveCond("cha", "restrained", 10, { who: { who: "chosenEnemies", upTo: 2 }, saveEnds: false }) }),
   S_("mirage-arcane", "Mirage Arcane", 7, "illusion", [B, D, W]),
@@ -444,6 +459,32 @@ export const SPELLS: Spell[] = [
   S_("weird", "Weird", 9, "illusion", [W], { conc: true, role: "control", build: (c) => [{ type: "target", who: { who: "chosenEnemies", upTo: 4 }, effects: [{ type: "save", ability: "wis", dc: c.dc, onFail: [{ type: "applyCondition", condition: "frightened", durationRounds: 10, saveEnds: { ability: "wis", dc: c.dc, at: "endOfTurn" } }, { type: "applyEffect", name: "weird", durationRounds: 10, mods: {}, tick: [{ type: "damage", amount: "4d10", damageType: "psychic" }], saveEnds: { ability: "wis", dc: c.dc, at: "endOfTurn" } }] }] }] }),
   S_("wish", "Wish", 9, "conjuration", [S, W], { role: "damage", build: () => [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "damage", amount: "10d6", damageType: "force" }] }] }),
 ];
+
+/**
+ * Who a spell may pick, transcribed from the printed spell text (dnd5e.wikidot.com/spell:<id>). Applied to the spell's top-level target nodes, so the
+ * creature is left out of the pool before anything is chosen from it. A creature with no known type is never excluded (see engine/creatureType.ts).
+ */
+const NO_UNDEAD_OR_CONSTRUCT: TargetFilter = { notTypes: ["undead", "construct"] }; // "This spell has no effect on undead or constructs."
+const TARGET_FILTERS: Record<string, TargetFilter> = {
+  "charm-person": { types: ["humanoid"] },        // "You attempt to charm a humanoid you can see within range."
+  "hold-person": { types: ["humanoid"] },         // "Choose a humanoid..." (upcast: "one additional humanoid")
+  "crown-of-madness": { types: ["humanoid"] },    // "One humanoid of your choice that you can see within range..."
+  "dominate-person": { types: ["humanoid"] },     // "You attempt to beguile a humanoid that you can see within range."
+  "dominate-beast": { types: ["beast"] },         // "You attempt to beguile a beast that you can see within range."
+  sleep: { notTypes: ["undead"], notImmune: ["charmed"] }, // "Undead and creatures immune to being charmed aren't affected by this spell."
+  "tashas-hideous-laughter": { minInt: 5 },       // "A creature with an Intelligence score of 4 or less isn't affected."
+  command: { notTypes: ["undead"] },              // "The spell has no effect if the target is undead..."
+  "hold-monster": { notTypes: ["undead"] },       // "This spell has no effect on undead."
+  blight: NO_UNDEAD_OR_CONSTRUCT,                 // "This spell has no effect on undead or constructs."
+  "cure-wounds": NO_UNDEAD_OR_CONSTRUCT, "healing-word": NO_UNDEAD_OR_CONSTRUCT, "mass-healing-word": NO_UNDEAD_OR_CONSTRUCT,
+  "mass-cure-wounds": NO_UNDEAD_OR_CONSTRUCT, heal: NO_UNDEAD_OR_CONSTRUCT, "mass-heal": NO_UNDEAD_OR_CONSTRUCT, "power-word-heal": NO_UNDEAD_OR_CONSTRUCT,
+};
+for (const sp of SPELLS) {
+  const filter = TARGET_FILTERS[sp.id];
+  const inner = sp.build;
+  if (!filter || !inner) continue;
+  sp.build = (c) => inner(c).map((n): AutomationNode => (n.type === "target" ? { ...n, filter } : n));
+}
 
 export const SPELLS_BY_ID: Record<string, Spell> = Object.fromEntries(SPELLS.map((s) => [s.id, s]));
 

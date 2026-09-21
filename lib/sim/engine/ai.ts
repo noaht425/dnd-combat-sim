@@ -3,7 +3,8 @@
 // with control, then blast; the boss uses control on the biggest threat and
 // saves its 1/day powers unless they clearly swing the fight.
 
-import type { Action, Combatant } from "../schema";
+import type { Action, AutomationNode, Combatant } from "../schema";
+import { matchesFilter } from "./creatureType";
 import { runAction, actionBranchGateFails } from "./interpreter";
 import { scoreAction, estimatedThreat } from "./score";
 import { provokeOpportunityAttacks } from "./reactions";
@@ -63,7 +64,21 @@ export function actionAvailable(state: CombatState, u: CombatantState, a: Action
   }
   // a conditionally-gated action (e.g. "if it sang since its last turn -> raise its minions")
   if (actionBranchGateFails(state, u, a)) return false;
+  // a spell whose printed restriction leaves nobody to pick (Hold Person with only trolls in view) isn't worth a turn or a slot
+  if (noLegalTarget(state, u, a)) return false;
   return true;
+}
+
+/** every top-level target node of `a` carries a restriction, and no creature on the board satisfies it */
+function noLegalTarget(state: CombatState, u: CombatantState, a: Action): boolean {
+  const nodes = a.automation.flatMap((n) => (n.type === "target" ? [n] : n.type === "branch" ? n.then.filter((x): x is Extract<AutomationNode, { type: "target" }> => x.type === "target") : []));
+  if (!nodes.length || !nodes.every((n) => n.filter)) return false;
+  const units = [...state.units.values()].filter((x) => x.alive && !x.downed);
+  return nodes.every((n) => {
+    const friendly = n.who.who === "lowestHpAlly" || n.who.who === "eachAlly";
+    const pool = units.filter((x) => (friendly ? x.side === u.side : x.side !== u.side));
+    return !pool.some((x) => matchesFilter(x.ref, n.filter));
+  });
 }
 
 /** the Attack action or one of its variants (`attack-astral-arms`, `attack-breath`, ...): the after-Attack bonus action follows any of them */

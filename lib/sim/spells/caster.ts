@@ -65,7 +65,7 @@ export function makeCaster(spec: CasterSpec): Combatant {
   const opener = spec.opener ?? pickOpener(actions);
 
   return {
-    id: spec.id, name: spec.name, kind: "pc", size: "medium", level: spec.level,
+    id: spec.id, name: spec.name, kind: "pc", creatureType: "humanoid", size: "medium", level: spec.level,
     templateId: spec.id,
     ac: spec.ac, maxHp: spec.hp, speeds: { walk: 30 },
     abilities: spec.abilities, pb, proficientSaves: spec.proficientSaves,

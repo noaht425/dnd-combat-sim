@@ -42,6 +42,7 @@ function minion(base: Partial<Combatant> & Pick<Combatant, "id" | "name" | "ac" 
 
 const fireElemental = minion({
   id: "fire-elemental",
+  creatureType: "elemental",
   name: "Fire Elemental",
   cr: "5",
   ac: 13,
@@ -86,6 +87,7 @@ const fireElemental = minion({
 
 const chainDevil = minion({
   id: "chain-devil",
+  creatureType: "fiend",
   name: "Chain Devil",
   cr: "8",
   ac: 16,
@@ -139,6 +141,7 @@ const chainDevil = minion({
 // Animals, Giant Insect, …) so those spells actually field something.
 const zombie = minion({
   id: "zombie",
+  creatureType: "undead",
   name: "Zombie",
   cr: "1/4",
   ac: 8,
@@ -163,6 +166,7 @@ const zombie = minion({
 
 const wolf = minion({
   id: "wolf",
+  creatureType: "beast",
   name: "Wolf",
   cr: "1/4",
   ac: 13,
@@ -201,6 +205,7 @@ const wolf = minion({
 // a level ~12-16 party, an abstraction otherwise.
 const primalCompanion = minion({
   id: "primal-companion",
+  creatureType: "beast",
   name: "Primal Companion",
   cr: "4",
   ac: 14,
@@ -234,6 +239,7 @@ const primalCompanion = minion({
 
 const primalSpirit = minion({
   id: "primal-spirit",
+  creatureType: "elemental",
   name: "Primal Spirit",
   cr: "3",
   ac: 13,
@@ -263,6 +269,7 @@ const primalSpirit = minion({
 // abstraction as Primal Companion above.
 const steelDefender = minion({
   id: "steel-defender",
+  creatureType: "construct",
   name: "Steel Defender",
   cr: "2",
   ac: 15,
@@ -321,7 +328,7 @@ export function steelDefenderFor(level: number, int: number, pb: number): string
   // uses (INT mod per long rest) through the strike for extra force damage
   const joltDice = level >= 15 ? "4d6" : "2d6";
   PC_SUMMONS[id] = minion({
-    id, name: "Steel Defender", size: "medium",
+    id, creatureType: "construct", name: "Steel Defender", size: "medium",
     ac: improved ? 17 : 15,
     maxHp: 2 + int + 5 * level,
     speeds: { walk: 40 },
@@ -383,7 +390,7 @@ export function houndOfIllOmenFor(level: number): string {
   if (PC_SUMMONS[id]) return id;
   const wolf = FIXTURES_BY_ID["dire-wolf"];
   if (!wolf) throw new Error("houndOfIllOmenFor needs the SRD dire wolf fixture");
-  PC_SUMMONS[id] = parseCombatant({ ...wolf, id, name: "Hound of Ill Omen", size: "medium" });
+  PC_SUMMONS[id] = parseCombatant({ ...wolf, id, name: "Hound of Ill Omen", size: "medium", creatureType: "monstrosity" }); // "it counts as a monstrosity, not a beast"
   return id;
 }
 
@@ -523,7 +530,7 @@ export function primalBeastFor(kind: PrimalBeastKind, level: number, pb: number,
           ] }
         : { type: "attack", bonus: attackBonus, onHit: [{ type: "damage", amount: `1d4+${3 + pb}`, damageType: "slashing" }] };
   PC_SUMMONS[id] = minion({
-    id, name: `Beast of the ${kind[0].toUpperCase()}${kind.slice(1)}`, size: sky ? "small" : "medium",
+    id, creatureType: "beast", name: `Beast of the ${kind[0].toUpperCase()}${kind.slice(1)}`, size: sky ? "small" : "medium",
     ac: 13 + pb,
     maxHp: sky ? 4 + 4 * level : 5 + 5 * level,
     speeds: kind === "land" ? { walk: 40, climb: 40 } : kind === "sea" ? { walk: 5, swim: 60 } : { walk: 10, fly: 60 },
@@ -552,7 +559,7 @@ export function drakeFor(level: number, pb: number, essence: import("../schema")
   REVERTS_ON_SUMMONER_DEATH.add(id); // "The drake remains until ... you die."
   const magicFang = level >= 15 ? "2d6" : level >= 7 ? "1d6" : undefined;
   PC_SUMMONS[id] = minion({
-    id, name: "Drake Companion", size: level >= 15 ? "large" : level >= 7 ? "medium" : "small",
+    id, creatureType: "dragon", name: "Drake Companion", size: level >= 15 ? "large" : level >= 7 ? "medium" : "small",
     ac: 14 + pb,
     maxHp: 5 + 5 * level,
     speeds: level >= 7 ? { walk: 40, fly: 40 } : { walk: 40 },
@@ -588,7 +595,7 @@ export function feySpiritFor(spellLevel: number, pb: number, wis: number): strin
   if (PC_SUMMONS[id]) return id;
   const swings = Math.max(1, Math.floor(spellLevel / 2));
   PC_SUMMONS[id] = minion({
-    id, name: "Fey Spirit", size: "small",
+    id, creatureType: "fey", name: "Fey Spirit", size: "small",
     ac: 12 + spellLevel,
     maxHp: 30 + 10 * (spellLevel - 3),
     speeds: { walk: 40 },

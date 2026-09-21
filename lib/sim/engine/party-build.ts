@@ -94,6 +94,7 @@ export function makeGenericParty(level: number, size = 4): Combatant[] {
       id: `pc-${i + 1}`,
       name: `${role === "healer" ? "Cleric" : role === "controller" ? "Wizard" : "Striker"} ${i + 1}`,
       kind: "pc",
+      creatureType: "humanoid",
       size: "medium",
       level,
       ac: 18,

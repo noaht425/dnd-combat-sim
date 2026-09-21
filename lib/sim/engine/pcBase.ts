@@ -27,7 +27,7 @@ export function pc(base: {
   bonusRoutine?: string[]; bonusAfterAttack?: string[];
 }): Combatant {
   return {
-    id: base.id, name: base.name, kind: "pc", size: "medium", level: base.level,
+    id: base.id, name: base.name, kind: "pc", creatureType: "humanoid", size: "medium", level: base.level,
     templateId: base.id, ac: base.ac, maxHp: base.hp, speeds: { walk: base.speed ?? 30 },
     ...(base.initiativeBonus !== undefined ? { initiativeBonus: base.initiativeBonus } : {}),
     abilities: base.abilities, pb: pbFor(base.level), proficientSaves: base.proficientSaves,

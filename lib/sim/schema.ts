@@ -66,6 +66,22 @@ export type Size = (typeof SIZES)[number];
 
 // ------------------------------- targeting ---------------------------------
 
+/** the fourteen creature types of the Monster Manual; a stat block with none is treated as "unknown" and is never excluded by a type restriction */
+export const creatureTypeSchema = z.enum([
+  "aberration", "beast", "celestial", "construct", "dragon", "elemental", "fey", "fiend", "giant", "humanoid", "monstrosity", "ooze", "plant", "undead",
+]);
+export type CreatureType = z.infer<typeof creatureTypeSchema>;
+
+/** who a `target` node may pick: a spell's printed restriction ("choose a humanoid", "undead aren't affected", "an Intelligence score of 4 or less
+ *  isn't affected"). Ineligible creatures are left out of the pool BEFORE the node chooses, so a Hold Person never picks a troll. */
+export const targetFilterSchema = z.object({
+  types: z.array(creatureTypeSchema).optional(),      // only creatures of one of these types
+  notTypes: z.array(creatureTypeSchema).optional(),   // never creatures of these types
+  notImmune: z.array(conditionSchema).optional(),     // never a creature immune to one of these conditions ("creatures immune to being charmed")
+  minInt: z.number().int().optional(),                // an Intelligence score of at least this
+});
+export type TargetFilter = z.infer<typeof targetFilterSchema>;
+
 export const targetSpecSchema = z.discriminatedUnion("who", [
   z.object({ who: z.literal("self") }),
   z.object({ who: z.literal("aiChoice") }),         // let this combatant's ai.targetPriority pick
@@ -152,6 +168,8 @@ export const effectModsSchema = z.object({
   resistTypes: z.array(damageTypeSchema).optional(),
   /** advantage on saving throws with these abilities (Rage: Strength) */
   saveAdvantageOn: z.array(abilitySchema).optional(),
+  /** creatures of these types have disadvantage on attack rolls against the holder and can't charm or frighten it (Protection from Evil and Good) */
+  protectedFromTypes: z.array(creatureTypeSchema).optional(),
   /** the holder can't gain these conditions while the effect lasts (Mindless Rage) */
   immuneConditions: z.array(conditionSchema).optional(),
   /** whoever hits the holder takes this damage back (a wild-magic surge, Spiked Retribution); `meleeOnly` = only from a melee attack */
@@ -187,7 +205,7 @@ export const saveEndsSchema = z.object({
 
 export type AutomationNode =
   | { type: "note"; text: string }
-  | { type: "target"; who: TargetSpec; effects: AutomationNode[] }
+  | { type: "target"; who: TargetSpec; effects: AutomationNode[]; filter?: TargetFilter }
   | { type: "attack"; bonus: number | string; adv?: AdvMode; critRange?: number; onHit: AutomationNode[]; onMiss?: AutomationNode[] }
   | { type: "save"; ability: Ability; dc: number | string; adv?: AdvMode; onFail: AutomationNode[]; onSuccess?: AutomationNode[] }
   | { type: "damage"; amount: string; damageType: DamageType; half?: boolean; ignoreResistances?: boolean; diceMultiplier?: number; requiresSneakAttack?: boolean; weaponDice?: boolean; oncePerTurn?: string }
@@ -245,7 +263,7 @@ export type AutomationNode =
 export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
   z.union([
     z.object({ type: z.literal("note"), text: z.string() }),
-    z.object({ type: z.literal("target"), who: targetSpecSchema, effects: z.array(automationNodeSchema) }),
+    z.object({ type: z.literal("target"), who: targetSpecSchema, effects: z.array(automationNodeSchema), filter: targetFilterSchema.optional() }),
     z.object({
       type: z.literal("attack"),
       bonus: z.union([z.number().int(), exprSchema]),
@@ -624,6 +642,8 @@ export const combatantSchema = z.object({
   legendaryActions: legendaryActionsSchema.optional(),
   lairActions: lairActionsSchema.optional(),
   regionalNote: z.string().optional(),
+  /** the creature's type; when absent it is read from `flavor.type` ("fiend (devil)" -> fiend), and a stat block with neither is "unknown" */
+  creatureType: creatureTypeSchema.optional(),
   flavor: flavorSchema.optional(),
   /** a summoned companion that takes no actions of its own on its turn (beyond a plain Dodge, if it
    *  has a "dodge" action) unless its summoner spends a bonus action to command it — Steel

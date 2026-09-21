@@ -4,6 +4,7 @@
 
 import type { Ability, AdvMode, Condition, DamageType } from "../schema";
 import { abilityMod } from "../math";
+import { creatureTypeOf } from "./creatureType";
 import {
   CombatantState,
   CombatState,
@@ -268,6 +269,11 @@ function rollAttackImpl(
     if (e.mods?.disadvantageUnlessTargetingSource && e.sourceId !== target.id) adv = combineAdv(adv, "dis");
     if (e.mods?.disadvantageOnlyTargetingSource && e.sourceId === target.id) adv = combineAdv(adv, "dis");
   }
+  // Protection from Evil and Good: creatures of the named types have disadvantage on attack rolls against the warded creature
+  {
+    const at = creatureTypeOf(attacker.ref);
+    if (at && target.effects.some((e) => e.mods?.protectedFromTypes?.includes(at))) adv = combineAdv(adv, "dis");
+  }
   // Assassin's Assassinate: advantage against a creature that hasn't taken a turn yet
   if (!target.hasTakenTurn && attacker.ref.specialRules.some((r) => r.rule === "assassinate")) adv = combineAdv(adv, "adv");
   // Ambush / Assassinate — advantage on round 1 vs foes that haven't acted
@@ -408,7 +414,7 @@ export function rollSave(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode } = {},
 ): SaveResult {
   // Slayer's Counter — a hit on the creature forcing the save makes the save succeed outright
   const forcer = opts.sourceId ? state.units.get(opts.sourceId) : undefined;
@@ -442,7 +448,7 @@ function rollSaveImpl(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode } = {},
 ): SaveResult {
   const magical = opts.magical ?? true;
 
@@ -455,7 +461,7 @@ function rollSaveImpl(
     return maybeLegendary(state, target, false, opts);
   }
 
-  let adv: AdvMode = "flat";
+  let adv: AdvMode = opts.adv ?? "flat"; // (a save the effect itself makes harder or easier: Blight against a plant)
   if (magical && (ruleActive(target, "magicResistance") || ruleActive(target, "spellResistance"))) adv = "adv"; // (Spell Resistance: advantage on saves against spells)
   const advOnSaves = target.ref.specialRules.find((r) => r.rule === "advantageOnSaves");
   if (advOnSaves && advOnSaves.rule === "advantageOnSaves" && advOnSaves.abilities.includes(ability)) adv = "adv";

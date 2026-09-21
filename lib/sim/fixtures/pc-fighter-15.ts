@@ -7,6 +7,7 @@ export const pcFighter15: Combatant = {
   id: "pc-fighter-15",
   name: "Bront (Fighter 15)",
   kind: "pc",
+  creatureType: "humanoid",
   size: "medium",
   level: 15,
   templateId: "battlemaster-fighter",
