@@ -6,7 +6,8 @@ import { applyDamage, critRangeFor, rollAttack, rollSave, type AttackResult } fr
 import { MINIONS, PC_SUMMONS } from "./minions";
 import { addFlatBonus } from "../spells/spellTransforms";
 import { creatureTypeOf, isCreatureType, matchesFilter } from "./creatureType";
-import { instinctiveCharm, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, violentAttraction } from "./reactions";
+import { BEAST_FORMS, shapedAs } from "./beastForms";
+import { instinctiveCharm, natureSanctuary, reactToDeath, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, violentAttraction } from "./reactions";
 import {
   CombatantState,
   CombatState,
@@ -141,7 +142,7 @@ function rollDamage(state: CombatState, amount: string, mult = 1, crit = false, 
  *  weapon vs. spell attacks). A `oneShot` effect (a one-hit smite) is consumed immediately;
  *  if that was the caster's concentration spell, ending it here is correct — the spell's own
  *  duration is "until the triggering hit lands or 1 minute", not the full minute regardless. */
-function applyExtraDamageOnHit(state: CombatState, attacker: CombatantState, target: CombatantState, res: AttackResult): void {
+function applyExtraDamageOnHit(state: CombatState, attacker: CombatantState, target: CombatantState, res: AttackResult, spell = false): void {
   // marks on the target that only the creature that applied them cashes in (Slayer's Prey, Planar Warrior)
   for (const e of [...target.effects]) {
     const mark = e.mods?.extraDamageWhenHitBySource;
@@ -153,7 +154,7 @@ function applyExtraDamageOnHit(state: CombatState, attacker: CombatantState, tar
   }
   for (const e of [...attacker.effects]) {
     const extra = e.mods?.extraDamageOnHit;
-    if (!extra) continue;
+    if (!extra || (extra.weaponOnly && spell)) continue;
     if (e.mods?.extraDamageOncePerTurn && !claimOncePerTurn(state, attacker, `extra:${e.name}`)) continue;
     const amt = rollDamage(state, extra.amount, 1, res.crit);
     applyDamage(state, target, amt, extra.damageType, {
@@ -276,6 +277,9 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     // so it counts as "singing" from round 1 until it drops.
     [/self\.(is_?singing|singing)/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
     [/self\.sang_?since_?last_?turn/i, () => s.alive && (st.round <= 1 || s.lastSangRound !== undefined)],
+    [/self\.shape_hurt/i, () => !!s.shape && s.hp < s.maxHp / 2],
+    [/self\.shaped/i, () => !!s.shape],
+    [/self\.unshaped/i, () => !s.shape],
     [/target\.int\s*>=\s*(\d+)/i, () => !!tgt && tgt.ref.abilities.int >= Number(RegExp.$1)],
     [/target\.is\('([a-z]+)'\)/i, () => !!tgt && isCreatureType(tgt.ref, RegExp.$1 as never)],
     [/target\.has\('([^']+)'\)/i, () => !!tgt && (tgt.effects.some((e) => e.name === RegExp.$1) || hasCondition(tgt, RegExp.$1 as Condition))],
@@ -520,6 +524,10 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         // Instinctive Charm: an attacker that fails the Wisdom save must swing at another creature instead
         const diverted = !ctx.spell ? instinctiveCharm(state, source, t) : undefined;
         if (diverted) t = diverted;
+        // Nature's Sanctuary: a beast or plant that fails the Wisdom save attacks someone else, or misses
+        const hesitates = !ctx.spell ? natureSanctuary(state, source, t) : undefined;
+        if (hesitates === "miss") { if (ctx.attackTally) ctx.attackTally.rolled++; break; }
+        if (hesitates) t = hesitates;
         // Cloak of Shadows: making an attack ends the invisibility
         if (source.effects.some((e) => e.mods?.endsOnAttacking)) {
           source.effects = source.effects.filter((e) => !e.mods?.endsOnAttacking);
@@ -549,7 +557,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         if (res.hit) {
           tagAmbushTarget(state, source, t);
           runAutomation(node.onHit, next);
-          applyExtraDamageOnHit(state, source, t, res);
+          applyExtraDamageOnHit(state, source, t, res, !!ctx.spell);
           fireOnHitTraits(state, t, source);
           if (t.ref.specialRules.some((r) => r.rule === "multiattackDefense") && t.alive) { // +4 AC against this attacker until its next turn
             t.effects = t.effects.filter((e) => !(e.name === "multiattack-defense" && e.sourceId === source.id));
@@ -634,6 +642,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
             fireOnKillTraits(state, source);
             grimHarvest(state, source, t, ctx);
           }
+          if (!t.alive) reactToDeath(state, t); // a Spores druid's zombie, a Wildfire druid's flames
         }
         break;
       }
@@ -663,7 +672,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         // Protection from Evil and Good: creatures of the named types can't charm or frighten the warded creature
         if ((node.condition === "charmed" || node.condition === "frightened") && t.side !== source.side) {
           const st = creatureTypeOf(source.ref);
-          if (st && t.effects.some((e) => e.mods?.protectedFromTypes?.includes(st))) break;
+          if (st && t.effects.some((e) => e.mods?.protectedFromTypes?.includes(st) || e.mods?.noCharmFrightFromTypes?.includes(st))) break;
         }
         const expires = node.durationRounds && node.durationRounds > 0 ? state.round + node.durationRounds : Infinity;
         t.conditions.set(node.condition, {
@@ -842,6 +851,25 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         break;
       }
 
+      case "omenRoll": {
+        if (!source.omen) {
+          source.omen = state.rng.next() < 0.5 ? "weal" : "woe";
+          say(state, `${source.name} reads the stars: ${source.omen}`, source.id);
+        }
+        break;
+      }
+
+      case "wildShape": {
+        const f = BEAST_FORMS[node.form];
+        if (!f || source.shape) break;
+        source.shape = { ref: source.ref, hp: source.hp, maxHp: source.maxHp, ac: source.ac, form: f.id };
+        source.ref = shapedAs(source.ref, f, node.beastSpells === true);
+        source.hp = source.maxHp = f.ref.maxHp as number;
+        source.ac = f.ref.ac;
+        if (f.onShape) runAutomation(f.onShape, { state, source, scope: [source], last: {}, depth: 0 });
+        break;
+      }
+
       case "takeControl": {
         const t = ctx.scope[0];
         if (!t || !t.alive || t.side === source.side) break;
@@ -922,6 +950,12 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           const made = node.damageBonus ? withDamageBonus(ref, node.damageBonus) : ref;
           const ms = initCombatant(made, source.side, suffix);
           if (node.hpBonus) { ms.maxHp += node.hpBonus; ms.hp += node.hpBonus; }
+          // Mighty Summoner (Shepherd): beasts and fey summoned have 2 extra hit points per Hit Die
+          if (source.ref.specialRules.some((r) => r.rule === "mightySummoner") && isCreatureType(ref, "beast", "fey")) {
+            const dice = typeof ref.maxHp === "string" ? Number(/^(\d+)d/.exec(ref.maxHp)?.[1] ?? 0) : 0;
+            ms.maxHp += 2 * dice; ms.hp += 2 * dice;
+          }
+          if (node.hp) ms.hp = Math.min(ms.maxHp, node.hp);
           ms.name = `${ref.name} ${existing + i + 1}`;
           ms.summonerId = source.id;
           if (node.tempHp) ms.tempHp = Math.max(0, Math.round(rollDamage(state, node.tempHp)));
@@ -997,6 +1031,7 @@ export function runAction(
   const before = hpSnapshot(state);
   const condsBefore = new Map([...state.units.values()].map((u) => [u.id, new Set(u.conditions.keys())]));
   const fxBefore = new Map([...state.units.values()].map((u) => [u.id, new Set(u.effects.map((e) => e.name))]));
+  const shapeBefore = new Map([...state.units.values()].map((u) => [u.id, u.shape?.form ?? ""]));
   const saveLog = new Map<string, boolean>();
   const attackTally = { rolled: 0, hit: 0, unreachable: false };
   runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, saveLog, attackTally, spell, spellSchool: action.school, spellLevel: action.spellLevel, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
@@ -1007,7 +1042,8 @@ export function runAction(
 
   const parts: string[] = [];
   for (const u of onlyCommands ? [] : state.units.values()) {
-    const delta = (before.get(u.id) ?? 0) - (u.hp + u.tempHp);
+    // (changing shape swaps one hit point pool for another: that isn't damage or healing)
+    const delta = (shapeBefore.get(u.id) ?? "") !== (u.shape?.form ?? "") ? 0 : (before.get(u.id) ?? 0) - (u.hp + u.tempHp);
     // an ally *losing* HP during my action is always reaction / aura
     // collateral (a triggered breath, a damaging aura) — that reaction logs
     // its own line, so don't double-count it here. The source's own HP loss
@@ -1021,6 +1057,12 @@ export function runAction(
     const newFx = u.effects.map((e) => e.name).filter((n) => !fxBefore.get(u.id)?.has(n));
     const bits: string[] = [];
     if (saveLog.has(u.id)) bits.push(saveLog.get(u.id) ? "save" : "FAIL");
+    const formBefore = shapeBefore.get(u.id) ?? "";
+    const formNow = u.shape?.form ?? "";
+    if (formNow !== formBefore) {
+      // a new form (or the druid's own shape again) says what it is; its hit points are a new pool, not damage
+      bits.push(formNow ? `becomes ${/^[aeiou]/i.test(BEAST_FORMS[formNow]?.name ?? formNow) ? "an" : "a"} ${BEAST_FORMS[formNow]?.name ?? formNow} (${u.hp}/${u.maxHp})` : `back in their own shape (${u.hp}/${u.maxHp})`);
+    }
     if (delta > 0) bits.push(`-${delta} (${Math.max(0, u.hp)}/${u.maxHp})`);
     else if (delta < 0) bits.push(`+${-delta} (${u.hp}/${u.maxHp})`);
     if (u.downed && (before.get(u.id) ?? 1) > 0) bits.push("DOWN");

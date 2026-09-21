@@ -7,6 +7,7 @@ import { eldritchCannonFor, houndOfIllOmenFor, steelDefenderFor, type CannonVari
 import { rogueKit } from "../engine/rogueKit";
 import { RANGER_BUILDERS } from "./rangerTemplates";
 import { WIZARD_BUILDERS } from "./wizardTemplates";
+import { DRUID_BUILDERS } from "./druidTemplates";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
@@ -1017,38 +1018,6 @@ export function arcaneTricksterRogue(level: number): Combatant {
   };
 }
 
-export function moonDruid(level: number): Combatant {
-  const pb = pbFor(level);
-  const wis = pb === 6 ? 5 : 4;
-  const beastDie = level >= 8 ? 10 : level >= 6 ? 8 : 6; // rough CR-appropriate beast form scaling
-  const c = makeCaster({
-    id: "moon-druid", name: `Druid ${level}`, level, spellClass: "druid", casterKind: "full", spellAbility: "wis",
-    ac: 15, hp: between(level, 10, 8 * 20 + 16), // a little extra cushion on top of Wild Shape's own temp HP
-    abilities: { str: score(1), dex: score(1), con: score(3), int: score(0), wis: score(wis), cha: score(0) },
-    proficientSaves: ["con", "int", "wis"], focus: "controller",
-    extraActions: [
-      {
-        // Combat Wild Shape — the actual signature feature; a bonus action
-        // (not the action cost non-Moon druids pay), matching RAW. This isn't
-        // a real transformation (the engine has no way to gate a follow-up
-        // action behind "currently wild-shaped," so an immediate claw swing
-        // is folded into the same activation instead of unlocking a separate
-        // beast-form action) — but it captures Wild Shape's real combat
-        // impact: a temp-HP buffer plus a hard-hitting extra attack.
-        id: "wild-shape", name: "Wild Shape (Bear)", cost: { bonus: 1 }, recharge: "none",
-        limitedUse: { resource: "wild_shape", amount: 1 },
-        automation: [
-          { type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: `4d${beastDie}` }] },
-          { type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: pb + 4, onHit: [{ type: "damage", amount: `2d${beastDie}+4`, damageType: "bludgeoning" }] }] },
-        ],
-      },
-      ...stub(`2d6+3`, pb + 4),
-    ],
-    keepDistance: false, opener: ["wild-shape"], targetPriority: "lowestHp",
-  });
-  return { ...c, resources: { ...c.resources, wild_shape: { max: 2, recharge: "shortRest" } } };
-}
-
 export function loreBard(level: number): Combatant {
   const pb = pbFor(level);
   const cha = pb === 6 ? 5 : 4;
@@ -1118,7 +1087,7 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "storm-sorcerer": stormSorcerer,
   "aberrant-mind-sorcerer": aberrantMindSorcerer,
   "clockwork-soul-sorcerer": clockworkSoulSorcerer,
-  "moon-druid": moonDruid,
+  ...DRUID_BUILDERS,
   "lore-bard": loreBard,
   "warlock": warlock,
 };

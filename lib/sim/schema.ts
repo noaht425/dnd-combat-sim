@@ -123,7 +123,7 @@ export const effectModsSchema = z.object({
   attackAdvantage: advModeSchema.optional(),        // advantage/disadvantage on the affected creature's attacks
   attacksAgainstItAdvantage: advModeSchema.optional(),
   damageTakenMultiplier: z.number().optional(),     // 0.5 = resistance-like, 2 = vulnerability, 1 = none
-  extraDamageOnHit: z.object({ amount: diceSchema, damageType: damageTypeSchema }).optional(),
+  extraDamageOnHit: z.object({ amount: diceSchema, damageType: damageTypeSchema, weaponOnly: z.boolean().optional() }).optional(), // `weaponOnly`: not on a spell attack (Symbiotic Entity)
   attackDiceMultiplier: z.number().int().optional(),// a "doubled dice" phase buff
   cannotHeal: z.boolean().optional(),               // a "can't be healed" aura (wight-style)
   maxHpReduction: diceSchema.optional(),            // a max-HP-drain rider
@@ -171,6 +171,10 @@ export const effectModsSchema = z.object({
   saveAdvantageOn: z.array(abilitySchema).optional(),
   /** creatures of these types have disadvantage on attack rolls against the holder and can't charm or frighten it (Protection from Evil and Good) */
   protectedFromTypes: z.array(creatureTypeSchema).optional(),
+  /** a natural d20 lower than this counts as this on the holder's Constitution saves to keep concentration (the Dragon constellation: 10) */
+  concentrationD20Floor: z.number().int().optional(),
+  /** creatures of these types can't charm or frighten the holder (Nature's Ward) */
+  noCharmFrightFromTypes: z.array(creatureTypeSchema).optional(),
   /** the holder can't gain these conditions while the effect lasts (Mindless Rage) */
   immuneConditions: z.array(conditionSchema).optional(),
   /** whoever hits the holder takes this damage back (a wild-magic surge, Spiked Retribution); `meleeOnly` = only from a melee attack */
@@ -225,7 +229,7 @@ export type AutomationNode =
   | { type: "spendResource"; resource: string; amount?: number; from?: "party" }
   | { type: "rechargeRoll"; resource: string }
   | { type: "useAction"; action: string; times?: number }
-  | { type: "summon"; statBlock: string; count: string; max?: number; note?: string; tempHp?: string; hpBonus?: number; damageBonus?: number }
+  | { type: "summon"; statBlock: string; count: string; max?: number; note?: string; tempHp?: string; hpBonus?: number; damageBonus?: number; hp?: number }
   /** put a damage-absorbing ward on the target: `dice` d8s it can expend, one at a time, to reduce damage
    *  it takes (Clockwork Soul's Bastion of Law); replaces any ward this caster gave someone else */
   | { type: "ward"; dice: number }
@@ -243,6 +247,11 @@ export type AutomationNode =
   | { type: "portentRoll"; dice: number }
   /** the target changes sides and obeys the source until the source takes control of another (Command Undead); it counts as one of the source's minions */
   | { type: "takeControl" }
+  /** Wild Shape: the source becomes `form` (a beast, or an elemental) — its statistics, hit points and attacks are the form's until it reverts; `beastSpells`
+   *  keeps its spells (Beast Spells, 18th) */
+  | { type: "wildShape"; form: string; beastSpells?: boolean }
+  /** Cosmic Omen: after a long rest, roll for Weal (even) or Woe (odd), unless already rolled */
+  | { type: "omenRoll" }
   /** Inquisitive's Insightful Fighting: `bonus` is the rogue's Wisdom (Insight) modifier, rolled against the
    *  target's Charisma (Deception). On a success the rogue may Sneak Attack that target without advantage. */
   | { type: "insightfulFighting"; bonus: number }
@@ -339,6 +348,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     z.object({ type: z.literal("regainSlot"), below: z.number().int().min(2).max(9) }),
     z.object({ type: z.literal("portentRoll"), dice: z.number().int().min(1).max(3) }),
     z.object({ type: z.literal("takeControl") }),
+    z.object({ type: z.literal("wildShape"), form: z.string(), beastSpells: z.boolean().optional() }),
+    z.object({ type: z.literal("omenRoll") }),
     z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
     z.object({ type: z.literal("spendReaction") }),
     z.object({ type: z.literal("spendBonusAction") }),
@@ -357,6 +368,7 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       tempHp: diceSchema.optional(),               // temporary hit points each summon appears with
       hpBonus: z.number().int().positive().optional(),     // added to each summon's hit point maximum (Undead Thralls: the wizard's level)
       damageBonus: z.number().int().positive().optional(), // added to each summon's weapon damage rolls (Undead Thralls: the proficiency bonus)
+      hp: z.number().int().positive().optional(),          // the summon appears with this many hit points, whatever its maximum (Fungal Infestation's zombie: 1)
     }),
     z.object({ type: z.literal("ward"), dice: z.number().int().positive() }),
     z.object({
@@ -444,6 +456,16 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("arcaneRecovery") }),
   // Power Surge (War Magic): a Counterspell (or Dispel Magic) you succeed with gives one more surge, up to the cap in `resource`'s max
   z.object({ rule: z.literal("surgeOnCounter"), resource: z.string() }),
+  // Fungal Body (Spores, 14th): any critical hit against you counts as a normal hit instead, unless you're incapacitated
+  z.object({ rule: z.literal("critImmune") }),
+  // Mighty Summoner (Shepherd, 6th): beasts and fey you summon have 2 extra hit points per Hit Die
+  z.object({ rule: z.literal("mightySummoner") }),
+  // Guardian Spirit (Shepherd, 10th): beasts and fey you summoned regain hit points equal to half your druid level at the end of their turns in the totem's aura
+  z.object({ rule: z.literal("guardianSpirit") }),
+  // Blazing Revival (Wildfire, 14th): dropping to 0 hit points with the wildfire spirit near, the spirit falls to 0 and you regain half your hit points and stand
+  z.object({ rule: z.literal("blazingRevival"), resource: z.string() }),
+  // Nature's Sanctuary (Land, 14th): a beast or plant attacking the druid makes a Wisdom save against the druid's spell save DC or must choose another target (or the attack misses)
+  z.object({ rule: z.literal("natureSanctuary") }),
   // Spell Resistance (Abjuration, 14th): advantage on saving throws against spells, and resistance to spell damage
   z.object({ rule: z.literal("spellResistance") }),
   // Durable Magic (War Magic, 10th): +2 AC and +2 to every saving throw while concentrating on a spell
@@ -547,6 +569,8 @@ export const actionSchema = z.object({
   /** its attack rolls are RANGED attacks (a bow, a ranged spell attack): disadvantage while a hostile creature is within 5 ft of the attacker */
   ranged: z.boolean().optional(),
   isSpell: z.boolean().optional(),     // this action is a spell -> Counterspell can negate it
+  /** stays available while the creature is Wild Shaped (reverting, healing with a spell slot) */
+  keepInForm: z.boolean().optional(),
   /** for a spell: its school of magic and the slot level it is cast at (0 for a cantrip) — Grim Harvest, Arcane Ward, Focused Conjuration, Expert Divination key off these */
   school: z.string().optional(),
   spellLevel: z.number().int().min(0).max(9).optional(),

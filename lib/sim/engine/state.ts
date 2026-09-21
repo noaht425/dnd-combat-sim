@@ -59,6 +59,10 @@ export interface CombatantState {
   ward?: { dice: number; sourceId: string };
   /** Arcane Ward (Abjuration): the ward's hit points now and at most. It stays (at 0 once broken) until a long rest — it can't be raised again before then */
   arcaneWard?: { hp: number; maxHp: number };
+  /** Wild Shape: the creature's own statistics, kept while it is in another form (the form's are in `ref`, `hp`, `maxHp` and `ac`) */
+  shape?: { ref: Combatant; hp: number; maxHp: number; ac: number; form: string };
+  /** Cosmic Omen (Stars): the day's omen, rolled after a long rest */
+  omen?: "weal" | "woe";
   /** Portent (Divination): the foretelling d20s rolled since the last long rest and not yet used, and the turn one was last used on */
   portentDice?: number[];
   portentTurnKey?: string;
@@ -226,6 +230,23 @@ export function syncExhaustion(u: CombatantState): void {
       ...(n >= 3 ? { attackAdvantage: "dis" as const, saveAdvantage: "dis" as const } : {}),
     },
   });
+}
+
+/**
+ * Back to the creature's own shape: "When you revert to your normal form, you return to the number of hit points you had before you transformed."
+ * Damage left over from the blow that broke the form is the caller's to carry over. Returns whether it was shaped.
+ */
+export function revertShape(state: CombatState | undefined, u: CombatantState): boolean {
+  if (!u.shape) return false;
+  const own = u.shape;
+  u.ref = own.ref;
+  u.hp = own.hp;
+  u.maxHp = own.maxHp;
+  u.ac = own.ac;
+  u.shape = undefined;
+  u.effects = u.effects.filter((e) => e.name !== "fire-form");
+  if (state) say(state, `${u.name} returns to their own shape`, u.id);
+  return true;
 }
 
 /** Reset a combatant's per-turn action economy at the start of its own turn. */

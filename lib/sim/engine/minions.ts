@@ -615,3 +615,27 @@ export function feySpiritFor(spellLevel: number, pb: number, wis: number): strin
   });
   return id;
 }
+
+/**
+ * The Circle of Wildfire's wildfire spirit (Tasha's): a Small elemental, AC 13, HP 5 + 5 × the druid's level, walk 30 and fly 30 (hover), immune to fire and to
+ * charmed / frightened / grappled / prone / restrained. Flame Seed is a ranged spell attack at the druid's spell attack modifier for 1d6 + PB fire, at 60 ft.
+ * It "shares your initiative count" but only Dodges unless the druid uses a bonus action to command it. Not modeled: Fiery Teleportation.
+ */
+export function wildfireSpiritFor(level: number, pb: number, wis: number): string {
+  const id = `wildfire-spirit-L${level}`;
+  if (PC_SUMMONS[id]) return id;
+  PC_SUMMONS[id] = minion({
+    id, creatureType: "elemental", name: "Wildfire Spirit", size: "small",
+    ac: 13, maxHp: 5 + 5 * level,
+    speeds: { walk: 30, fly: 30 },
+    abilities: { str: 10, dex: 14, con: 14, int: 13, wis: 15, cha: 11 },
+    pb, immunities: ["fire"], conditionImmunities: ["charmed", "frightened", "grappled", "prone", "restrained"],
+    commandOnly: true,
+    actions: [dodgeAction, {
+      id: "flame-seed", name: "Flame Seed", cost: {}, recharge: "none", ranged: true,
+      text: "Ranged spell attack, 60 ft.",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: pb + wis, onHit: [{ type: "damage", amount: `1d6+${pb}`, damageType: "fire" }] }] }],
+    }],
+  });
+  return id;
+}

@@ -39,7 +39,7 @@ import { resolveEnemies } from "../engine/scenario";
 import { TERRAIN_GLYPH, blocksMove, footprint, inBounds, terrainAt } from "./grid";
 import { actionMakesAttacks, attackModsFor, geoTargetsFor, planForAction, planTurn, reposition, skirmish } from "./ai";
 import { applyDecision, computeAwaiting, runActionLogged } from "./control";
-import { BattleState, ReactionPause, canFly, deriveZones, nearestEnemyFt, recordFrame, unitReachFt } from "./state";
+import { BattleState, ReactionPause, canFly, deriveZones, nearestEnemyFt, posOf, recordFrame, speedFt, unitReachFt } from "./state";
 
 const monsterGlyph = (i: number): string => (i < 9 ? String(i + 1) : String.fromCharCode(97 + (i - 9)));
 
@@ -236,17 +236,32 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
     // d.auto -> fall through to the AI
   }
 
-  const plan = planTurn(state, u);
-  const moved = reposition(state, u, plan);
+  const startPos = { ...posOf(state, u.id) };
+  const refAtStart = u.ref;
+  let plan = planTurn(state, u);
+  let moved = reposition(state, u, plan);
   if (!u.alive || isIncapacitated(u)) return;
   deriveZones(state);
 
   // the interpreter's attackMods seam also whiffs any melee swing from beyond reach
-  const geo = { geoTargets: geoTargetsFor(state, u, plan), attackMods: attackModsFor(state, u, plan.needsMelee) };
+  let geo = { geoTargets: geoTargetsFor(state, u, plan), attackMods: attackModsFor(state, u, plan.needsMelee) };
 
   // a melee routine that ended the move still short of every enemy is a failed
   // approach — don't run the doomed action at all (mirrors applyDecision's guard)
-  const meleeOutOfReach = plan.needsMelee && nearestEnemyFt(state, u) > unitReachFt(u) + 0.001;
+  let meleeOutOfReach = plan.needsMelee && nearestEnemyFt(state, u) > unitReachFt(u) + 0.001;
+
+  // a Wild Shape (or anything else that swaps the whole action list) means the turn was planned for a different creature: plan it again as the new
+  // one, moving only the distance the old plan left over
+  const replanIfChanged = () => {
+    if (u.ref === refAtStart || !u.alive || isIncapacitated(u)) return;
+    plan = planTurn(state, u);
+    const now = posOf(state, u.id);
+    const spent = Math.max(Math.abs(now.x - startPos.x), Math.abs(now.y - startPos.y)) * 5;
+    moved = reposition(state, u, plan, { budgetFt: Math.max(0, speedFt(u) - spent) }) || moved;
+    deriveZones(state);
+    geo = { geoTargets: geoTargetsFor(state, u, plan), attackMods: attackModsFor(state, u, plan.needsMelee) };
+    meleeOutOfReach = plan.needsMelee && nearestEnemyFt(state, u) > unitReachFt(u) + 0.001;
+  };
 
   // round-1 opener (Action Surge, Hunter's Mark, Frightful Presence, …) — skip an
   // opener that swings if we can't reach; self-buffs (Rage, Bless) still fire
@@ -268,7 +283,9 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
       }
     }
   }
+  replanIfChanged(); // an opener that changed shape
   runBonusRoutine(state, u);
+  replanIfChanged(); // a bonus action that did
   if (u.actionUsedThisTurn) return;
   // the opener may have finished the fight (or killed the only target in range)
   if (state.ended || !livingEnemies(state, u).length) return;
@@ -286,8 +303,8 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
   let action = plan.action;
   let usedPlan = plan;
   let usedGeo = geo;
-  if (action && !actionAvailable(state, u, action)) {
-    // the opener / a bonus action changed what's on offer (a rage that grows claws) — plan the turn again
+  if (action && (!u.ref.actions.includes(action) || !actionAvailable(state, u, action))) {
+    // the opener / a bonus action changed what's on offer (a rage that grows claws, a Wild Shape that swaps the whole action list) — plan the turn again
     const fresh = planTurn(state, u);
     if (fresh.action && actionAvailable(state, u, fresh.action)) {
       action = fresh.action;

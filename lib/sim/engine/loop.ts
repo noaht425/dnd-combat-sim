@@ -9,10 +9,13 @@ import { takeLairAction, takeLegendaryActions, takeMonsterTurn, takePcTurn } fro
 import { fireEncounterStartTraits, runAutomation } from "./interpreter";
 import { chooseFocusTarget } from "./score";
 import { REVERTS_ON_SUMMONER_DEATH } from "./minions";
+import { haloOfSpores } from "./reactions";
+import { isCreatureType } from "./creatureType";
 import {
   CombatState,
   CombatTuning,
   CombatantState,
+  applyHealing,
   beginTurn,
   hpBar,
   humanize,
@@ -21,6 +24,7 @@ import {
   isExtraTurn,
   isMinion,
   livingEnemies,
+  revertShape,
   rollTurnOrder,
   say,
   startTurnEconomy,
@@ -96,6 +100,7 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
       p.assassinateUntilRound = undefined;
       p.meleeHitSinceMyTurn = false;
       // per-fight scratch added by class features: nothing of a previous fight carries over
+      revertShape(undefined, p); // Wild Shape lasts hours, but a fight is self-contained: the druid starts each encounter in their own shape and hit points
       p.hasTakenTurn = false; p.sneakSpent = undefined; p.onceTurn = undefined; p.insightTargetId = undefined; p.insightUntilRound = undefined;
       p.ambushMasterUsed = false; p.footwork = undefined; p.zeroHpRaging = false; p.deathPending = false;
       p.combatEventSerial = undefined; p.rageCheckSerial = undefined; p.commandedRound = undefined;
@@ -215,6 +220,7 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
 
 export function startOfTurn(state: CombatState, u: CombatantState): void {
   if (u.zeroHpRaging && u.hp <= 0 && u.alive) rollDeathSave(state, u); // Rage Beyond Death still makes death saves
+  haloOfSpores(state, u); // a Spores druid's reaction as a creature starts its turn beside them
   // Absorb Elements resistance lasts "until the start of your next turn"
   if (u.absorbElements && state.round >= u.absorbElements.untilRound) u.absorbElements = undefined;
 
@@ -264,6 +270,14 @@ export function startOfTurn(state: CombatState, u: CombatantState): void {
 }
 
 export function endOfTurn(state: CombatState, u: CombatantState): void {
+  // Guardian Spirit (Shepherd, 10th): a beast or fey the druid summoned regains half the druid's level in hit points as its turn ends, while a totem stands
+  if (u.summonerId !== undefined && u.alive && u.hp > 0 && isCreatureType(u.ref, "beast", "fey")) {
+    const druid = state.units.get(u.summonerId);
+    if (druid?.alive && druid.ref.specialRules.some((r) => r.rule === "guardianSpirit") && druid.effects.some((e) => e.name.startsWith("spirit-"))) {
+      const healed = applyHealing(state, u, Math.floor((druid.ref.level ?? 1) / 2));
+      if (healed > 0) say(state, `${u.name} is mended by the guardian spirit (+${healed})`, u.id);
+    }
+  }
   // Rage ends early if your turn ends and you haven't attacked a hostile creature or taken damage since your last
   // turn (Persistent Rage, 15th, drops that condition)
   if (u.effects.some((e) => e.name === "rage")) {

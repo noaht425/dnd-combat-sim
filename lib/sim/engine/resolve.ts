@@ -13,6 +13,7 @@ import {
   effectiveAc,
   hasCondition,
   isIncapacitated,
+  revertShape,
   say,
 } from "./state";
 import {
@@ -25,6 +26,9 @@ import {
   reactToIncomingAttack,
   reduceIncomingDamage,
   enemySaveDisrupt,
+  cosmicWeal,
+  cosmicWoe,
+  hawkSpirit,
   projectedWard,
   shadowyDodge,
   slayersCounter,
@@ -299,6 +303,8 @@ function rollAttackImpl(
   if (adv !== "adv" && spendTides(state, attacker)) adv = combineAdv(adv, "adv");
   // Pack Tactics: advantage when one of the attacker's allies is within 5 ft of the target and not incapacitated
   if (adv !== "adv" && attacker.ref.specialRules.some((r) => r.rule === "packTactics") && packAlly(state, attacker, target)) adv = combineAdv(adv, "adv");
+  // Hawk Spirit (Shepherd's Spirit Totem): a reaction gives an attack advantage
+  if (adv !== "adv" && hawkSpirit(state, attacker, target)) adv = combineAdv(adv, "adv");
   // Shadowy Dodge: a reaction that imposes disadvantage on an attack that has no advantage
   if (shadowyDodge(state, attacker, target, adv)) adv = combineAdv(adv, "dis");
   // Restore Balance: a Clockwork Soul sorcerer cancels advantage on an enemy's roll / disadvantage on an ally's
@@ -335,6 +341,9 @@ function rollAttackImpl(
       }
     }
   }
+
+  // Cosmic Omen — Weal (Stars): a d6 added to a friend's attack that just missed
+  if (!autoMiss && !crit && face + toHit < ac && attacker.side === "party" && cosmicWeal(state, attacker, ac - (face + toHit))) toHit += ac - (face + toHit);
 
   // Master Duelist — once per rest, a missed attack roll is rolled again with advantage
   if (autoMiss || (!crit && face + toHit < ac)) {
@@ -385,6 +394,8 @@ function rollAttackImpl(
     finalCrit = true;
   }
   if (hit && assassinating) finalCrit = true; // Assassinate: any hit on a surprised foe is a crit
+  // Fungal Body: "any critical hit against you counts as a normal hit instead, unless you're incapacitated"
+  if (finalCrit && target.ref.specialRules.some((r) => r.rule === "critImmune") && !isIncapacitated(target)) finalCrit = false;
   return { hit, crit: finalCrit, hadAdvantage: adv === "adv", hadDisadvantage: adv === "dis", nat: face };
 }
 
@@ -414,7 +425,7 @@ export function rollSave(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode; d20Floor?: number } = {},
 ): SaveResult {
   // Slayer's Counter — a hit on the creature forcing the save makes the save succeed outright
   const forcer = opts.sourceId ? state.units.get(opts.sourceId) : undefined;
@@ -448,7 +459,7 @@ function rollSaveImpl(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode; d20Floor?: number } = {},
 ): SaveResult {
   const magical = opts.magical ?? true;
 
@@ -490,15 +501,17 @@ function rollSaveImpl(
     ? portentFor(state, target, (f) => f + mod >= dc)
     : undefined;
   let used = portent ?? state.rng.d20mode(adv).used;
-  const floor = target.effects.reduce((n, e) => Math.max(n, e.mods?.d20Floor ?? 0), 0);
-  if (used < floor) used = floor; // Trance of Order
+  const floor = Math.max(opts.d20Floor ?? 0, target.effects.reduce((n, e) => Math.max(n, e.mods?.d20Floor ?? 0), 0));
+  if (used < floor) used = floor; // Trance of Order, the Dragon constellation on a concentration save
   for (const e of target.effects) if (e.mods?.saveBonusDice) mod += rollBonusDice(state, e.mods.saveBonusDice);
   // Supernatural Defense: +1d6 on saves against effects from the creature designated as your prey
   if (opts.sourceId && target.ref.specialRules.some((r) => r.rule === "supernaturalDefense") &&
       state.units.get(opts.sourceId)?.effects.some((e) => e.name === "slayers-prey" && e.sourceId === target.id)) mod += state.rng.dice(1, 6);
   const succeeds = (f: number) => f + mod >= dc; // 2014 RAW: no auto-success on a natural 20 for saves
   const face = precogSwap(state, target, used, succeeds(used), succeeds);
-  const passed = succeeds(face);
+  let passed = succeeds(face);
+  // Cosmic Omen — Woe (Stars): a d6 off an enemy's save that only just made it against a control effect
+  if (passed && stakes !== "damage" && target.side === "monster" && opts.sourceId && cosmicWoe(state, target, face + mod - dc)) passed = false;
 
   // the endurance rider — add CON to a failed save, at an escalating self-cost
   if (!passed && maybeForcedEndurance(state, target, face + mod, dc, opts.stakes ?? "damage")) {
@@ -708,6 +721,8 @@ export function applyDamage(
     target.tempHp -= soak;
     dmg -= soak;
   }
+  // Symbiotic Entity lasts "until you lose all these temporary hit points"
+  if (target.tempHp <= 0 && target.effects.some((e) => e.name === "symbiotic-entity")) target.effects = target.effects.filter((e) => e.name !== "symbiotic-entity");
   target.hp -= dmg;
   target.damageTaken += dmg;
 
@@ -749,9 +764,19 @@ export function applyDamage(
       const dc = Math.max(10, Math.floor(dmg / 2));
       // Bladesong adds Intelligence to the Constitution save
       const bonus = target.effects.reduce((n, e) => n + (e.mods?.concentrationSaveBonus ?? 0), 0);
-      const s = rollSave(state, target, "con", dc, { magical: false, stakes: "damage", allowLegendaryResistance: false, bonus });
+      // the Dragon constellation: a roll of 9 or lower counts as a 10
+      const d20Floor = target.effects.reduce((n, e) => Math.max(n, e.mods?.concentrationD20Floor ?? 0), 0);
+      const s = rollSave(state, target, "con", dc, { magical: false, stakes: "damage", allowLegendaryResistance: false, bonus, d20Floor });
       if (!s.passed) breakConcentration(state, target, "damage");
     }
+  }
+
+  // Wild Shape: dropping to 0 hit points ends the form — "any excess damage carries over to your normal form"
+  if (target.hp <= 0 && target.shape) {
+    const excess = -target.hp;
+    revertShape(state, target);
+    if (excess > 0) applyDamage(state, target, excess, type, { ignoreResistances: true, sourceId: opts.sourceId });
+    return dmg;
   }
 
   // Strength of the Grave (Shadow Magic) — a Charisma save (DC 5 + the damage taken) to drop to 1 HP
@@ -767,6 +792,21 @@ export function applyDamage(
         say(state, `${target.name} clings to life (Strength of the Grave, 1 HP)`, target.id);
         return dmg;
       }
+    }
+  }
+
+  // Blazing Revival (Wildfire, 14th): "If the spirit is within 120 feet of you when you are reduced to 0 hit points...you can cause the spirit to drop to 0 hit
+  // points. You then regain half your hit points and immediately rise to your feet." Once per long rest.
+  if (target.hp <= 0) {
+    const br = target.ref.specialRules.find((r) => r.rule === "blazingRevival");
+    const spirit = br ? [...state.units.values()].find((u) => u.summonerId === target.id && u.alive && (!state.distanceFt || state.distanceFt(u, target) <= 120.001)) : undefined;
+    if (br && br.rule === "blazingRevival" && spirit && (target.resources.get(br.resource) ?? 0) > 0) {
+      target.resources.set(br.resource, (target.resources.get(br.resource) ?? 0) - 1);
+      spirit.hp = 0;
+      spirit.alive = false;
+      target.hp = Math.floor(target.maxHp / 2);
+      say(state, `${target.name}'s wildfire spirit burns out, and ${target.name} rises (Blazing Revival, ${target.hp} HP)`, target.id);
+      return dmg;
     }
   }
 

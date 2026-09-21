@@ -12,6 +12,7 @@
 import type { Action, AutomationNode, Condition, DamageType } from "../schema";
 import { actionBranchGateFails, runAction, runAutomation } from "./interpreter";
 import { applyDamage, rollSave } from "./resolve";
+import { isCreatureType } from "./creatureType";
 import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, livingEnemies, say, syncExhaustion, type ReactionAsk } from "./state";
 
 /** the five damage types Absorb Elements answers */
@@ -75,6 +76,10 @@ type RKind =
   | "violentAttraction" // Graviturgy — add 1d10 to a weapon hit made by a creature near you
   | "projectedWard"  // Abjuration — your Arcane Ward soaks damage someone else takes
   | "instinctiveCharm" // Enchantment — an attacker that fails a Wisdom save must attack another creature
+  | "cosmicOmen"     // Stars — a d6 added to (Weal) or taken from (Woe) a creature's d20 roll
+  | "haloOfSpores"   // Spores — necrotic damage to a creature that moves near you or starts its turn there
+  | "fungalInfestation" // Spores — a Small or Medium beast or humanoid that dies near you rises as a zombie
+  | "cauterizingFlames" // Wildfire — spectral flames where a creature dies heal or burn whoever steps in
   | "unknown";
 
 function classify(r: Action): RKind {
@@ -107,6 +112,10 @@ function classify(r: Action): RKind {
   if (id === "violent-attraction") return "violentAttraction";
   if (id === "projected-ward") return "projectedWard";
   if (id === "instinctive-charm") return "instinctiveCharm";
+  if (id === "cosmic-omen") return "cosmicOmen";
+  if (id === "halo-of-spores") return "haloOfSpores";
+  if (id === "fungal-infestation") return "fungalInfestation";
+  if (id === "cauterizing-flames") return "cauterizingFlames";
   if (id.includes("deflect-attack")) return "deflectAttack";
   if (id.includes("cutting-words") || id.includes("cuttingwords") || id.includes("bend-luck")) return "protectAllyAttackRoll";
   if (tr.includes("belowhalf") || tr.includes("reducedtohalf")) return "onBloodied";
@@ -261,6 +270,20 @@ export function reactToFailedSave(
     a.resources.set(rule.resource, (a.resources.get(rule.resource) ?? 0) - 1);
     say(state, `${a.name} uses Flash of Genius (+${rule.bonus}) for ${target.name}`, a.id);
     return true;
+  }
+
+  // Cosmic Omen — Weal (Stars): a d6 added to the save of a creature within 30 ft
+  {
+    const c = omenReactor(state, target, target.side, "weal");
+    if (c && dc - rollTotal <= 5 && dc > rollTotal) {
+      const ok = decideReaction(state, c.u, "flashOfGenius", `${target.name} fails a saving throw (${rollTotal} vs DC ${dc}) — ${c.u.name}'s Weal adds a d6.`, "Cosmic Omen", "Let it fail");
+      if (ok) {
+        consume(c.u, c.r);
+        const d = state.rng.dice(1, 6);
+        say(state, `${c.u.name}'s omen is Weal: +${d} for ${target.name}`, c.u.id);
+        if (rollTotal + d >= dc) return true;
+      }
+    }
   }
 
   // Arcane Deflection (War Magic): +4 to a save you just failed, at the price of cantrips only for a turn — worth it for control, not for damage
@@ -454,6 +477,20 @@ export function reactToIncomingAttack(
         fire(state, ally, r);
         say(state, `${ally.name} undercuts the blow with ${r.name}`, ally.id);
         return { negated: true, shielded: false };
+      }
+    }
+  }
+
+  // Cosmic Omen — Woe (Stars): a d6 taken off an attack that only just hits
+  if (!p.crit && p.hitMargin <= 5 && p.hitMargin >= 0) {
+    const c = omenReactor(state, t, t.side, "woe");
+    if (c && ready(state, c.u, c.r)) {
+      const ok = decideReaction(state, c.u, "shield", `An attack hits ${t.name} by ${p.hitMargin} — ${c.u.name}'s Woe subtracts a d6 from the roll.`, "Cosmic Omen", "Take the hit");
+      if (ok) {
+        consume(c.u, c.r);
+        const d = state.rng.dice(1, 6);
+        say(state, `${c.u.name}'s omen is Woe: -${d} from the attack`, c.u.id);
+        if (d > p.hitMargin) return { negated: true, shielded: false };
       }
     }
   }
@@ -937,6 +974,131 @@ export function instinctiveCharm(state: CombatState, attacker: CombatantState, t
   const save = rollSave(state, attacker, "wis", dc, { magical: true, stakes: "control", conditions: ["charmed"], sourceId: target.id });
   if (save.passed) return undefined;
   say(state, `${attacker.name} is turned on ${pick.name} instead of ${target.name} (Instinctive Charm)`, target.id);
+  return pick;
+}
+
+/**
+ * Spirit Totem — Hawk Spirit (Shepherd): "When a creature makes an attack roll against a target in the spirit's aura, you can use your reaction to grant
+ * advantage to that attack roll." Called before the attack roll; returns whether the attacker gets advantage. (The aura is taken to cover the druid's side.)
+ */
+export function hawkSpirit(state: CombatState, attacker: CombatantState, target: CombatantState): boolean {
+  if (state.inReaction || attacker.side === target.side) return false;
+  for (const u of state.units.values()) {
+    if (u.side !== attacker.side || !u.alive || u.downed || u.reactionUsed || !canTakeReactions(u)) continue;
+    if (!u.effects.some((e) => e.name === "spirit-hawk")) continue;
+    if (state.distanceFt && state.distanceFt(u, target) > 30.001) continue;
+    u.reactionUsed = true;
+    say(state, `${u.name}'s hawk spirit lends ${attacker.name} its sight (advantage)`, u.id);
+    return true;
+  }
+  return false;
+}
+
+/** the creature on `side` who has a Cosmic Omen reaction ready and an omen of `omen`, within 30 ft of `near` */
+function omenReactor(state: CombatState, near: CombatantState, side: CombatantState["side"], omen: "weal" | "woe"): { u: CombatantState; r: Action } | undefined {
+  for (const u of state.units.values()) {
+    if (u.side !== side || u.omen !== omen || !u.alive || u.downed) continue;
+    const r = u.ref.reactions.find((x) => classify(x) === "cosmicOmen");
+    if (!r || !ready(state, u, r)) continue;
+    if (state.distanceFt && u.id !== near.id && state.distanceFt(u, near) > 30.001) continue;
+    return { u, r };
+  }
+  return undefined;
+}
+
+/**
+ * Cosmic Omen — Weal (Stars, 6th): "...you can use your reaction to roll a d6 and add the number rolled to the total" of a d20 roll made by a creature within 30
+ * feet. `deficit` is how far the roller's total fell short; returns whether the d6 makes up the difference.
+ */
+export function cosmicWeal(state: CombatState, roller: CombatantState, deficit: number): boolean {
+  if (state.inReaction || deficit > 5 || deficit <= 0) return false;
+  const c = omenReactor(state, roller, roller.side, "weal");
+  if (!c) return false;
+  consume(c.u, c.r);
+  const d = state.rng.dice(1, 6);
+  say(state, `${c.u.name}'s omen is Weal: +${d} for ${roller.name}`, c.u.id);
+  return d >= deficit;
+}
+
+/**
+ * Cosmic Omen — Woe: "...roll a d6 and subtract the number rolled from the total." `surplus` is how far the enemy's total cleared the number it needed;
+ * returns whether the d6 takes it below (so the attack misses, or the save fails).
+ */
+export function cosmicWoe(state: CombatState, roller: CombatantState, surplus: number): boolean {
+  if (state.inReaction || surplus >= 6 || surplus < 0) return false;
+  const c = omenReactor(state, roller, roller.side === "party" ? "monster" : "party", "woe");
+  if (!c) return false;
+  consume(c.u, c.r);
+  const d = state.rng.dice(1, 6);
+  say(state, `${c.u.name}'s omen is Woe: -${d} from ${roller.name}`, c.u.id);
+  return d > surplus;
+}
+
+/**
+ * Halo of Spores (Spores, 2nd): "When a creature you can see moves into a space within 10 feet of you or starts its turn there, you can use your reaction to
+ * deal 1d4 necrotic damage to that creature unless it succeeds on a Constitution saving throw against your spell save DC." Called as a hostile creature's
+ * turn begins. (Creatures moving up to the druid mid-turn aren't watched for.)
+ */
+export function haloOfSpores(state: CombatState, mover: CombatantState): void {
+  if (state.inReaction || !mover.alive || mover.downed) return;
+  for (const u of state.units.values()) {
+    if (u.side === mover.side || !u.alive || u.downed) continue;
+    const r = u.ref.reactions.find((x) => classify(x) === "haloOfSpores");
+    if (!r || !ready(state, u, r)) continue;
+    const near = state.distanceFt ? state.distanceFt(u, mover) <= 10.001 : u.zone === "melee" && mover.zone === "melee";
+    if (!near) continue;
+    fire(state, u, r, mover);
+    return;
+  }
+}
+
+/**
+ * Death reactions: a Small or Medium beast or humanoid dying within 10 ft of a Spores druid rises as a zombie with 1 hit point (Fungal Infestation, a use of
+ * a Wisdom-modifier pool), and a Wildfire druid's Cauterizing Flames heal the most hurt ally for 2d10 + Wisdom (a use of a proficiency-bonus pool; the flames
+ * on the page wait for someone to step into them, taken here as an ally being healed at once). Called when a creature dies.
+ */
+export function reactToDeath(state: CombatState, slain: CombatantState): void {
+  if (state.inReaction) return;
+  for (const u of state.units.values()) {
+    if (!u.alive || u.downed || u.id === slain.id) continue;
+    for (const r of u.ref.reactions) {
+      const k = classify(r);
+      if (k !== "fungalInfestation" && k !== "cauterizingFlames") continue;
+      if (!ready(state, u, r)) continue;
+      const range = k === "fungalInfestation" ? 10 : 30;
+      if (state.distanceFt ? state.distanceFt(u, slain) > range + 0.001 : false) continue;
+      if (k === "fungalInfestation" && (!isCreatureType(slain.ref, "beast", "humanoid") || !["small", "medium", "tiny"].includes(slain.ref.size))) continue;
+      if (k === "cauterizingFlames" && !livingAllies(state, u).some((a) => a.hp < a.maxHp * 0.6)) continue;
+      const ok = decideReaction(state, u, "riposte", `${slain.name} dies near ${u.name} — ${r.name}.`, r.name, "Let it lie");
+      if (!ok) continue;
+      fire(state, u, r);
+      return;
+    }
+  }
+}
+
+/**
+ * Nature's Sanctuary (Circle of the Land, 14th): "When a beast or plant creature attacks you, that creature must make a Wisdom saving throw against your druid
+ * spell save DC. On a failed save, the creature must choose a different target, or the attack automatically misses. On a successful save, the creature is
+ * immune to this effect for 24 hours." Called before the attack roll. Returns the creature it turns on instead, "miss" if there is no one else, or undefined
+ * if the attack goes ahead.
+ */
+export function natureSanctuary(state: CombatState, attacker: CombatantState, target: CombatantState): CombatantState | "miss" | undefined {
+  if (state.inReaction || attacker.side === target.side || !target.ref.specialRules.some((r) => r.rule === "natureSanctuary")) return undefined;
+  if (!isCreatureType(attacker.ref, "beast", "plant")) return undefined;
+  if (attacker.effects.some((e) => e.name === "sanctuary-immune" && e.sourceId === target.id)) return undefined;
+  const dc = 8 + target.ref.pb + Math.floor((target.ref.abilities[target.ref.spellAbility ?? "wis"] - 10) / 2);
+  const save = rollSave(state, attacker, "wis", dc, { magical: true, stakes: "control", sourceId: target.id });
+  if (save.passed) {
+    attacker.effects.push({ name: "sanctuary-immune", expiresRound: Infinity, sourceId: target.id }); // "immune to this effect for 24 hours"
+    return undefined;
+  }
+  // "must choose a different target": someone else it could reach — the nearest other creature, or one in its own zone
+  const others = [...state.units.values()].filter((u) => u.alive && !u.downed && u.side === target.side && u.id !== target.id && u.id !== attacker.id);
+  if (!others.length) { say(state, `${attacker.name} hesitates and its attack misses ${target.name} (Nature's Sanctuary)`, target.id); return "miss"; }
+  const pick = state.distanceFt ? others.sort((a, b) => state.distanceFt!(attacker, a) - state.distanceFt!(attacker, b))[0]
+    : others[state.rng.int(0, others.length - 1)];
+  say(state, `${attacker.name} hesitates and turns on ${pick.name} instead (Nature's Sanctuary)`, target.id);
   return pick;
 }
 

@@ -46,9 +46,10 @@ describe("Subclass audit fixes", () => {
     expect(sawProne).toBeGreaterThan(5);
   });
 
-  it("Circle of the Moon: Combat Wild Shape grants temp HP and a real attack, once per short rest", () => {
+  it("Circle of the Moon: Combat Wild Shape is a real transformation as a bonus action, two uses per short rest", () => {
     const c = makeTemplate("moon-druid", 5);
     expect(c.resources.wild_shape).toEqual({ max: 2, recharge: "shortRest" });
+    expect(c.actions.find((a) => a.id === "wild-shape")?.cost).toEqual({ bonus: 1 });
     const out = runBattle({
       party: [{ template: "moon-druid", level: 5, name: "Druid" }],
       enemies: ["kobold"],
@@ -57,7 +58,7 @@ describe("Subclass audit fixes", () => {
       maxRounds: 1,
     } as never);
     const text = out.frames.map((f) => f.text ?? "").join("\n");
-    expect(text).toMatch(/Wild Shape \(Bear\) -> .*Druid \+\d+/);
+    expect(text).toMatch(/Druid uses Wild Shape \(Brown Bear\) -> Druid becomes a Brown Bear/);
   });
 
   it("Life Domain: Disciple of Life adds a flat bonus to any healing spell", () => {

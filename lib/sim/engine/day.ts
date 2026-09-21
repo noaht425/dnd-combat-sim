@@ -6,7 +6,7 @@ import type { Combatant } from "../schema";
 import { abilityMod } from "../math";
 import { runCombat, summarise } from "./loop";
 import { buildParty, resolveEnemies, type PartyMemberSpec } from "./scenario";
-import { avgToNumber, initCombatant, syncExhaustion, type CombatantState } from "./state";
+import { avgToNumber, initCombatant, revertShape, syncExhaustion, type CombatantState } from "./state";
 
 export type RestKind = "none" | "short" | "long";
 
@@ -112,6 +112,7 @@ function arcaneRecovery(s: CombatantState): void {
 
 export function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map<string, number>, level: number): void {
   for (const s of states) {
+    revertShape(undefined, s); // a rest ends any Wild Shape, and the druid's own hit points are what heal
     if (kind !== "none") s.relentlessUses = 0; // Relentless Rage's DC resets on a short or long rest
     if (kind === "long") {
       // a long rest removes one level of exhaustion (and restores the maximum hit points exhaustion 4 took)
@@ -130,6 +131,7 @@ export function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map
       hitDice.set(s.id, level);
       // a long rest: Portent is rolled afresh, a new Arcane Ward may be raised, Arcane Recovery is available again
       s.portentDice = undefined;
+      s.omen = undefined; // a Stars druid reads the sky afresh
       s.arcaneWard = undefined;
       s.arcaneRecoveryUsed = false;
       continue;
@@ -196,6 +198,7 @@ export function runDay(input: DayInput): DayResult {
       partyStates: states,
       summonRegistry: input.extraById,
     });
+    for (const s of states) revertShape(undefined, s); // the beast's hit points don't carry over: the druid steps out of the form with their own
     const r = summarise(state);
     const survivors = states.filter((s) => s.alive && !s.downed).length;
     out.push({

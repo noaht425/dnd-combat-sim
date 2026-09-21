@@ -49,7 +49,8 @@ export function injectFirstDamageBonus(
   const types = damageType === undefined ? undefined : Array.isArray(damageType) ? damageType : [damageType];
   const matches = (n: AutomationNode): n is Rolled =>
     (n.type === "damage" && (!types || types.includes(n.damageType))) || (includeHeal && n.type === "heal");
-  const withBonus = (amount: string): string => (typeof bonus === "number" ? addFlatBonus(amount, bonus) : `${amount}+${bonus}`);
+  // a dice bonus goes after the amount's own dice — or first, when the amount is a plain number ("70" -> "1d8+70": a flat number can't lead)
+  const withBonus = (amount: string): string => (typeof bonus === "number" ? addFlatBonus(amount, bonus) : /^\s*\d+\s*$/.test(amount) ? `${bonus}+${amount.trim()}` : `${amount}+${bonus}`);
   const sameRoll = (a: Rolled, b: Rolled): boolean =>
     a.type === b.type && a.amount === b.amount && (a.type !== "damage" || a.damageType === (b as typeof a).damageType);
   let applied = false;
@@ -134,4 +135,21 @@ export function potentCantrip(nodes: AutomationNode[]): AutomationNode[] {
     if (!dmg.length) return n;
     return { ...n, onSuccess: dmg.map((d) => ({ ...d, half: true })) };
   });
+}
+
+/** puts `extra` right after the first heal node reachable from `nodes` (in the same list, so it runs for the same healer) */
+export function injectAfterFirstHeal(nodes: AutomationNode[], extra: AutomationNode[]): { nodes: AutomationNode[]; applied: boolean } {
+  let applied = false;
+  const walk = (list: AutomationNode[]): AutomationNode[] => {
+    const out: AutomationNode[] = [];
+    for (const n of list) {
+      if (applied) { out.push(n); continue; }
+      if (n.type === "heal") { applied = true; out.push(n, ...extra); continue; }
+      if (n.type === "target") out.push({ ...n, effects: walk(n.effects) });
+      else if (n.type === "branch") out.push({ ...n, then: walk(n.then), else: n.else && walk(n.else) });
+      else out.push(n);
+    }
+    return out;
+  };
+  return { nodes: walk(nodes), applied };
 }
