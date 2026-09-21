@@ -20,6 +20,8 @@ export interface ConditionInstance {
   expiresRound: number; // Infinity = until removed / save ends
   saveEnds?: { ability: import("../schema").Ability; dc: number; at: "endOfTurn" | "startOfTurn" };
   sourceId: string;
+  /** ends the moment the creature takes damage */
+  endsOnDamage?: boolean;
 }
 
 export interface CombatantState {
@@ -61,6 +63,8 @@ export interface CombatantState {
   arcaneWard?: { hp: number; maxHp: number };
   /** Wild Shape: the creature's own statistics, kept while it is in another form (the form's are in `ref`, `hp`, `maxHp` and `ac`) */
   shape?: { ref: Combatant; hp: number; maxHp: number; ac: number; form: string };
+  /** Dampen Elements: the damage type resisted for the next instance of it (a reaction) */
+  dampened?: DamageType;
   /** Cosmic Omen (Stars): the day's omen, rolled after a long rest */
   omen?: "weal" | "woe";
   /** Portent (Divination): the foretelling d20s rolled since the last long rest and not yet used, and the turn one was last used on */

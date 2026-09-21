@@ -122,7 +122,9 @@ export function heal(spellLevel: number, baseD: number, die: number, perSlot: nu
   return (c) => {
     const n = baseD + Math.max(0, c.slotLevel - spellLevel) * perSlot;
     const plus = (o.flat ?? 0) + (o.addMod === false ? 0 : c.spellMod);
-    return [{ type: "target", who: { who: o.who ?? "lowestHpAlly" }, effects: [{ type: "heal", amount: N(n, die, plus) }] }];
+    const who = o.who ?? "lowestHpAlly";
+    // "You can heal a creature at 0 hit points and get it back on its feet" — a single healing spell may pick a downed ally
+    return [{ type: "target", who: who === "lowestHpAlly" ? { who, includeDowned: true } : { who }, effects: [{ type: "heal", amount: N(n, die, plus) }] }];
   };
 }
 

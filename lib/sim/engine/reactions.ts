@@ -13,7 +13,7 @@ import type { Action, AutomationNode, Condition, DamageType } from "../schema";
 import { actionBranchGateFails, runAction, runAutomation } from "./interpreter";
 import { applyDamage, rollSave } from "./resolve";
 import { isCreatureType } from "./creatureType";
-import { CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, livingEnemies, say, syncExhaustion, type ReactionAsk } from "./state";
+import { applyHealing, CombatantState, CombatState, canTakeReactions, isIncapacitated, livingAllies, livingEnemies, say, syncExhaustion, type ReactionAsk } from "./state";
 
 /** the five damage types Absorb Elements answers */
 const ELEMENTAL: readonly DamageType[] = ["acid", "cold", "fire", "lightning", "thunder"];
@@ -80,6 +80,10 @@ type RKind =
   | "haloOfSpores"   // Spores — necrotic damage to a creature that moves near you or starts its turn there
   | "fungalInfestation" // Spores — a Small or Medium beast or humanoid that dies near you rises as a zombie
   | "cauterizingFlames" // Wildfire — spectral flames where a creature dies heal or burn whoever steps in
+  | "wardingFlare"    // Light — disadvantage on an attack against you (or, later, an ally), before the roll
+  | "sentinel"        // Grave — a critical hit against you or an ally becomes a normal hit
+  | "dampenElements" // Nature — resistance for one instance of elemental damage to a creature within 30 ft
+  | "warGodsBlessing" // War — +10 to an ally's attack roll
   | "unknown";
 
 function classify(r: Action): RKind {
@@ -116,6 +120,11 @@ function classify(r: Action): RKind {
   if (id === "halo-of-spores") return "haloOfSpores";
   if (id === "fungal-infestation") return "fungalInfestation";
   if (id === "cauterizing-flames") return "cauterizingFlames";
+  if (id === "warding-flare" || id === "improved-flare") return "wardingFlare";
+  if (id === "sentinel-at-deaths-door") return "sentinel";
+  if (id === "dampen-elements") return "dampenElements";
+  if (id === "war-gods-blessing") return "warGodsBlessing";
+  if (id === "wrath-of-the-storm") return "retaliateOnMeleeHit";
   if (id.includes("deflect-attack")) return "deflectAttack";
   if (id.includes("cutting-words") || id.includes("cuttingwords") || id.includes("bend-luck")) return "protectAllyAttackRoll";
   if (tr.includes("belowhalf") || tr.includes("reducedtohalf")) return "onBloodied";
@@ -398,11 +407,13 @@ export function restoreBalance(state: CombatState, roller: CombatantState, adv: 
 export function reactToIncomingAttack(
   state: CombatState,
   p: { target: CombatantState; hitMargin: number; crit: boolean; face?: number; toHit?: number; ac?: number; critRange?: number },
-): { negated: boolean; shielded: boolean; face?: number } {
+): { negated: boolean; shielded: boolean; face?: number; crit?: boolean } {
   const t = p.target;
   if (state.inReaction || !t.alive || t.downed) return { negated: false, shielded: false };
   const wouldHit = p.crit || p.hitMargin >= 0;
   if (!wouldHit) return { negated: false, shielded: false };
+  // Sentinel at Death's Door: a critical hit becomes a normal one (and the hit itself may still be answered below)
+  if (p.crit && sentinelAtDeathsDoor(state, t)) return { negated: false, shielded: false, crit: false };
 
   for (const r of t.ref.reactions) {
     if (!ready(state, t, r)) continue;
@@ -733,6 +744,7 @@ export function reactToElementalDamage(
 ): void {
   if (state.inReaction || !target.alive || target.downed) return;
   if (!ELEMENTAL.includes(type) || target.absorbElements?.type === type) return;
+  dampenElements(state, target, type);
   for (const r of target.ref.reactions) {
     if (classify(r) !== "absorbElements" || !ready(state, target, r)) continue;
     const ok = decideReaction(
@@ -1059,6 +1071,7 @@ export function haloOfSpores(state: CombatState, mover: CombatantState): void {
  */
 export function reactToDeath(state: CombatState, slain: CombatantState): void {
   if (state.inReaction) return;
+  keeperOfSouls(state, slain);
   for (const u of state.units.values()) {
     if (!u.alive || u.downed || u.id === slain.id) continue;
     for (const r of u.ref.reactions) {
@@ -1074,6 +1087,126 @@ export function reactToDeath(state: CombatState, slain: CombatantState): void {
       fire(state, u, r);
       return;
     }
+  }
+}
+
+/**
+ * Warding Flare (Light, 1st): "When you are attacked by a creature within 30 feet of you that you can see, you can use your reaction to impose disadvantage on the
+ * attack roll, causing light to flare before the attacker... An attacker that can't be blinded is immune." Improved Flare (6th): the same when a creature attacks
+ * someone other than you. Called before the attack roll; returns whether disadvantage is imposed.
+ */
+export function wardingFlare(state: CombatState, attacker: CombatantState, target: CombatantState, adv: "adv" | "dis" | "flat"): boolean {
+  if (state.inReaction || adv === "dis" || attacker.side === target.side || attacker.ref.conditionImmunities.includes("blinded")) return false;
+  for (const u of state.units.values()) {
+    if (u.side !== target.side || !u.alive || u.downed) continue;
+    for (const r of u.ref.reactions) {
+      if (classify(r) !== "wardingFlare" || !ready(state, u, r)) continue;
+      if (u.id !== target.id && r.id !== "improved-flare") continue; // before the 6th level only the flare's owner is protected
+      if (state.distanceFt && state.distanceFt(u, attacker) > 30.001) continue;
+      const ok = decideReaction(state, u, "deflectAttack", `${attacker.name} is attacking ${target.name} — Warding Flare imposes disadvantage on the roll.`, "Warding Flare", "Take the attack");
+      if (!ok) continue;
+      consume(u, r);
+      say(state, `${u.name}'s flare dazzles ${attacker.name} (disadvantage)`, u.id);
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Sentinel at Death's Door (Grave, 6th): "As a reaction when you or an ally that you can see within 30 feet of you suffers a critical hit, you can turn that attack
+ * into a normal hit. Any effects triggered by a critical hit are canceled." Returns whether the crit is turned aside.
+ */
+export function sentinelAtDeathsDoor(state: CombatState, target: CombatantState): boolean {
+  if (state.inReaction) return false;
+  for (const u of state.units.values()) {
+    if (u.side !== target.side || !u.alive || u.downed) continue;
+    const r = u.ref.reactions.find((x) => classify(x) === "sentinel");
+    if (!r || !ready(state, u, r)) continue;
+    if (u.id !== target.id && state.distanceFt && state.distanceFt(u, target) > 30.001) continue;
+    consume(u, r);
+    say(state, `${u.name} turns the critical hit into a normal one (Sentinel at Death's Door)`, u.id);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * War God's Blessing (War, 6th): "When a creature within 30 feet of you makes an attack roll, you can use your reaction to grant that creature a +10 bonus to the
+ * roll, using your Channel Divinity" (a use of it is the reaction's cost). `deficit` is how far the roll fell short; returns whether +10 turns it into a hit.
+ */
+export function warGodsBlessing(state: CombatState, roller: CombatantState, deficit: number): boolean {
+  if (state.inReaction || deficit <= 0 || deficit > 10) return false;
+  for (const u of state.units.values()) {
+    if (u.side !== roller.side || u.id === roller.id || !u.alive || u.downed) continue;
+    const r = u.ref.reactions.find((x) => classify(x) === "warGodsBlessing");
+    if (!r || !ready(state, u, r)) continue;
+    if (state.distanceFt && state.distanceFt(u, roller) > 30.001) continue;
+    consume(u, r);
+    say(state, `${u.name} blesses ${roller.name}'s blow (+10)`, u.id);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Protective Bond (Peace, 6th): "When a creature affected by your Emboldening Bond feature is about to take damage, a second bonded creature within 30 feet of the
+ * first can use its reaction to teleport to an unoccupied space within 5 feet of the first creature. The second creature then takes all the damage instead." Expansive
+ * Bond (17th): 60 feet, and the protector has resistance to that damage. Returns the creature that takes the damage instead, if any.
+ */
+export function protectiveBond(state: CombatState, target: CombatantState): { protector: CombatantState; resists: boolean } | undefined {
+  if (state.inReaction) return undefined;
+  const bond = target.effects.find((e) => e.name === "emboldening-bond");
+  if (!bond) return undefined;
+  let best: CombatantState | undefined;
+  let resists = false;
+  for (const u of state.units.values()) {
+    if (u.id === target.id || u.side !== target.side || !u.alive || u.downed || u.reactionUsed || !canTakeReactions(u)) continue;
+    const e = u.effects.find((x) => x.name === "emboldening-bond" && x.sourceId === bond.sourceId && x.mods?.protectiveBondFt);
+    if (!e || (state.distanceFt && state.distanceFt(u, target) > e.mods!.protectiveBondFt! + 0.001)) continue;
+    if (!best || u.hp > best.hp) { best = u; resists = !!e.mods!.protectiveBondResists; }
+  }
+  if (!best) return undefined;
+  best.reactionUsed = true;
+  say(state, `${best.name} leaps in front of ${target.name} (Protective Bond)`, best.id);
+  return { protector: best, resists };
+}
+
+/**
+ * Dampen Elements (Nature, 6th): "When you or a creature within 30 feet of you takes acid, cold, fire, lightning, or thunder damage, you can use your reaction to
+ * grant the creature resistance to that instance of the damage." Sets the one-shot resistance the damage code honours.
+ */
+export function dampenElements(state: CombatState, target: CombatantState, type: DamageType): void {
+  if (state.inReaction || !ELEMENTAL.includes(type) || target.dampened) return;
+  for (const u of state.units.values()) {
+    if (u.side !== target.side || !u.alive || u.downed) continue;
+    const r = u.ref.reactions.find((x) => classify(x) === "dampenElements");
+    if (!r || !ready(state, u, r)) continue;
+    if (u.id !== target.id && state.distanceFt && state.distanceFt(u, target) > 30.001) continue;
+    consume(u, r);
+    target.dampened = type;
+    say(state, `${u.name} dampens the ${type} (resistance to that damage)`, u.id);
+    return;
+  }
+}
+
+/**
+ * Keeper of Souls (Grave, 17th): "When an enemy that you can see dies within 30 feet of you, you or one ally of your choice that is within 30 feet of you regains hit
+ * points equal to the enemy's number of Hit Dice... Once you use it, you can't do so again until the start of your next turn."
+ */
+export function keeperOfSouls(state: CombatState, slain: CombatantState): void {
+  for (const u of state.units.values()) {
+    if (u.side === slain.side || !u.alive || u.downed || isIncapacitated(u) || !u.ref.specialRules.some((r) => r.rule === "keeperOfSouls")) continue;
+    if (u.effects.some((e) => e.name === "keeper-used")) continue;
+    if (state.distanceFt && state.distanceFt(u, slain) > 30.001) continue;
+    const dice = typeof slain.ref.maxHp === "string" ? Number(/^(\d+)d/.exec(slain.ref.maxHp)?.[1] ?? 0) : 0;
+    const amount = dice || Math.max(1, Math.round(slain.maxHp / 5)); // a stat block with a fixed hit point total: its average Hit Die is about 5
+    const hurt = [u, ...livingAllies(state, u)].filter((a) => a.hp < a.maxHp).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+    if (!hurt) continue;
+    u.effects.push({ name: "keeper-used", expiresRound: Infinity, sourceId: u.id, mods: { untilSourceNextTurn: true } });
+    const healed = applyHealing(state, hurt, amount);
+    if (healed > 0) say(state, `${u.name} gathers ${slain.name}'s soul: ${hurt.name} regains ${healed} (Keeper of Souls)`, u.id);
+    return;
   }
 }
 

@@ -395,7 +395,23 @@ export const SPELLS: Spell[] = [
   // ─────────────────────────────── level 7 ────────────────────────────────
   S_("conjure-celestial", "Conjure Celestial", 7, "conjuration", [C], { conc: true, role: "summon", build: conjure("fire-elemental", "1", 1) }),
   S_("delayed-blast-fireball", "Delayed Blast Fireball", 7, "evocation", [S, W], { conc: true, role: "damage", max: 9, build: saveDmg(7, "dex", 12, 6, "fire", 1) }),
-  S_("divine-word", "Divine Word", 7, "evocation", [C], { role: "control", build: saveCond("cha", "stunned", 1, { who: { who: "chosenEnemies", upTo: 4 }, saveEnds: false }) }),
+  S_("divine-word", "Divine Word", 7, "evocation", [C], { ct: "bonus", role: "control", build: (c) => {
+    // A creature that fails its Charisma save: a celestial, elemental, fey or fiend "is forced back to its plane of origin ... and can't return to your current plane for 24 hours" (removed
+    // from the fight); anything else is affected by its current hit points — 50 or fewer: deafened 1 minute; 40: deafened and blinded 10 minutes; 30: blinded, deafened and stunned 1 hour; 20: killed
+    const rounds = (minutes: number) => minutes * 10;
+    const byHp: AutomationNode[] = [{ type: "branch", if: "target.hp <= 20", then: [{ type: "destroy", crMax: 99 }], else: [
+      { type: "branch", if: "target.hp <= 30", then: [
+        { type: "applyCondition", condition: "blinded", durationRounds: rounds(60) }, { type: "applyCondition", condition: "deafened", durationRounds: rounds(60) }, { type: "applyCondition", condition: "stunned", durationRounds: rounds(60) },
+      ], else: [
+        { type: "branch", if: "target.hp <= 40", then: [
+          { type: "applyCondition", condition: "deafened", durationRounds: rounds(10) }, { type: "applyCondition", condition: "blinded", durationRounds: rounds(10) },
+        ], else: [{ type: "branch", if: "target.hp <= 50", then: [{ type: "applyCondition", condition: "deafened", durationRounds: rounds(1) }] }] },
+      ] },
+    ] }];
+    const chain = (["celestial", "elemental", "fey", "fiend"] as const).reduceRight<AutomationNode[]>(
+      (otherwise, type) => [{ type: "branch", if: `target.is('${type}')`, then: [{ type: "banish", crMax: 99 }], else: otherwise }], byHp);
+    return [{ type: "target", who: { who: "eachEnemy", withinFt: 30 }, effects: [{ type: "save", ability: "cha", dc: c.dc, onFail: chain, onSuccess: [] }] }];
+  } }),
   S_("etherealness", "Etherealness", 7, "transmutation", [B, C, S, W, K]),
   S_("finger-of-death", "Finger of Death", 7, "necromancy", [S, W, K], { role: "damage", build: (c) => {
     // "A humanoid killed by this spell rises at the start of your next turn as a zombie that is permanently under your command" (raised at once here)

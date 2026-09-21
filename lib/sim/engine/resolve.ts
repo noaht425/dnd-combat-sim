@@ -29,6 +29,9 @@ import {
   cosmicWeal,
   cosmicWoe,
   hawkSpirit,
+  protectiveBond,
+  warGodsBlessing,
+  wardingFlare,
   projectedWard,
   shadowyDodge,
   slayersCounter,
@@ -303,6 +306,8 @@ function rollAttackImpl(
   if (adv !== "adv" && spendTides(state, attacker)) adv = combineAdv(adv, "adv");
   // Pack Tactics: advantage when one of the attacker's allies is within 5 ft of the target and not incapacitated
   if (adv !== "adv" && attacker.ref.specialRules.some((r) => r.rule === "packTactics") && packAlly(state, attacker, target)) adv = combineAdv(adv, "adv");
+  // Warding Flare (Light): a reaction imposes disadvantage on the attack
+  if (wardingFlare(state, attacker, target, adv)) adv = combineAdv(adv, "dis");
   // Hawk Spirit (Shepherd's Spirit Totem): a reaction gives an attack advantage
   if (adv !== "adv" && hawkSpirit(state, attacker, target)) adv = combineAdv(adv, "adv");
   // Shadowy Dodge: a reaction that imposes disadvantage on an attack that has no advantage
@@ -342,6 +347,17 @@ function rollAttackImpl(
     }
   }
 
+  // Guided Strike (War, 2nd) — "you gain a +10 bonus to the roll" after seeing it, using Channel Divinity; War God's Blessing (6th) does it for a friend
+  if (!autoMiss && !crit && face + toHit < ac) {
+    const deficit = ac - (face + toHit);
+    const gs = attacker.ref.specialRules.find((r) => r.rule === "guidedStrike");
+    if (gs && gs.rule === "guidedStrike" && deficit <= 10 && (attacker.resources.get(gs.resource) ?? 0) > 0) {
+      attacker.resources.set(gs.resource, (attacker.resources.get(gs.resource) ?? 0) - 1);
+      toHit += 10;
+      say(state, `${attacker.name}'s strike is guided (+10)`, attacker.id);
+    } else if (attacker.side === "party" && warGodsBlessing(state, attacker, deficit)) toHit += 10;
+  }
+
   // Cosmic Omen — Weal (Stars): a d6 added to a friend's attack that just missed
   if (!autoMiss && !crit && face + toHit < ac && attacker.side === "party" && cosmicWeal(state, attacker, ac - (face + toHit))) toHit += ac - (face + toHit);
 
@@ -373,6 +389,7 @@ function rollAttackImpl(
     const rr = reactToIncomingAttack(state, { target, hitMargin: face + toHit - ac, crit, face, toHit, ac, critRange });
     if (rr.negated) return { hit: false, crit: false, hadAdvantage: adv === "adv", hadDisadvantage: adv === "dis", nat: face };
     if (rr.face !== undefined) { face = rr.face; crit = face >= critRange; autoMiss = face === 1; } // Chronal Shift: the attack was rolled again
+    if (rr.crit === false) crit = false; // Sentinel at Death's Door
     if (rr.shielded) ac = effectiveAc(target) + extraTargetAc + acVs; // the +5 Shield effect is now active
   }
 
@@ -425,7 +442,7 @@ export function rollSave(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode; d20Floor?: number } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode; d20Floor?: number; damageTypes?: DamageType[] } = {},
 ): SaveResult {
   // Slayer's Counter — a hit on the creature forcing the save makes the save succeed outright
   const forcer = opts.sourceId ? state.units.get(opts.sourceId) : undefined;
@@ -459,7 +476,7 @@ function rollSaveImpl(
   target: CombatantState,
   ability: Ability,
   dc: number,
-  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode; d20Floor?: number } = {},
+  opts: { magical?: boolean; allowLegendaryResistance?: boolean; stakes?: SaveStakes; conditions?: Condition[]; sourceId?: string; bonus?: number; adv?: AdvMode; d20Floor?: number; damageTypes?: DamageType[] } = {},
 ): SaveResult {
   const magical = opts.magical ?? true;
 
@@ -489,6 +506,11 @@ function rollSaveImpl(
   const advVs = target.ref.specialRules.find((r) => r.rule === "advantageOnSavesAgainst");
   if (advVs && advVs.rule === "advantageOnSavesAgainst" && opts.conditions?.some((c) => advVs.conditions.includes(c))) {
     adv = combineAdv(adv, "adv");
+  }
+  // Corona of Light (Light, 17th): enemies in the cleric's light have disadvantage on saves against its fire and radiant spells
+  {
+    const caster = opts.sourceId ? state.units.get(opts.sourceId) : undefined;
+    if (caster && caster.side !== target.side && opts.damageTypes?.some((t) => t === "fire" || t === "radiant") && caster.effects.some((e) => e.name === "corona-of-light")) adv = combineAdv(adv, "dis");
   }
   if (adv === "dis" && cancelDisadvantage(state, target)) adv = "flat";
   if (adv !== "adv" && spendTides(state, target)) adv = combineAdv(adv, "adv");
@@ -584,6 +606,10 @@ export function applyDamage(
     viaSpell?: boolean;
     /** the slot level the spell was cast at (Awakened Spellbook only swaps a damage type on a spell cast with a slot) */
     spellLevel?: number;
+    /** the damage was already redirected by a Protective Bond */
+    redirected?: boolean;
+    /** the damage is doubled — the target is vulnerable to it (Path to the Grave) */
+    doubled?: boolean;
     /** the damage came from a critical hit (Strength of the Grave can't save against one) */
     crit?: boolean;
   } = {},
@@ -617,6 +643,12 @@ export function applyDamage(
       say(state, `${target.name} dies`, target.id);
     }
     return 0;
+  }
+
+  // Protective Bond (Peace): a second bonded creature takes all the damage instead
+  if (!opts.redirected && rawAmount >= 6) {
+    const pb = protectiveBond(state, target);
+    if (pb) return applyDamage(state, pb.protector, pb.resists ? Math.floor(rawAmount / 2) : rawAmount, type, { ...opts, redirected: true });
   }
 
   // Uncanny Dodge — the target spends a reaction to halve an attack's damage
@@ -663,7 +695,8 @@ export function applyDamage(
 
     // resistance is applied at most once even from multiple sources
     const absorbed =
-      target.absorbElements?.type === type && state.round < target.absorbElements.untilRound;
+      (target.absorbElements?.type === type && state.round < target.absorbElements.untilRound) || target.dampened === type;
+    if (target.dampened === type) target.dampened = undefined; // Dampen Elements covers one instance of the damage
     const heldBack = !!opts.viaAttack && !!opts.sourceId &&
       !!state.units.get(opts.sourceId)?.effects.some((e) => e.mods?.halveDamageToOthers && e.sourceId !== target.id); // Ancestral Protectors
     const resisted =
@@ -676,17 +709,20 @@ export function applyDamage(
       (bps && !opts.attackerMagical && ref.resistancesNonmagical.includes(type)) ||
       (bps && !opts.hadAdvantage && ref.specialRules.some((r) => r.rule === "resistNonAdvantageAttacks"));
     if (resisted) dmg = Math.floor(dmg * 0.5);
-    if (ref.vulnerabilities.includes(type)) dmg *= 2;
-
     // active-effect multipliers (a "takes extra damage" debuff; a "deals extra damage" buff)
     for (const e of target.effects) {
       if (e.mods?.damageTakenMultiplier !== undefined) dmg *= e.mods.damageTakenMultiplier;
     }
   }
+  // vulnerability holds even when resistance is ignored (Inescapable Destruction, Elemental Adept); Path to the Grave is vulnerability to all of that damage
+  if (ref.vulnerabilities.includes(type)) dmg *= 2;
+  if (opts.doubled) dmg *= 2;
 
   dmg = Math.max(0, Math.floor(dmg));
   if (dmg === 0) return 0;
   target.combatEventSerial = state.turnSerial ?? 0; // "taken damage" — keeps a Rage going
+  // "...until it takes damage": a turned or charmed creature is free of it the moment it is hurt
+  for (const [c, inst] of [...target.conditions]) if (inst.endsOnDamage) target.conditions.delete(c);
 
   // Arcane Ward — the ward takes the damage first; whatever it can't hold lands (temporary hit points and hit points come after)
   if (target.arcaneWard && target.arcaneWard.hp > 0) {

@@ -125,5 +125,6 @@ export function spellActions(sp: Spell, cc: CasterCtx): Action[] {
       automation: sp.build({ ...ctx0, slotLevel: slot }),
     });
   }
-  return out;
+  // a healing spell is only worth a slot when someone is hurt (or down)
+  return sp.role === "heal" ? out.map((a) => ({ ...a, usableWhen: { allyHpBelow: 0.5 } })) : out;
 }

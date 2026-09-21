@@ -4,8 +4,8 @@ import { SIZES, type Action, type AutomationNode, type Condition, type DamageTyp
 
 import { applyDamage, critRangeFor, rollAttack, rollSave, type AttackResult } from "./resolve";
 import { MINIONS, PC_SUMMONS } from "./minions";
-import { addFlatBonus } from "../spells/spellTransforms";
-import { creatureTypeOf, isCreatureType, matchesFilter } from "./creatureType";
+import { addFlatBonus, maxOfDice } from "../spells/spellTransforms";
+import { creatureTypeOf, crValue, isCreatureType, matchesFilter } from "./creatureType";
 import { BEAST_FORMS, shapedAs } from "./beastForms";
 import { instinctiveCharm, natureSanctuary, reactToDeath, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, violentAttraction } from "./reactions";
 import {
@@ -61,6 +61,8 @@ interface RunCtx {
   inAttack?: boolean;
   /** true while resolving a spell action — damage counts as "from a spell" */
   spell?: boolean;
+  /** the attack now resolving hit a creature under Path to the Grave: all of its damage is doubled (vulnerability) */
+  doubleHit?: boolean;
   /** the spell being cast: its school and the slot level it was cast at (0 for a cantrip) */
   spellSchool?: string;
   spellLevel?: number;
@@ -142,7 +144,7 @@ function rollDamage(state: CombatState, amount: string, mult = 1, crit = false, 
  *  weapon vs. spell attacks). A `oneShot` effect (a one-hit smite) is consumed immediately;
  *  if that was the caster's concentration spell, ending it here is correct — the spell's own
  *  duration is "until the triggering hit lands or 1 minute", not the full minute regardless. */
-function applyExtraDamageOnHit(state: CombatState, attacker: CombatantState, target: CombatantState, res: AttackResult, spell = false): void {
+function applyExtraDamageOnHit(state: CombatState, attacker: CombatantState, target: CombatantState, res: AttackResult, spell = false, doubled = false): void {
   // marks on the target that only the creature that applied them cashes in (Slayer's Prey, Planar Warrior)
   for (const e of [...target.effects]) {
     const mark = e.mods?.extraDamageWhenHitBySource;
@@ -158,7 +160,7 @@ function applyExtraDamageOnHit(state: CombatState, attacker: CombatantState, tar
     if (e.mods?.extraDamageOncePerTurn && !claimOncePerTurn(state, attacker, `extra:${e.name}`)) continue;
     const amt = rollDamage(state, extra.amount, 1, res.crit);
     applyDamage(state, target, amt, extra.damageType, {
-      hadAdvantage: res.hadAdvantage, attackerMagical: true, sourceId: attacker.id, viaAttack: true,
+      hadAdvantage: res.hadAdvantage, attackerMagical: true, sourceId: attacker.id, viaAttack: true, doubled,
     });
     if (!e.oneShot) continue;
     if (attacker.concentratingOn && attacker.concentrationEffects?.includes(e.name)) {
@@ -332,9 +334,11 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
     case "self": return [source];
     case "eachAlly": {
       const r = who.withinFt;
-      const pool = who.excludeSelf ? allies.filter((a) => a.id !== source.id) : allies;
-      if (!r || !state.distanceFt) return pool;
-      return pool.filter((a) => a.id === source.id || state.distanceFt!(source, a) <= r + 0.001);
+      let pool = who.excludeSelf ? allies.filter((a) => a.id !== source.id) : allies;
+      if (r && state.distanceFt) pool = pool.filter((a) => a.id === source.id || state.distanceFt!(source, a) <= r + 0.001);
+      // "a number of willing creatures equal to your proficiency bonus": the sturdiest — those most likely to be in the fight
+      if (who.limit && pool.length > who.limit) pool = pool.filter((a) => a.summonerId === undefined).sort((a, b) => b.maxHp - a.maxHp).slice(0, who.limit);
+      return pool;
     }
     case "lowestHpAlly": {
       const pool = who.includeDowned ? [...state.units.values()].filter((x) => x.side === source.side && x.alive && x.summonerId === undefined && eligible(x)) : allies;
@@ -556,8 +560,17 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         }
         if (res.hit) {
           tagAmbushTarget(state, source, t);
+          // Path to the Grave: "the creature has vulnerability to all of that damage, and then the curse ends"
+          const grave = t.effects.find((e) => e.mods?.doubleNextHit && state.units.get(e.sourceId)?.side === source.side);
+          if (grave) { next.doubleHit = true; t.effects = t.effects.filter((e) => e !== grave); }
           runAutomation(node.onHit, next);
-          applyExtraDamageOnHit(state, source, t, res, !!ctx.spell);
+          applyExtraDamageOnHit(state, source, t, res, !!ctx.spell, next.doubleHit);
+          // Order's Wrath: "The next time one of your allies hits the cursed creature, the target also takes 2d8 psychic damage, and the curse ends"
+          const wrath = t.effects.find((e) => e.mods?.extraDamageOnNextAllyHit && e.sourceId !== source.id && state.units.get(e.sourceId)?.side === source.side);
+          if (wrath && t.alive) {
+            t.effects = t.effects.filter((e) => e !== wrath);
+            applyDamage(state, t, rollDamage(state, wrath.mods!.extraDamageOnNextAllyHit!.amount), wrath.mods!.extraDamageOnNextAllyHit!.damageType as DamageType, { sourceId: source.id, viaAttack: true, attackerMagical: true });
+          }
           fireOnHitTraits(state, t, source);
           if (t.ref.specialRules.some((r) => r.rule === "multiattackDefense") && t.alive) { // +4 AC against this attacker until its next turn
             t.effects = t.effects.filter((e) => !(e.name === "multiattack-defense" && e.sourceId === source.id));
@@ -586,7 +599,8 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const dc = typeof node.dc === "number" ? node.dc : 18;
         // the conditions this save is against (Psychic Defenses: advantage vs charmed/frightened)
         const conditions = node.onFail.flatMap((n) => (n.type === "applyCondition" ? [n.condition] : []));
-        const sr = rollSave(state, t, node.ability, dc, { magical: true, stakes: saveStakes(node.onFail), conditions, sourceId: source.id, adv: node.adv });
+        const damageTypes = node.onFail.flatMap((n) => (n.type === "damage" ? [n.damageType as DamageType] : []));
+        const sr = rollSave(state, t, node.ability, dc, { magical: true, stakes: saveStakes(node.onFail), conditions, sourceId: source.id, adv: node.adv, damageTypes: ctx.spell ? damageTypes : undefined });
         if (ctx.saveLog) ctx.saveLog.set(t.id, sr.passed);
         const next: RunCtx = { ...ctx, last: { ...ctx.last, savePassed: sr.passed }, depth: ctx.depth + 1 };
         if (!sr.passed) {
@@ -633,6 +647,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           viaAttack: ctx.inAttack,
           viaSpell: ctx.spell,
           spellLevel: ctx.spellLevel,
+          doubled: ctx.doubleHit,
           crit: ctx.crit,
         });
         source.damageDealt += t.downed || !t.alive ? Math.min(dealt, room) : dealt;
@@ -649,7 +664,10 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
 
       case "heal": {
         const t = ctx.scope[0] ?? source;
-        applyHealing(state, t, rollDamage(state, node.amount)); // draws on the per-round heal budget
+        // Circle of Mortality (a creature at 0 hit points) / Supreme Healing: "use the highest number possible for each die"
+        const mr = source.ref.specialRules.find((r) => r.rule === "maxHealing");
+        const maximise = !!mr && mr.rule === "maxHealing" && (mr.always || t.downed || t.hp <= 0);
+        applyHealing(state, t, maximise ? maxOfDice(node.amount) : rollDamage(state, node.amount)); // draws on the per-round heal budget
         break;
       }
 
@@ -676,6 +694,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         }
         const expires = node.durationRounds && node.durationRounds > 0 ? state.round + node.durationRounds : Infinity;
         t.conditions.set(node.condition, {
+          ...(node.endsOnDamage ? { endsOnDamage: true } : {}),
           expiresRound: node.durationRounds === -1 ? Infinity : expires,
           saveEnds: node.saveEnds ? { ability: node.saveEnds.ability, dc: typeof node.saveEnds.dc === "number" ? node.saveEnds.dc : 18, at: node.saveEnds.at } : undefined,
           sourceId: source.id,
@@ -768,12 +787,17 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
 
       case "healPool": {
         let left = node.total;
-        const pool = livingAllies(state, source)
+        // Preserve Life: "Choose any creatures within 30 feet of you, and divide [the points] among them... can't restore a creature to more than half of its hit point
+        // maximum" — and not undead or constructs
+        const room = (a: CombatantState) => (node.capFraction ? Math.max(0, Math.floor(a.maxHp * node.capFraction) - a.hp) : a.maxHp - a.hp);
+        const pool = [...state.units.values()]
+          .filter((a) => a.side === source.side && a.alive && a.summonerId === undefined && matchesFilter(a.ref, node.filter, a.effects))
           .filter((a) => !node.withinFt || !state.distanceFt || a.id === source.id || state.distanceFt(source, a) <= node.withinFt + 0.001)
-          .sort((a, b) => (b.maxHp - b.hp) - (a.maxHp - a.hp));
+          .filter((a) => room(a) > 0)
+          .sort((a, b) => room(b) - room(a));
         for (const a of pool) {
           if (left <= 0) break;
-          left -= applyHealing(state, a, Math.min(left, a.maxHp - a.hp));
+          left -= applyHealing(state, a, Math.min(left, room(a)));
         }
         break;
       }
@@ -847,6 +871,39 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
             say(state, `${source.name} regains a ${lvl}${lvl === 1 ? "st" : lvl === 2 ? "nd" : lvl === 3 ? "rd" : "th"}-level slot (Expert Divination)`, source.id);
             break;
           }
+        }
+        break;
+      }
+
+      case "destroy": case "banish": {
+        const t = ctx.scope[0];
+        if (!t || !t.alive) break;
+        const cr = crValue(t.ref);
+        // an unrated stat block (a player character's) is out of reach of a challenge-rating limit, but not of a spell with no limit (Divine Word: crMax 99)
+        if (cr === undefined ? node.crMax < 30 : cr > node.crMax) break;
+        t.hp = 0;
+        t.alive = false;
+        t.downed = false;
+        say(state, node.type === "destroy" ? `${t.name} is destroyed` : `${t.name} is banished`, source.id);
+        if (node.type === "destroy") fireOnDeathTraits(state, t);
+        break;
+      }
+
+      case "allyStrike": {
+        // Voice of Authority: the ally uses its reaction to make one weapon attack against an enemy of the caster's choosing
+        const ally = ctx.scope[0];
+        if (!ally || ally.id === source.id || !ally.alive || ally.downed || ally.reactionUsed || isIncapacitated(ally) || state.inReaction) break;
+        const swing = ally.ref.actions.find((a) => a.id === "attack");
+        if (!swing) break;
+        const foes = livingEnemies(state, ally);
+        if (!foes.length) break;
+        const pick = foes.slice().sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+        ally.reactionUsed = true;
+        state.inReaction = true;
+        try {
+          runAction(state, ally, swing, { asReaction: true, forceScope: [pick], skipIncapacitatedCheck: true });
+        } finally {
+          state.inReaction = false;
         }
         break;
       }

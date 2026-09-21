@@ -8,6 +8,7 @@ import { rogueKit } from "../engine/rogueKit";
 import { RANGER_BUILDERS } from "./rangerTemplates";
 import { WIZARD_BUILDERS } from "./wizardTemplates";
 import { DRUID_BUILDERS } from "./druidTemplates";
+import { CLERIC_BUILDERS } from "./clericTemplates";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
@@ -23,57 +24,6 @@ function stub(dmg: string, bonus: number): Combatant["actions"] {
     id: "attack", name: "Weapon", cost: { action: 1 }, recharge: "none",
     automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus, onHit: [{ type: "damage", amount: dmg, damageType: "bludgeoning" }] }] }],
   }];
-}
-
-/** recursively finds every "heal" node reachable from `nodes` and adds a
- *  sibling "heal" node next to each one — Disciple of Life's flat bonus
- *  applies to the same target the original heal already resolved to. */
-function injectHealBonus(nodes: import("../schema").AutomationNode[], amount: number): import("../schema").AutomationNode[] {
-  const out: import("../schema").AutomationNode[] = [];
-  for (const n of nodes) {
-    if (n.type === "heal") {
-      out.push(n, { type: "heal", amount: String(amount) });
-      continue;
-    }
-    if (n.type === "target") out.push({ ...n, effects: injectHealBonus(n.effects, amount) });
-    else if (n.type === "branch") out.push({ ...n, then: injectHealBonus(n.then, amount), else: n.else && injectHealBonus(n.else, amount) });
-    else out.push(n);
-  }
-  return out;
-}
-
-/** Disciple of Life: a healing spell of 1st level+ restores 2 + the spell's
- *  slot level in additional HP. Applied per spell-slot variant (the bonus
- *  scales with the slot actually used, matching RAW), skipping cantrips
- *  (there are no healing cantrips, but the guard costs nothing). */
-function withDiscipleOfLife(c: Combatant): Combatant {
-  return {
-    ...c,
-    actions: c.actions.map((a) => {
-      const slotMatch = a.id.match(/-(\d+)$/);
-      if (!a.isSpell || !slotMatch) return a;
-      const slot = Number(slotMatch[1]);
-      const automation = injectHealBonus(a.automation, 2 + slot);
-      return automation === a.automation ? a : { ...a, automation };
-    }),
-  };
-}
-
-export function lifeCleric(level: number): Combatant {
-  const pb = pbFor(level);
-  const wis = pb === 6 ? 5 : 4;
-  return withDiscipleOfLife(makeCaster({
-    id: "life-cleric", name: `Cleric ${level}`, level, spellClass: "cleric", casterKind: "full", spellAbility: "wis",
-    ac: 19, hp: between(level, 10, 7 * 20 + 15),
-    abilities: { str: score(1), dex: score(0), con: score(2), int: score(0), wis: score(wis), cha: score(1) },
-    proficientSaves: ["con", "wis", "cha"], focus: "balanced",
-    extraTraits: [{ id: "party-heal", name: "Healer", trigger: "always", automation: [], text: "the engine's healer role tops up the most-hurt ally" }],
-    extraActions: [
-      { id: "party-heal", name: "Healing Word (bonus)", cost: { bonus: 1 }, recharge: "none", automation: [{ type: "target", who: { who: "lowestHpAlly" }, effects: [] }], text: "AI applies to the most-hurt ally" },
-      ...stub(`1d8+${1}`, pb + 1),
-    ],
-    keepDistance: true, targetPriority: "lowestHp",
-  }));
 }
 
 export function vengeancePaladin(level: number): Combatant {
@@ -1071,7 +1021,7 @@ export function warlock(level: number): Combatant {
 
 export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   ...WIZARD_BUILDERS,
-  "life-cleric": lifeCleric,
+  ...CLERIC_BUILDERS,
   "vengeance-paladin": vengeancePaladin,
   ...RANGER_BUILDERS,
   "battlesmith-artificer": battleSmithArtificer,

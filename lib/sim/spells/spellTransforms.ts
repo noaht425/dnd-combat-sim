@@ -153,3 +153,15 @@ export function injectAfterFirstHeal(nodes: AutomationNode[], extra: AutomationN
   };
   return { nodes: walk(nodes), applied };
 }
+
+/** like `maximizeDamage`, but only the damage nodes of the given types (Destructive Wrath: "when you roll lightning or thunder damage") */
+export function maximizeDamageOfTypes(nodes: AutomationNode[], types: string[]): AutomationNode[] {
+  return nodes.map((n): AutomationNode => {
+    if (n.type === "damage") return types.includes(n.damageType) ? { ...n, amount: String(maxOfDice(n.amount)) } : n;
+    if (n.type === "target") return { ...n, effects: maximizeDamageOfTypes(n.effects, types) };
+    if (n.type === "attack") return { ...n, onHit: maximizeDamageOfTypes(n.onHit, types), onMiss: n.onMiss && maximizeDamageOfTypes(n.onMiss, types) };
+    if (n.type === "save") return { ...n, onFail: maximizeDamageOfTypes(n.onFail, types), onSuccess: n.onSuccess && maximizeDamageOfTypes(n.onSuccess, types) };
+    if (n.type === "branch") return { ...n, then: maximizeDamageOfTypes(n.then, types), else: n.else && maximizeDamageOfTypes(n.else, types) };
+    return n;
+  });
+}

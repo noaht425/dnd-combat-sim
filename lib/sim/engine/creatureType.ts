@@ -25,8 +25,17 @@ export function matchesFilter(c: Combatant, filter?: TargetFilter, effects?: rea
   if (filter.notEffects && effects?.some((e) => filter.notEffects!.includes(e.name))) return false;
   const t = creatureTypeOf(c);
   if (filter.types && t !== undefined && !filter.types.includes(t)) return false;
+  if (filter.types && t === undefined && filter.strictTypes) return false; // Turn Undead never turns a creature it can't tell is undead
   if (filter.notTypes && t !== undefined && filter.notTypes.includes(t)) return false;
   if (filter.notImmune?.some((cond) => c.conditionImmunities.includes(cond))) return false;
   if (filter.minInt !== undefined && c.abilities.int < filter.minInt) return false;
   return true;
+}
+
+/** a stat block's challenge rating as a number ("1/2" -> 0.5); a stat block without one is unrated (undefined) */
+export function crValue(c: Combatant): number | undefined {
+  if (!c.cr) return undefined;
+  const m = /^(\d+)\s*\/\s*(\d+)$/.exec(c.cr.trim());
+  const n = m ? Number(m[1]) / Number(m[2]) : Number(c.cr);
+  return Number.isFinite(n) ? n : undefined;
 }

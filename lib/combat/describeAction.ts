@@ -132,6 +132,12 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return "";
     case "omenRoll":
       return "";
+    case "destroy":
+      return `destroys it outright if its challenge rating is ${n.crMax < 1 && n.crMax > 0 ? "1/2" : n.crMax} or lower`;
+    case "banish":
+      return `banishes it if its challenge rating is ${n.crMax < 1 && n.crMax > 0 ? "1/2" : n.crMax} or lower`;
+    case "allyStrike":
+      return "lets the ally make a weapon attack with its reaction";
     case "wildShape":
       return `assumes the shape of a ${n.form.replace(/-/g, " ")}`;
     case "takeControl":

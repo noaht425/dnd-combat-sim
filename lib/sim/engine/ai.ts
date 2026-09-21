@@ -22,6 +22,7 @@ import {
 /** charmed: can't attack the charmer or target it with harmful effects. In a
  * solo fight the charmer is the whole enemy side, so the turn is a wash. */
 function charmParalysed(state: CombatState, u: CombatantState): boolean {
+  if (hasCondition(u, "turned")) return true; // Turn Undead: it spends its turns getting away from whoever turned it
   if (!hasCondition(u, "charmed")) return false;
   const charmerId = u.conditions.get("charmed")?.sourceId;
   const foes = livingEnemies(state, u);
@@ -55,6 +56,11 @@ export function actionAvailable(state: CombatState, u: CombatantState, a: Action
   // Arcane Deflection: nothing but cantrips until the end of the next turn
   if (a.isSpell && (a.spellLevel ?? 0) > 0 && u.effects.some((e) => e.mods?.cantripsOnly)) return false;
   // usage gate: e.g. an execute that only works on a grappled / incapacitated foe
+  // a healing spell is only worth a slot when someone is hurt (or down)
+  if (a.usableWhen?.allyHpBelow !== undefined) {
+    const below = a.usableWhen.allyHpBelow;
+    if (![...state.units.values()].some((x) => x.side === u.side && x.alive && x.summonerId === undefined && (x.downed || x.hp < x.maxHp * below))) return false;
+  }
   if (a.usableWhen?.enemyHasCondition) {
     const conds = a.usableWhen.enemyHasCondition;
     const anyFoe = [...state.units.values()].some(
@@ -138,7 +144,7 @@ function hasCheapTeleport(u: CombatantState): boolean {
 export function takeMonsterTurn(state: CombatState, u: CombatantState): void {
   if (isIncapacitated(u)) return;
   if (!livingEnemies(state, u).length) return;
-  if (charmParalysed(state, u)) { say(state, `${u.name} is charmed and won't act`, u.id); return; }
+  if (charmParalysed(state, u)) { say(state, hasCondition(u, "turned") ? `${u.name} is turned and flees` : `${u.name} is charmed and won't act`, u.id); return; }
 
   // a ranged-primary monster that got dragged into melee peels off to its
   // preferred range — provoking from whoever it was toe-to-toe with. Once: after
@@ -277,7 +283,7 @@ export function takePcTurn(state: CombatState, u: CombatantState, level: number)
     return;
   }
   if (!livingEnemies(state, u).length) return;
-  if (charmParalysed(state, u)) { say(state, `${u.name} is charmed and won't act`, u.id); return; }
+  if (charmParalysed(state, u)) { say(state, hasCondition(u, "turned") ? `${u.name} is turned and flees` : `${u.name} is charmed and won't act`, u.id); return; }
 
   // imperfect play (templated party only; the generic party's haircut is baked in):
   // a per-turn chance the PC repositions / hesitates / Dodges instead of acting

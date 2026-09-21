@@ -2,14 +2,14 @@
 // cheap expected-value estimate against the *current* board — no dice rolled.
 
 import type { Ability, Action, AutomationNode, Condition, TargetFilter } from "../schema";
-import { matchesFilter } from "./creatureType";
+import { crValue, matchesFilter } from "./creatureType";
 import { avgDice, hitChance, saveFailChance } from "../math";
 import { effectiveAc, isIncapacitated, type CombatState, type CombatantState } from "./state";
 import { saveModifierOf } from "./resolve";
 
 const CONTROL_WEIGHT: Partial<Record<Condition, number>> = {
   stunned: 40, paralyzed: 45, incapacitated: 38, unconscious: 45, petrified: 50,
-  restrained: 18, charmed: 30, frightened: 10, prone: 6, transfixed: 30,
+  restrained: 18, charmed: 30, frightened: 10, prone: 6, transfixed: 30, turned: 30,
   "marked-for-reckoning": 12, blinded: 12, poisoned: 6, concussed: 8, doomed: 14, grappled: 8, deafened: 2, exhaustion: 15,
 };
 
@@ -144,7 +144,32 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
           // probability it lands: fold in the wrapping save if any (handled above via pMul)
           control += pMul * (CONTROL_WEIGHT[n.condition] ?? 8) * (n.durationRounds && n.durationRounds > 0 ? Math.min(3, n.durationRounds) : 2) / 2;
         }
+      } else if (n.type === "destroy" || n.type === "banish") {
+        // a creature at or under the challenge rating is removed from the fight outright: worth what it has left, and a kill finishes it
+        const cr = crValue(t.ref);
+        if (t.side !== actor.side && cr !== undefined && cr <= n.crMax) damage += pMul * t.hp;
+      } else if (n.type === "healPool") {
+        // a pool of hit points shared among the creatures that can take it (Preserve Life): each up to its cap, weighted like any other heal
+        let left = n.total;
+        let value = 0;
+        const pool = allies.filter((a) => a.summonerId === undefined && matchesFilter(a.ref, n.filter, a.effects))
+          .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp);
+        for (const a of pool) {
+          const room = Math.max(0, Math.floor(a.maxHp * (n.capFraction ?? 1)) - a.hp);
+          const give = Math.min(left, room);
+          if (give <= 0) continue;
+          left -= give;
+          const frac = a.hp / Math.max(1, a.maxHp);
+          value += give * (a.downed ? 1.4 : frac < 0.3 ? 1 : frac < 0.5 ? 0.4 : 0.1);
+        }
+        heal += pMul * value;
+      } else if (n.type === "allyStrike") {
+        // Voice of Authority: an ally's free weapon attack — a modest bonus on top of the spell that grants it
+        if (t.side === actor.side && t.id !== actor.id && !t.reactionUsed) damage += pMul * 7;
       } else if (n.type === "applyEffect") {
+        if (t.side === actor.side && t.id === actor.id && n.mods?.attackAdvantage === "adv" && !t.effects.some((e) => e.name === n.name)) damage += pMul * 8; // advantage on the caster's own attacks (Invoke Duplicity)
+        if (t.side !== actor.side && !t.effects.some((e) => e.name === n.name) && n.mods?.doubleNextHit) damage += pMul * 12; // Path to the Grave: the next hit does double
+        if (n.tick?.some((x) => x.type === "tempHp") && t.side === actor.side && !t.effects.some((e) => e.name === n.name)) heal += pMul * 6; // Twilight Sanctuary's temporary hit points, turn after turn
         if (t.side !== actor.side && !t.effects.some((e) => e.name === n.name) && (n.mods?.speedZero || n.mods?.noReactions || n.mods?.saveAdvantage === "dis")) control += pMul * 10;
         const tick = n.tick?.find((x) => x.type === "damage");
         if (tick && tick.type === "damage") damage += pMul * (avgDice(tick.amount) ?? 0) * 1.5; // a few ticks

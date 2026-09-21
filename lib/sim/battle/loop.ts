@@ -162,6 +162,7 @@ function rollDice(state: BattleState, s: string): number {
 }
 
 function charmParalysed(state: BattleState, u: CombatantState): boolean {
+  if (u.conditions.has("turned")) return true; // Turn Undead: it can only try to get away
   const c = u.conditions.get("charmed");
   if (!c) return false;
   const foes = livingEnemies(state, u);
@@ -206,7 +207,7 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
     return;
   }
   if (charmParalysed(state, u)) {
-    say(state, `${u.name} is charmed and won't act`, u.id);
+    say(state, u.conditions.has("turned") ? `${u.name} is turned and flees` : `${u.name} is charmed and won't act`, u.id);
     return;
   }
 

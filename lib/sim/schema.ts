@@ -39,6 +39,7 @@ export const CONDITIONS = [
   "invisible", "paralyzed", "petrified", "poisoned", "prone", "restrained",
   "stunned", "unconscious", "exhaustion",
   "burning", "transfixed", "doomed", "marked-for-reckoning", "concussed",
+  "turned", // Turn Undead: flees the turner, does nothing else, and it ends when the creature takes damage
 ] as const;
 export const conditionSchema = z.enum(CONDITIONS);
 export type Condition = (typeof CONDITIONS)[number];
@@ -79,6 +80,8 @@ export const targetFilterSchema = z.object({
   notTypes: z.array(creatureTypeSchema).optional(),   // never creatures of these types
   notImmune: z.array(conditionSchema).optional(),     // never a creature immune to one of these conditions ("creatures immune to being charmed")
   minInt: z.number().int().optional(),                // an Intelligence score of at least this
+  /** with `types`, a creature whose type is unknown is NOT eligible (Turn Undead never turns a stat block the sim can't classify) */
+  strictTypes: z.boolean().optional(),
   notEffects: z.array(z.string()).optional(),        // never a creature currently carrying one of these effects (Command Undead: "you can't use this feature on it again")
 });
 export type TargetFilter = z.infer<typeof targetFilterSchema>;
@@ -92,7 +95,7 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   z.object({ who: z.literal("eachEnemy"), withinFt: z.number().positive().optional() }),
   // `withinFt` narrows to allies within that many feet of the caster (battle mode's real grid
   // only — the Monte-Carlo engine has no distances, so there it still means the whole side)
-  z.object({ who: z.literal("eachAlly"), withinFt: z.number().positive().optional(), excludeSelf: z.boolean().optional() }),
+  z.object({ who: z.literal("eachAlly"), withinFt: z.number().positive().optional(), excludeSelf: z.boolean().optional(), limit: z.number().int().positive().optional() }), // `limit`: only this many (the sturdiest first)
   // the most-hurt ally (healing spells); `includeDowned` lets it reach an ally at 0 hit points (a touch that stands one back up)
   z.object({ who: z.literal("lowestHpAlly"), includeDowned: z.boolean().optional() }),
   z.object({ who: z.literal("nearestEnemy") }),
@@ -173,6 +176,14 @@ export const effectModsSchema = z.object({
   protectedFromTypes: z.array(creatureTypeSchema).optional(),
   /** a natural d20 lower than this counts as this on the holder's Constitution saves to keep concentration (the Dragon constellation: 10) */
   concentrationD20Floor: z.number().int().optional(),
+  /** Emboldening Bond's Protective Bond: while this effect lasts, the holder may use its reaction to take all the damage another bonded creature (same source) within this many feet is about to take */
+  protectiveBondFt: z.number().int().optional(),
+  /** ...and (Expansive Bond) has resistance to that damage */
+  protectiveBondResists: z.boolean().optional(),
+  /** the next attack by the creature that applied this (or an ally of it) that hits the holder is doubled (vulnerability to that damage), and the effect ends (Path to the Grave) */
+  doubleNextHit: z.boolean().optional(),
+  /** the next time an ally of the creature that applied this hits the holder, it takes this extra damage, and the effect ends (Order's Wrath) */
+  extraDamageOnNextAllyHit: z.object({ amount: diceSchema, damageType: damageTypeSchema }).optional(),
   /** creatures of these types can't charm or frighten the holder (Nature's Ward) */
   noCharmFrightFromTypes: z.array(creatureTypeSchema).optional(),
   /** the holder can't gain these conditions while the effect lasts (Mindless Rage) */
@@ -217,7 +228,7 @@ export type AutomationNode =
   | { type: "heal"; amount: string; oncePerTurn?: string }
   /** `perAlly`: instead of `amount`, `each` temp HP for every other living ally within 30 ft (up to `max` of them) — Call the Hunt */
   | { type: "tempHp"; amount: string; perAlly?: { each: number; max: number } }
-  | { type: "applyCondition"; condition: Condition; durationRounds?: number; saveEnds?: z.infer<typeof saveEndsSchema> }
+  | { type: "applyCondition"; condition: Condition; durationRounds?: number; saveEnds?: z.infer<typeof saveEndsSchema>; endsOnDamage?: boolean }
   | { type: "applyEffect"; name: string; durationRounds?: number; mods?: EffectMods; tick?: AutomationNode[]; saveEnds?: z.infer<typeof saveEndsSchema>; oneShot?: boolean; oncePerTurn?: string }
   | { type: "removeEffect"; name: string }
   | { type: "move"; kind: "pull" | "push" | "teleportSelf" | "teleportSelfToMarked" | "withdraw"; distance?: number; provokes?: boolean }
@@ -252,11 +263,17 @@ export type AutomationNode =
   | { type: "wildShape"; form: string; beastSpells?: boolean }
   /** Cosmic Omen: after a long rest, roll for Weal (even) or Woe (odd), unless already rolled */
   | { type: "omenRoll" }
+  /** the target is destroyed outright if its challenge rating is at most `crMax` (Destroy Undead) */
+  | { type: "destroy"; crMax: number }
+  /** the target is banished from the fight if its challenge rating is at most `crMax` (Arcane Abjuration) */
+  | { type: "banish"; crMax: number }
+  /** the creature this node's scope is (an ally the source just cast a spell on) spends its reaction to make one weapon attack against an enemy of the source's choice (Voice of Authority) */
+  | { type: "allyStrike" }
   /** Inquisitive's Insightful Fighting: `bonus` is the rogue's Wisdom (Insight) modifier, rolled against the
    *  target's Charisma (Deception). On a success the rogue may Sneak Attack that target without advantage. */
   | { type: "insightfulFighting"; bonus: number }
   /** heal up to `total` hit points, divided among the source's allies within `withinFt` (most wounded first) — Clockwork Cavalcade */
-  | { type: "healPool"; total: number; withinFt?: number }
+  | { type: "healPool"; total: number; withinFt?: number; capFraction?: number; filter?: TargetFilter }
   /** bring the first fallen ally back to life with `dice` hit points (Hand of Ultimate Mercy) */
   | { type: "revive"; dice: string }
   /** the source spends its bonus action (a rider that IS a bonus action: the wolf totem's topple) */
@@ -316,6 +333,7 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       condition: conditionSchema,
       durationRounds: z.number().int().optional(),
       saveEnds: saveEndsSchema.optional(),
+      endsOnDamage: z.boolean().optional(), // "charmed ... until it takes damage" (Turn Undead, Order's Demand, Charm Animals and Plants)
     }),
     z.object({
       type: z.literal("applyEffect"),
@@ -350,11 +368,14 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     z.object({ type: z.literal("takeControl") }),
     z.object({ type: z.literal("wildShape"), form: z.string(), beastSpells: z.boolean().optional() }),
     z.object({ type: z.literal("omenRoll") }),
+    z.object({ type: z.literal("destroy"), crMax: z.number().min(0) }),
+    z.object({ type: z.literal("banish"), crMax: z.number().min(0) }),
+    z.object({ type: z.literal("allyStrike") }),
     z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
     z.object({ type: z.literal("spendReaction") }),
     z.object({ type: z.literal("spendBonusAction") }),
     z.object({ type: z.literal("revive"), dice: diceSchema }),
-    z.object({ type: z.literal("healPool"), total: z.number().int().positive(), withinFt: z.number().positive().optional() }),
+    z.object({ type: z.literal("healPool"), total: z.number().int().positive(), withinFt: z.number().positive().optional(), capFraction: z.number().positive().max(1).optional(), filter: targetFilterSchema.optional() }),
     z.object({ type: z.literal("contest"), bonus: z.number().int(), theirs: abilitySchema, onSuccess: z.array(automationNodeSchema) }),
     z.object({ type: z.literal("commandSummon"), action: z.string(), limit: z.number().int().positive().optional(), rangeFt: z.number().positive().optional() }),
     z.object({ type: z.literal("rechargeRoll"), resource: z.string() }),
@@ -456,6 +477,14 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("arcaneRecovery") }),
   // Power Surge (War Magic): a Counterspell (or Dispel Magic) you succeed with gives one more surge, up to the cap in `resource`'s max
   z.object({ rule: z.literal("surgeOnCounter"), resource: z.string() }),
+  // Guided Strike (War, 2nd): after seeing an attack roll, spend a use of `resource` for +10 to it if that turns a miss into a hit
+  z.object({ rule: z.literal("guidedStrike"), resource: z.string() }),
+  // Circle of Mortality (Grave) / Supreme Healing (Life, 17th): healing dice are maximised — always (`always`), or when the creature healed is at 0 hit points
+  z.object({ rule: z.literal("maxHealing"), always: z.boolean() }),
+  // Keeper of Souls (Grave, 17th): when an enemy dies within 30 ft, you or an ally within 30 ft regains hit points equal to its Hit Dice — once until the start of your next turn
+  z.object({ rule: z.literal("keeperOfSouls") }),
+  // Corona of Light (Light, 17th): enemies near you have disadvantage on saving throws against your spells that deal fire or radiant damage
+  z.object({ rule: z.literal("coronaOfLight") }),
   // Fungal Body (Spores, 14th): any critical hit against you counts as a normal hit instead, unless you're incapacitated
   z.object({ rule: z.literal("critImmune") }),
   // Mighty Summoner (Shepherd, 6th): beasts and fey you summon have 2 extra hit points per Hit Die
@@ -577,7 +606,7 @@ export const actionSchema = z.object({
   concentration: z.boolean().optional(), // the ongoing effect ends if the caster loses concentration
   // gate: the AI may only choose this action while a living enemy has one of these
   // conditions (e.g. an "execute" usable only vs a grappled / incapacitated target).
-  usableWhen: z.object({ enemyHasCondition: z.array(conditionSchema).nonempty() }).optional(),
+  usableWhen: z.object({ enemyHasCondition: z.array(conditionSchema).nonempty().optional(), allyHpBelow: z.number().positive().max(1).optional() }).optional(),
   automation: z.array(automationNodeSchema),
   text: z.string().optional(),
 });
