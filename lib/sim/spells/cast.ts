@@ -76,6 +76,9 @@ export function spellReaction(sp: Spell, cc: CasterCtx): Action | undefined {
  * All castable variants of a leveled spell. `slotResource` overrides the slot
  * name (warlock -> "pactSlot" / "arcanumN").
  */
+/** spells whose attack roll is a MELEE spell attack (touch, or a conjured weapon) — the rest are ranged, so a nearby hostile gives disadvantage */
+const MELEE_SPELL_ATTACKS = new Set(["shocking-grasp", "inflict-wounds", "flame-blade", "spiritual-weapon", "vampiric-touch", "booming-blade", "green-flame-blade", "thorn-whip", "melf-s-minute-meteors"]);
+
 export function spellActions(sp: Spell, cc: CasterCtx): Action[] {
   if (!sp.build || sp.castTime === "reaction") return [];
   const ctx0 = baseCtx(cc);
@@ -84,7 +87,7 @@ export function spellActions(sp: Spell, cc: CasterCtx): Action[] {
   // cantrip: one free action
   if (sp.level === 0) {
     out.push({
-      id: `cast-${sp.id}`, name: sp.name, cost: costFor(sp), recharge: "none", isSpell: true,
+      id: `cast-${sp.id}`, name: sp.name, cost: costFor(sp), recharge: "none", isSpell: true, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
       concentration: sp.concentration || undefined,
       automation: sp.build({ ...ctx0, slotLevel: 0 }),
     });
@@ -95,14 +98,14 @@ export function spellActions(sp: Spell, cc: CasterCtx): Action[] {
     const pact = pactSlotLevel(cc.level);
     if (sp.level <= pact) {
       out.push({
-        id: `cast-${sp.id}`, name: `${sp.name} (pact)`, cost: costFor(sp), recharge: "none", isSpell: true,
+        id: `cast-${sp.id}`, name: `${sp.name} (pact)`, cost: costFor(sp), recharge: "none", isSpell: true, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
         concentration: sp.concentration || undefined,
         limitedUse: { resource: "pactSlot", amount: 1 },
         automation: sp.build({ ...ctx0, slotLevel: pact }),
       });
     } else if (sp.level >= 6 && sp.level <= 9) {
       out.push({
-        id: `cast-${sp.id}`, name: `${sp.name} (Arcanum)`, cost: costFor(sp), recharge: "none", isSpell: true,
+        id: `cast-${sp.id}`, name: `${sp.name} (Arcanum)`, cost: costFor(sp), recharge: "none", isSpell: true, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
         concentration: sp.concentration || undefined,
         limitedUse: { resource: `arcanum${sp.level}`, amount: 1 },
         automation: sp.build({ ...ctx0, slotLevel: sp.level }),
@@ -116,7 +119,7 @@ export function spellActions(sp: Spell, cc: CasterCtx): Action[] {
     out.push({
       id: `cast-${sp.id}-${slot}`,
       name: slot === sp.level ? sp.name : `${sp.name} (${slot}${slot === 1 ? "st" : slot === 2 ? "nd" : slot === 3 ? "rd" : "th"})`,
-      cost: costFor(sp), recharge: "none", isSpell: true,
+      cost: costFor(sp), recharge: "none", isSpell: true, ranged: !MELEE_SPELL_ATTACKS.has(sp.id),
       concentration: sp.concentration || undefined,
       limitedUse: { resource: `slot${slot}`, amount: 1 },
       automation: sp.build({ ...ctx0, slotLevel: slot }),

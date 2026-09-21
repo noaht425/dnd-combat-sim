@@ -61,7 +61,7 @@ function attackAction(k: Kit, o: AttackOpts = {}): Action {
     effects: [...Array.from({ length: o.count ?? k.attacks }, () => shot(k, o.onHit, o.onMiss)), ...(o.after ?? [])],
   }];
   return {
-    id: o.id ?? "attack", name: o.name ?? "Longbow", cost: { action: 1 }, recharge: "none",
+    id: o.id ?? "attack", name: o.name ?? "Longbow", cost: { action: 1 }, recharge: "none", ranged: true,
     text: "Ranged weapon attack, range 150/600 ft.",
     automation: o.gate ? [{ type: "branch", if: o.gate, then: nodes }] : nodes,
   };
@@ -154,7 +154,7 @@ function hunter(level: number): Combatant {
   return build(k, "hunter-ranger", {
     attacks: [attackAction(k, { onHit: colossus })],
     actions: level >= 11 ? [{
-      id: "volley", name: "Volley", cost: { action: 1 }, recharge: "none",
+      id: "volley", name: "Volley", cost: { action: 1 }, recharge: "none", ranged: true,
       text: "One ranged attack against any number of creatures within 10 feet of a point you can see.",
       automation: [{ type: "target", who: { who: "area", shape: "sphere", size: 10 }, effects: [shot(k, colossus)] }],
     }] : [],
@@ -176,7 +176,7 @@ function beastMaster(level: number): Combatant {
     attacks: [
       attackAction(k, { gate: "self.no_companion" }),
       {
-        id: "command-attack", name: "Command the beast to Attack", cost: { action: 1 }, recharge: "none",
+        id: "command-attack", name: "Command the beast to Attack", cost: { action: 1 }, recharge: "none", ranged: true, // (the ranger's own shot; the beast's bite is its own action)
         automation: [{ type: "branch", if: "self.has_companion", then: [
           { type: "commandSummon", action: "attack", limit: 1 },
           ...(level >= 5 ? [{ type: "target" as const, who: { who: "aiChoice" as const }, effects: [shot(k)] }] : []),
@@ -255,7 +255,7 @@ function horizonWalker(level: number): Combatant {
     attacks: [
       attackAction(k),
       ...(level >= 11 ? [{
-        id: "distant-strike", name: "Distant Strike", cost: { action: 1 }, recharge: "none" as const,
+        id: "distant-strike", name: "Distant Strike", cost: { action: 1 }, recharge: "none" as const, ranged: true,
         text: "Teleport up to 10 ft before each attack; attack three different creatures.",
         automation: [{ type: "branch" as const, if: "enemies >= 3", then: [0, 1, 2].map((rank) => ({
           type: "target" as const, who: { who: "enemyRank" as const, rank }, effects: [shot(k)],

@@ -349,7 +349,7 @@ function scoutRogue(level: number): Combatant {
       ...(sudden ? [{ rule: "suddenStrike" as const }] : []),
     ],
     actions: sudden ? [{
-      id: "sudden-strike", name: "Sudden Strike", cost: { bonus: 1 }, recharge: "none" as const,
+      id: "sudden-strike", name: "Sudden Strike", cost: { bonus: 1 }, recharge: "none" as const, ranged: true,
       automation: [{ type: "target" as const, who: { who: "squishiestEnemy" as const, preferFresh: true }, effects: swing.effects }],
     }] : [],
     bonusAfterAttack: sudden ? ["sudden-strike"] : [],

@@ -255,7 +255,7 @@ function artificerParts(level: number, table: SubclassSpells) {
 
 /** the artificer's starting weapon ("a light crossbow and 20 bolts"; light crossbow 1d8 piercing, range 80/320) */
 const lightCrossbow = (pb: number, dex: number): Action => ({
-  id: "attack", name: "Light Crossbow", cost: { action: 1 }, recharge: "none",
+  id: "attack", name: "Light Crossbow", cost: { action: 1 }, recharge: "none", ranged: true,
   text: "Ranged weapon attack, range 80/320 ft.",
   automation: [{ type: "target", who: { who: "aiChoice" }, effects: [
     { type: "attack", bonus: pb + dex, onHit: [{ type: "damage", amount: `1d8+${dex}`, damageType: "piercing" }] },

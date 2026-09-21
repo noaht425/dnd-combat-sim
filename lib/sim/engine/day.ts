@@ -6,7 +6,7 @@ import type { Combatant } from "../schema";
 import { abilityMod } from "../math";
 import { runCombat, summarise } from "./loop";
 import { buildParty, resolveEnemies, type PartyMemberSpec } from "./scenario";
-import { initCombatant, type CombatantState } from "./state";
+import { avgToNumber, initCombatant, syncExhaustion, type CombatantState } from "./state";
 
 export type RestKind = "none" | "short" | "long";
 
@@ -71,10 +71,31 @@ function resourcesLeftFraction(states: CombatantState[]): number {
   return max ? cur / max : 1;
 }
 
-/** apply a rest to the carried-forward party states */
-function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map<string, number>, level: number): void {
+/** Frenzy: every rage a berserker raged with Frenzy costs a level of exhaustion when it ends, i.e. after the encounter (6 levels is death). */
+export function settleExhaustion(states: CombatantState[]): void {
   for (const s of states) {
+    const frenzies = s.resources.get("frenzy_rages") ?? 0;
+    if (frenzies <= 0) continue;
+    s.resources.set("frenzy_rages", 0);
+    s.exhaustion = Math.min(6, (s.exhaustion ?? 0) + frenzies);
+    if (s.exhaustion >= 6) { s.alive = false; s.downed = false; continue; }
+    if (s.exhaustion >= 4) { // maximum hit points halved
+      s.maxHp = Math.floor(avgToNumber(s.ref.maxHp) / 2);
+      s.hp = Math.min(s.hp, s.maxHp);
+    }
+    syncExhaustion(s);
+  }
+}
+
+/** apply a rest to the carried-forward party states */
+export function applyRest(states: CombatantState[], kind: RestKind, hitDice: Map<string, number>, level: number): void {
+  for (const s of states) {
+    if (kind !== "none") s.relentlessUses = 0; // Relentless Rage's DC resets on a short or long rest
     if (kind === "long") {
+      // a long rest removes one level of exhaustion (and restores the maximum hit points exhaustion 4 took)
+      s.exhaustion = Math.max(0, (s.exhaustion ?? 0) - 1);
+      s.maxHp = s.exhaustion >= 4 ? Math.floor(avgToNumber(s.ref.maxHp) / 2) : avgToNumber(s.ref.maxHp);
+      syncExhaustion(s);
       s.hp = s.maxHp;
       s.alive = true;
       s.downed = false;
@@ -155,6 +176,7 @@ export function runDay(input: DayInput): DayResult {
       survivors,
       rest,
     });
+    settleExhaustion(states);
     if (r.winner === "party") cleared++;
     else break; // the party lost — the day is over
 

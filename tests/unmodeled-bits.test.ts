@@ -13,7 +13,11 @@ import { endOfTurn, startOfTurn } from "../lib/sim/engine/loop";
 import { provokeOpportunityAttacks } from "../lib/sim/engine/reactions";
 import { beginTurn, initCombatant, type CombatState, type CombatantState } from "../lib/sim/engine/state";
 import { makeRng } from "../lib/sim/engine/rng";
-import { speedFt } from "../lib/sim/battle/state";
+import { applyRest, settleExhaustion } from "../lib/sim/engine/day";
+import { runCombat } from "../lib/sim/engine/loop";
+import { speedFt, type BattleState } from "../lib/sim/battle/state";
+import { attackModsFor } from "../lib/sim/battle/ai";
+import { makeGrid } from "../lib/sim/battle/grid";
 import type { AutomationNode, Combatant } from "../lib/sim/schema";
 
 function state(faces: number | number[], modes: string[] = []): CombatState {
@@ -485,5 +489,97 @@ describe("whole fights still run for the changed templates", () => {
         expect(out.done, `${id} L${level}`).toBe(true);
       }
     }
+  });
+});
+
+describe("ranged attacks with a hostile creature within 5 ft", () => {
+  it("weapon and spell actions say whether they're ranged", () => {
+    expect(makeTemplate("assassin-rogue", 5).actions.find((a) => a.id === "attack")!.ranged).toBe(true); // a shortbow
+    expect(makeTemplate("thief-rogue", 5).actions.find((a) => a.id === "attack")!.ranged).toBeUndefined(); // a rapier
+    expect(makeTemplate("hunter-ranger", 5).actions.find((a) => a.id === "attack")!.ranged).toBe(true);
+    expect(makeTemplate("artillerist-artificer", 5).actions.find((a) => a.id === "attack")!.ranged).toBe(true);
+    const wizard = makeTemplate("blaster-wizard", 5).actions.filter((a) => a.isSpell);
+    expect(wizard.find((a) => a.id === "cast-fire-bolt")?.ranged).toBe(true);
+  });
+
+  it("the battle seam imposes disadvantage on a ranged attack — but not a melee one — while an enemy stands beside the attacker", () => {
+    const grid = makeGrid(12, 12);
+    const rogue = pc("assassin-rogue", 5);
+    const ogre = foe("ogre");
+    const far = foe("far");
+    const bs = { grid, units: new Map<string, CombatantState>(), pos: new Map<string, { x: number; y: number }>() } as unknown as BattleState;
+    for (const [u, x, y] of [[rogue, 5, 5], [ogre, 6, 5], [far, 10, 10]] as const) { bs.units.set(u.id, u); bs.pos.set(u.id, { x, y }); }
+    const mods = attackModsFor(bs, rogue);
+    expect(mods(far, { ranged: true }).disadvantage).toBe(true); // the ogre is next to the rogue
+    expect(mods(far, { ranged: false }).disadvantage).toBeUndefined(); // a melee attack isn't affected
+    expect(mods(far, undefined).disadvantage).toBeUndefined(); // unknown: left alone
+    bs.pos.set(ogre.id, { x: 9, y: 5 }); // now 20 ft away
+    expect(mods(far, { ranged: true }).disadvantage).toBeUndefined();
+    bs.pos.set(ogre.id, { x: 6, y: 5 });
+    ogre.conditions.set("stunned", { expiresRound: Infinity, sourceId: "x" }); // an incapacitated enemy doesn't count
+    expect(mods(far, { ranged: true }).disadvantage).toBeUndefined();
+  });
+});
+
+describe("exhaustion from Frenzy, across an adventuring day", () => {
+  const berserker = () => pc("berserker-barbarian", 6);
+
+  it("a rage with Frenzy tallies a level of exhaustion; only Berserkers from 3rd level", () => {
+    const s = state(15);
+    const b = berserker();
+    put(s, b, foe());
+    cast(s, b, "rage");
+    expect(b.resources.get("frenzy_rages")).toBe(1);
+    expect(makeTemplate("berserker-barbarian", 2).resources.frenzy_rages).toBeUndefined();
+    const t = state(15);
+    const z = pc("zealot-barbarian", 6);
+    put(t, z, foe());
+    cast(t, z, "rage");
+    expect(z.resources.get("frenzy_rages")).toBeUndefined();
+  });
+
+  it("levels build up after each fight: speed halved at 2, disadvantage at 3, half maximum HP at 4, speed 0 at 5, death at 6 — a long rest removes one", () => {
+    const b = berserker();
+    const settle = (n: number) => { b.resources.set("frenzy_rages", n); settleExhaustion([b]); };
+    settle(1);
+    expect(b.exhaustion).toBe(1);
+    expect(b.effects.some((e) => e.name === "exhaustion")).toBe(false); // level 1 only hampers ability checks
+    settle(1);
+    expect(speedFt(b)).toBe(20); // half of 40 (Fast Movement)
+    settle(1);
+    expect(b.effects.find((e) => e.name === "exhaustion")!.mods).toMatchObject({ attackAdvantage: "dis", saveAdvantage: "dis" });
+    const full = b.maxHp;
+    settle(1);
+    expect(b.maxHp).toBe(Math.floor(full / 2));
+    settle(1);
+    expect(speedFt(b)).toBe(0);
+    applyRest([b], "long", new Map(), 6);
+    expect(b.exhaustion).toBe(4);
+    expect(b.hp).toBe(b.maxHp);
+    applyRest([b], "long", new Map(), 6);
+    expect(b.exhaustion).toBe(3);
+    expect(b.maxHp).toBe(full); // the maximum comes back below level 4
+    settle(3);
+    expect(b.alive).toBe(false);
+  });
+
+  it("a short rest doesn't remove exhaustion, and Relentless Rage's DC resets on any rest", () => {
+    const b = berserker();
+    b.exhaustion = 2;
+    b.relentlessUses = 3;
+    applyRest([b], "short", new Map(), 6);
+    expect(b.exhaustion).toBe(2);
+    expect(b.relentlessUses).toBe(0);
+  });
+
+  it("exhaustion carries into the next fight (effects are wiped between fights, but it's put straight back); per-fight scratch is reset", () => {
+    const b = berserker();
+    b.exhaustion = 3;
+    b.hasTakenTurn = true;
+    b.sneakSpent = { serial: 4, targets: ["x"] };
+    b.zeroHpRaging = true;
+    runCombat([], { partyStates: [b], maxRounds: 0 });
+    expect(b.effects.some((e) => e.name === "exhaustion")).toBe(true);
+    expect([b.hasTakenTurn, b.sneakSpent, b.zeroHpRaging]).toEqual([false, undefined, false]);
   });
 });

@@ -468,6 +468,8 @@ export const actionSchema = z.object({
   recharge: z.enum(["roll:5-6", "roll:4-6", "roll:6", "none"]).default("none"),
   limitedUse: z.object({ resource: z.string(), amount: z.number().int().positive().default(1) }).optional(),
   trigger: z.string().optional(),      // for reactions: an expr, e.g. "self.wasHitByAttack"
+  /** its attack rolls are RANGED attacks (a bow, a ranged spell attack): disadvantage while a hostile creature is within 5 ft of the attacker */
+  ranged: z.boolean().optional(),
   isSpell: z.boolean().optional(),     // this action is a spell -> Counterspell can negate it
   concentration: z.boolean().optional(), // the ongoing effect ends if the caster loses concentration
   // gate: the AI may only choose this action while a living enemy has one of these

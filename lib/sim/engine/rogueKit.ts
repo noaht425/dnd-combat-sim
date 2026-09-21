@@ -66,7 +66,7 @@ export function rogueKit(level: number, o: StrikeOpts = {}): RogueKit {
   const at: AutomationNode = { type: "target", who: { who: "squishiestEnemy" }, effects: [] };
 
   const attack: Action = {
-    id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none",
+    id: "attack", name: "Attack + Sneak Attack", cost: { action: 1 }, recharge: "none", ...(o.ranged ? { ranged: true } : {}),
     automation: [{ ...at, effects: [swing(o.die ?? (o.ranged ? "1d6" : "1d8"), true)] } as AutomationNode],
   };
   const offhand: Action | undefined = o.ranged ? undefined : {

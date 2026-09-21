@@ -183,13 +183,19 @@ const plainSwing = (k: Kit, die = "1d12", type: DamageType = "slashing", adv = f
 // ---------------------------------------------------------------------------------------------- Berserker (PHB)
 // Frenzy (3rd): while raging, one melee weapon attack as a bonus action on each of your turns after the one you
 // entered the rage on (entering the rage IS that turn's bonus action, so it can't come earlier). The exhaustion when the
-// rage ends isn't modeled. Mindless Rage (6th): can't be charmed or frightened while raging. Intimidating Presence
+// rage ends costs a level of exhaustion (2 halves speed, 3 gives disadvantage on attacks and saves, 4 halves maximum HP, 5 speed 0, 6 death;
+// a long rest removes one level) — tallied per rage and applied between fights in the adventuring-day simulation. Mindless Rage (6th): can't be charmed or frightened while raging. Intimidating Presence
 // (10th): action, Wisdom save (DC 8 + PB + Cha) or frightened until the end of your next turn. Retaliation (14th).
 function berserker(level: number): Combatant {
   const k = kit(level);
   const sub = level >= 3;
   return build(k, "berserker-barbarian", {
-    rages: [rageAction(k, { mods: level >= 6 ? { immuneConditions: ["charmed", "frightened"] } : {} })],
+    // each rage with Frenzy ends in a level of exhaustion (tallied per rage; the adventuring-day simulation applies it after the fight)
+    rages: [rageAction(k, {
+      mods: level >= 6 ? { immuneConditions: ["charmed", "frightened"] } : {},
+      onRage: sub ? [{ type: "spendResource", resource: "frenzy_rages", amount: -1 }] : [],
+    })],
+    resources: sub ? { frenzy_rages: { max: 99, recharge: "none" as const, start: 0 } } : {},
     actions: [
       ...(sub ? [{
         id: "frenzy", name: "Frenzy", cost: { bonus: 1 }, recharge: "none" as const,

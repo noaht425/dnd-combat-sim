@@ -24,6 +24,7 @@ import {
   rollTurnOrder,
   say,
   startTurnEconomy,
+  syncExhaustion,
   turnOwner,
 } from "./state";
 
@@ -94,6 +95,11 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
       p.markedTargetId = undefined;
       p.assassinateUntilRound = undefined;
       p.meleeHitSinceMyTurn = false;
+      // per-fight scratch added by class features: nothing of a previous fight carries over
+      p.hasTakenTurn = false; p.sneakSpent = undefined; p.onceTurn = undefined; p.insightTargetId = undefined; p.insightUntilRound = undefined;
+      p.ambushMasterUsed = false; p.footwork = undefined; p.zeroHpRaging = false; p.deathPending = false;
+      p.combatEventSerial = undefined; p.rageCheckSerial = undefined; p.commandedRound = undefined;
+      syncExhaustion(p); // exhaustion, unlike the rest, does carry over
       p.damageDealt = 0;
       p.damageTaken = 0;
       p.downedRound = undefined;

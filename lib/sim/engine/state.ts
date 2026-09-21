@@ -68,6 +68,8 @@ export interface CombatantState {
   /** Inquisitive's Insightful Fighting — the creature currently read, and the round the minute runs out */
   insightTargetId?: string;
   insightUntilRound?: number;
+  /** levels of exhaustion (Frenzy's cost): 2 halves speed, 3 gives disadvantage on attacks and saves, 4 halves maximum HP, 5 sets speed to 0, 6 is death */
+  exhaustion?: number;
   /** Rage Beyond Death: at 0 hit points but still on its feet while the rage lasts */
   zeroHpRaging?: boolean;
   /** ...and it has failed its third death save: it dies when the rage ends, if it's still at 0 */
@@ -191,6 +193,21 @@ export interface ReactionAsk {
   /** button label for spending the reaction / for declining it */
   takeLabel: string;
   declineLabel: string;
+}
+
+/** Put (or refresh) the penalties of a creature's exhaustion levels as a standing effect. */
+export function syncExhaustion(u: CombatantState): void {
+  u.effects = u.effects.filter((e) => e.name !== "exhaustion");
+  const n = u.exhaustion ?? 0;
+  if (n < 2) return;
+  const walk = u.ref.speeds?.walk ?? 30;
+  u.effects.push({
+    name: "exhaustion", expiresRound: Infinity, sourceId: u.id,
+    mods: {
+      speedBonusFt: n >= 5 ? -walk : -Math.floor(walk / 2),
+      ...(n >= 3 ? { attackAdvantage: "dis" as const, saveAdvantage: "dis" as const } : {}),
+    },
+  });
 }
 
 /** Reset a combatant's per-turn action economy at the start of its own turn. */

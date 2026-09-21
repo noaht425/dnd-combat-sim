@@ -64,7 +64,9 @@ interface RunCtx {
   geoTargets?: (node: Extract<AutomationNode, { type: "target" }>, source: CombatantState) => CombatantState[] | null;
   /** battle mode only: per-target attack tweaks (cover -> +AC, long range -> disadvantage,
    *  a melee routine whose target is out of reach -> the swing simply doesn't land) */
-  attackMods?: (target: CombatantState) => { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean; soloDuel?: boolean };
+  attackMods?: (target: CombatantState, info?: { ranged?: boolean }) => { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean; soloDuel?: boolean };
+  /** the action being run makes RANGED attacks (Action.ranged) */
+  ranged?: boolean;
   /** running count of attack rolls this action made, so `runAction` can say
    *  "misses" / "can't reach" instead of a flat "(no effect)" */
   attackTally?: { rolled: number; hit: number; unreachable: boolean };
@@ -482,7 +484,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const t = ctx.scope[0];
         if (!t) break;
         const bonus = typeof node.bonus === "number" ? node.bonus : 12;
-        const tweak = ctx.attackMods?.(t);
+        const tweak = ctx.attackMods?.(t, { ranged: ctx.ranged });
         if (tweak?.unreachable) {
           if (ctx.attackTally) ctx.attackTally.unreachable = true;
           break; // out of melee reach — the swing never connects
@@ -853,7 +855,7 @@ export function runAction(
   const appliedNames: string[] | undefined = action.concentration ? [] : undefined;
 
   if (!state.verbose) {
-    runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, spell, appliedNames, forceScope: opts.forceScope, ...geo });
+    runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, spell, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
     if (action.concentration && appliedNames && appliedNames.length) {
       source.concentratingOn = action.id;
       source.concentrationEffects = [...new Set(appliedNames)];
@@ -869,7 +871,7 @@ export function runAction(
   const fxBefore = new Map([...state.units.values()].map((u) => [u.id, new Set(u.effects.map((e) => e.name))]));
   const saveLog = new Map<string, boolean>();
   const attackTally = { rolled: 0, hit: 0, unreachable: false };
-  runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, saveLog, attackTally, spell, appliedNames, forceScope: opts.forceScope, ...geo });
+  runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, saveLog, attackTally, spell, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
   if (action.concentration && appliedNames && appliedNames.length) {
     source.concentratingOn = action.id;
     source.concentrationEffects = [...new Set(appliedNames)];
