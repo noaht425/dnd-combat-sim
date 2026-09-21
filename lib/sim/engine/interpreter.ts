@@ -4,10 +4,11 @@ import { SIZES, type Action, type AutomationNode, type Condition, type DamageTyp
 
 import { applyDamage, critRangeFor, rollAttack, rollSave, type AttackResult } from "./resolve";
 import { MINIONS, PC_SUMMONS } from "./minions";
-import { isSpell, mayCounterspell, provokeOpportunityAttacks, reactToAttackResolved } from "./reactions";
+import { isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved } from "./reactions";
 import {
   CombatantState,
   CombatState,
+  claimOncePerTurn,
   applyHealing,
   breakConcentration,
   hasCondition,
@@ -256,6 +257,9 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/target\.size<=(\w+)/i, () => !!tgt && SIZES.indexOf(tgt.ref.size) <= SIZES.indexOf(RegExp.$1.toLowerCase() as (typeof SIZES)[number])],
     [/target\.wounded_?at_?hit/i, () => ctx.last.woundedAtHit === true],
     [/party\.missing_?hp\s*>=\s*(\d+)/i, () => livingAllies(st, s).reduce((n, a) => n + Math.max(0, a.maxHp - a.hp), 0) >= Number(RegExp.$1)],
+    [/any_?enemy\.has\('([^']+)'\)/i, () => livingEnemies(st, s).some((e) => e.effects.some((x) => x.name === RegExp.$1 && x.sourceId === s.id))],
+    [/party\.has_?downed/i, () => [...st.units.values()].some((u) => u.side === s.side && u.alive && u.downed && u.summonerId === undefined)],
+    [/party\.has_?dead/i, () => [...st.units.values()].some((u) => u.side === s.side && !u.alive && u.summonerId === undefined)],
     [/self\.has_?companion/i, () => [...st.units.values()].some((u) => u.summonerId === s.id && u.alive && !u.downed)],
     [/self\.no_?companion/i, () => ![...st.units.values()].some((u) => u.summonerId === s.id && u.alive && !u.downed)],
     [/enemies\s*>=\s*(\d+)/i, () => livingEnemies(st, s).length >= Number(RegExp.$1)],
@@ -296,7 +300,8 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
       return pool.filter((a) => a.id === source.id || state.distanceFt!(source, a) <= r + 0.001);
     }
     case "lowestHpAlly": {
-      const hurt = allies.slice().sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+      const pool = who.includeDowned ? [...state.units.values()].filter((x) => x.side === source.side && x.alive && x.summonerId === undefined) : allies;
+      const hurt = pool.slice().sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
       return hurt ? [hurt] : [source];
     }
     case "eachEnemy": {
@@ -377,15 +382,6 @@ function endInvisibilityOnStrike(u: CombatantState): void {
   if (!u.effects.some((e) => e.mods?.endsOnDealingDamage)) return;
   u.effects = u.effects.filter((e) => !e.mods?.endsOnDealingDamage);
   u.conditions.delete("invisible");
-}
-
-/** a rider that lands at most once per turn under `key` (Divine Fury, a bite's healing, Call the Hunt's d6) */
-function claimOncePerTurn(state: CombatState, u: CombatantState, key: string): boolean {
-  const serial = state.turnSerial ?? 0;
-  if (!u.onceTurn || u.onceTurn.serial !== serial) u.onceTurn = { serial, keys: [] };
-  if (u.onceTurn.keys.includes(key)) return false;
-  u.onceTurn.keys.push(key);
-  return true;
 }
 
 /** Infused Strikes: a drake within 30 ft of the attacker adds its essence's damage to a weapon hit, spending its reaction */
@@ -487,6 +483,11 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       case "attack": {
         const t = ctx.scope[0];
         if (!t) break;
+        // Cloak of Shadows: making an attack ends the invisibility
+        if (source.effects.some((e) => e.mods?.endsOnAttacking)) {
+          source.effects = source.effects.filter((e) => !e.mods?.endsOnAttacking);
+          source.conditions.delete("invisible");
+        }
         const bonus = typeof node.bonus === "number" ? node.bonus : 12;
         const tweak = ctx.attackMods?.(t, { ranged: ctx.ranged });
         if (tweak?.unreachable) {
@@ -517,7 +518,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
             t.effects = t.effects.filter((e) => !(e.name === "multiattack-defense" && e.sourceId === source.id));
             t.effects.push({ name: "multiattack-defense", mods: { acBonusAgainstSource: 4, untilSourceNextTurn: true }, expiresRound: Infinity, sourceId: source.id });
           }
-          if (!ctx.spell && t.alive) infusedStrikes(state, source, t);
+          if (!ctx.spell && t.alive) { infusedStrikes(state, source, t); opportunist(state, source, t); }
           for (const e of [...t.effects]) { // a surge / Spiked Retribution: whoever hits the holder takes damage back
             const hb = e.mods?.hitBackDamage;
             if (!hb || !t.alive || !source.alive || (hb.meleeOnly && source.zone !== "melee")) continue;
@@ -573,6 +574,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         }
         if (ctx.halfMode || node.half) amt = Math.floor(amt / 2);
         const wasUp = t.alive && !t.downed;
+        const room = Math.max(0, t.hp) + t.tempHp; // overkill (a Quivering Palm's "reduced to 0") isn't damage dealt
         const dealt = applyDamage(state, t, amt, node.damageType as DamageType, {
           ignoreResistances: node.ignoreResistances,
           hadAdvantage: ctx.last.attackAdv,
@@ -582,7 +584,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           viaSpell: ctx.spell,
           crit: ctx.crit,
         });
-        source.damageDealt += dealt;
+        source.damageDealt += t.downed || !t.alive ? Math.min(dealt, room) : dealt;
         if (wasUp && (!t.alive || t.downed)) {
           fireOnDeathTraits(state, t);
           if (t.side !== source.side) fireOnKillTraits(state, source);
@@ -691,6 +693,16 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const t = ctx.scope[0] ?? source;
         for (const u of state.units.values()) if (u.ward?.sourceId === source.id) u.ward = undefined; // "until you use this feature again"
         t.ward = { dice: node.dice, sourceId: source.id };
+        break;
+      }
+
+      case "revive": {
+        const fallen = [...state.units.values()].find((u) => u.side === source.side && !u.alive && u.summonerId === undefined);
+        if (!fallen) break;
+        fallen.alive = true; fallen.downed = false; fallen.stable = false;
+        fallen.deathSaves = { success: 0, fail: 0 };
+        fallen.hp = Math.min(fallen.maxHp, Math.max(1, rollDamage(state, node.dice)));
+        say(state, `${source.name} returns ${fallen.name} to life (${fallen.hp} HP)`, source.id);
         break;
       }
 

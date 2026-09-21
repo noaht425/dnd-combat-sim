@@ -7,6 +7,7 @@
 import type { AutomationNode, Combatant } from "../schema";
 import { between, pbFor, pc, score } from "./pcBase";
 import { BARBARIAN_BUILDERS } from "./barbarians";
+import { MONK_BUILDERS } from "./monks";
 import { CASTER_BUILDERS } from "../spells/casterTemplates";
 import { rogueKit, type RogueKit } from "./rogueKit";
 
@@ -420,65 +421,6 @@ function soulknifeRogue(level: number): Combatant {
   });
 }
 
-function openHandMonk(level: number): Combatant {
-  const pb = pbFor(level);
-  const dex = pb === 6 ? 5 : 4;
-  const dc = 8 + pb + (pb === 6 ? 3 : 3); // Wis
-  const die = level >= 17 ? 10 : level >= 11 ? 8 : level >= 5 ? 6 : 4;
-  const baseAttacks = level >= 5 ? 2 : 1; // Extra Attack from level 5
-  const mkSwing = (stunAttempt: boolean, openHand = false): AutomationNode => ({
-    type: "attack", bonus: pb + dex, onHit: [
-      { type: "damage", amount: `1d${die}+${dex}`, damageType: "bludgeoning" },
-      // spends ki to try a Stunning Strike — only on the variant that asks for it
-      ...(stunAttempt
-        ? [{
-            type: "branch" as const, if: "self.resource('ki') > 0",
-            then: [
-              { type: "spendResource" as const, resource: "ki", amount: 1 },
-              { type: "save" as const, ability: "con" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "stunned" as const, durationRounds: 1, saveEnds: { ability: "con" as const, dc, at: "endOfTurn" as const } }] },
-            ],
-          }]
-        : []),
-      // Open Hand Technique — Way of the Open Hand's actual signature feature,
-      // free on any Flurry of Blows hit (no ki cost): knock prone (picking
-      // one of the 3 real options — prone / push 15ft / no reactions — same
-      // simplification as Battle Master picking one save-or-effect per die)
-      ...(openHand
-        ? [{ type: "save" as const, ability: "dex" as const, dc, onFail: [{ type: "applyCondition" as const, condition: "prone" as const, durationRounds: 1 }] }]
-        : []),
-    ],
-  });
-  return pc({
-    id: "open-hand-monk", name: `Monk ${level}`, level,
-    ac: 18, hp: between(level, 9, 6 * 20 + 12),
-    abilities: { str: score(1), dex: score(dex), con: score(2), int: score(0), wis: score(pb === 6 ? 4 : 3), cha: score(0) },
-    // Diamond Soul (14+): proficient in every save
-    proficientSaves: level >= 14 ? ["str", "dex", "con", "int", "wis", "cha"] : ["str", "dex"],
-    resources: { ki: { max: Math.max(2, level), recharge: "shortRest" } },
-    actions: [
-      {
-        id: "attack", name: "Attack", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, () => mkSwing(false)) }],
-      },
-      {
-        // Stunning Strike is a per-hit choice in the real rules; the sim
-        // opts in on up to the first 2 hits when it's picked, same cap as
-        // before, rather than a wholly separate roll per swing
-        id: "attack-stun", name: "Attack + Stunning Strike", cost: { action: 1 }, recharge: "none",
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: baseAttacks }, (_, i) => mkSwing(i < 2)) }],
-      },
-      {
-        // real cost: a bonus action AND 1 ki for 2 extra unarmed strikes —
-        // previously folded into every attack for free
-        id: "flurry", name: "Flurry of Blows", cost: { bonus: 1 }, recharge: "none",
-        limitedUse: { resource: "ki", amount: 1 },
-        automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: 2 }, (_, i) => mkSwing(false, i === 0)) }],
-      },
-    ],
-    targetPriority: "lowestHp",
-  });
-}
-
 // ------------------------------------------------------ feats & magic items
 
 export interface Loadout {
@@ -530,7 +472,7 @@ const BUILDERS: Record<string, (level: number) => Combatant> = {
   "scout-rogue": scoutRogue,
   "soulknife-rogue": soulknifeRogue,
   ...BARBARIAN_BUILDERS,
-  "open-hand-monk": openHandMonk,
+  ...MONK_BUILDERS,
   ...CASTER_BUILDERS,
 };
 

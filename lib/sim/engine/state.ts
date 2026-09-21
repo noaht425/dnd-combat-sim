@@ -197,6 +197,15 @@ export interface ReactionAsk {
   declineLabel: string;
 }
 
+/** a rider that lands at most once per turn under `key` (Divine Fury, a bite's healing, Call the Hunt's d6, Unerring Accuracy) */
+export function claimOncePerTurn(state: CombatState, u: CombatantState, key: string): boolean {
+  const serial = state.turnSerial ?? 0;
+  if (!u.onceTurn || u.onceTurn.serial !== serial) u.onceTurn = { serial, keys: [] };
+  if (u.onceTurn.keys.includes(key)) return false;
+  u.onceTurn.keys.push(key);
+  return true;
+}
+
 /** Put (or refresh) the penalties of a creature's exhaustion levels as a standing effect. */
 export function syncExhaustion(u: CombatantState): void {
   u.effects = u.effects.filter((e) => e.name !== "exhaustion");

@@ -58,6 +58,10 @@ type RKind =
   | "onDrop"         // react to a creature hitting 0 hp
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
   | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
+  | "deflectMissiles" // Monk — reduce a ranged weapon attack's damage
+  | "deflectEnergy"  // Astral Self — reduce elemental damage
+  | "opportunist"    // Way of Shadow — a reaction attack when a creature near you is hit
+  | "redirectAttack" // Drunken Master — a miss lands on another creature instead
   | "giantKiller"    // Hunter's Giant Killer — attack a Large or larger creature right after its attack, hit or miss
   | "parry"          // Battle Master — spend a superiority die to reduce melee damage
   | "shadowyDodge"   // Gloom Stalker — impose disadvantage on an attack against you (before the roll)
@@ -73,6 +77,11 @@ function classify(r: Action): RKind {
   if (id.includes("uncanny") || id.includes("spectral-defense") || id.includes("swarming-dispersal") || id.includes("reflexive-resistance")) return "halveDamage";
   if (id.includes("shadowy-dodge")) return "shadowyDodge";
   if (id === "parry") return "parry";
+  if (id === "deflect-missiles") return "deflectMissiles";
+  if (id === "deflect-energy") return "deflectEnergy";
+  if (id === "opportunist") return "opportunist";
+  if (id === "redirect-attack") return "redirectAttack";
+  if (id === "sun-shield") return "retaliateOnMeleeHit";
   if (id.includes("giant-killer")) return "giantKiller";
   if (id.includes("magic-users-nemesis")) return "nemesis";
   if (id.includes("counterspell")) return "counterspell";
@@ -454,9 +463,24 @@ export function reduceIncomingDamage(
   amount: number,
   viaAttack: boolean,
   melee = false,
+  extra: { ranged?: boolean; type?: DamageType } = {},
 ): number {
   if (state.inReaction || amount < 8) return amount;
   for (const r of target.ref.reactions) {
+    // Deflect Missiles / Deflect Energy: 1d10 + a bonus off a ranged weapon attack / an elemental hit
+    const kind = classify(r);
+    if ((kind === "deflectMissiles" && extra.ranged) || (kind === "deflectEnergy" && extra.type && ["acid", "cold", "fire", "force", "lightning", "thunder"].includes(extra.type))) {
+      if (!ready(state, target, r)) continue;
+      const rule = target.ref.specialRules.find((x) => x.rule === (kind === "deflectMissiles" ? "deflectMissiles" : "deflectEnergy"));
+      if (!rule || (rule.rule !== "deflectMissiles" && rule.rule !== "deflectEnergy")) continue;
+      const ok = decideReaction(state, target, "uncannyDodge",
+        `${target.name} is about to take ${amount} damage — ${r.name} reduces it by 1d10 + ${rule.bonus}.`, r.name, "Take it full");
+      if (!ok) return amount;
+      consume(target, r);
+      const cut = state.rng.dice(1, 10) + rule.bonus;
+      say(state, `${target.name} uses ${r.name} (-${Math.min(amount, cut)})`, target.id);
+      return Math.max(0, amount - cut);
+    }
     // Parry: a superiority die + Dex off a melee attack's damage
     if (classify(r) === "parry" && melee && ready(state, target, r)) {
       const rule = target.ref.specialRules.find((x) => x.rule === "parry");
@@ -529,6 +553,25 @@ export function reactToElementalDamage(
 // --------------------------------------------------------- attack hit or missed
 
 /** Riposte — hit back when hit, or when a melee attack misses. */
+/**
+ * Opportunist (Way of Shadow, 17th): whenever a creature within 5 ft of you is hit by an attack made by a creature other than you, your
+ * reaction makes a melee attack against that creature. Used against enemies (an ally's hit on a creature beside you).
+ */
+export function opportunist(state: CombatState, attacker: CombatantState, target: CombatantState): void {
+  if (state.inReaction || !target.alive) return;
+  for (const m of state.units.values()) {
+    if (m.id === attacker.id || m.id === target.id || m.side === target.side || !m.alive || m.downed || isIncapacitated(m)) continue;
+    const r = m.ref.reactions.find((x) => classify(x) === "opportunist");
+    if (!r || !ready(state, m, r)) continue;
+    const near = state.distanceFt ? state.distanceFt(m, target) <= 5.001 : m.zone === "melee" && target.zone === "melee";
+    if (!near) continue;
+    const ok = decideReaction(state, m, "riposte", `${attacker.name} hit ${target.name} — Opportunist lets ${m.name} strike it.`, r.name, "Hold reaction");
+    if (!ok) continue;
+    fire(state, m, r, target);
+    return;
+  }
+}
+
 export function reactToAttackResolved(
   state: CombatState,
   p: { attacker: CombatantState; target: CombatantState; hit: boolean; melee: boolean },
@@ -538,6 +581,22 @@ export function reactToAttackResolved(
   for (const r of t.ref.reactions) {
     if (!ready(state, t, r)) continue;
     const k = classify(r);
+    // Redirect Attack (Drunken Master): a melee attack that missed you hits another creature beside you instead
+    if (k === "redirectAttack" && !p.hit && p.melee) {
+      const swing = basicSwing(p.attacker);
+      const others = livingEnemies(state, t).length ? [...state.units.values()].filter((x) => x.side === p.attacker.side && x.id !== p.attacker.id && x.alive && !x.downed &&
+        (state.distanceFt ? state.distanceFt(t, x) <= 5.001 : x.zone === "melee")) : [];
+      if (swing && swing.type === "attack" && others.length) {
+        const ok = decideReaction(state, t, "riposte", `${p.attacker.name} missed ${t.name} — ${r.name} can make that attack hit ${others[0].name}.`, r.name, "Hold reaction");
+        if (!ok) return;
+        consume(t, r);
+        say(state, `${t.name} redirects the blow onto ${others[0].name}`, t.id);
+        state.inReaction = true;
+        try { runAutomation(swing.onHit, { state, source: p.attacker, scope: [others[0]], last: {}, depth: 0, inAttack: true }); } finally { state.inReaction = false; }
+        return;
+      }
+      continue;
+    }
     const wants =
       (k === "retaliateOnHit" && p.hit) ||
       (k === "retaliateOnMiss" && !p.hit && p.melee) ||

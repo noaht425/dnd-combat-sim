@@ -8,6 +8,7 @@ import {
   CombatantState,
   CombatState,
   breakConcentration,
+  claimOncePerTurn,
   effectiveAc,
   hasCondition,
   isIncapacitated,
@@ -101,6 +102,15 @@ export interface AttackResult {
   /** the roll was made at (net) disadvantage — Sneak Attack's no-advantage routes all refuse it */
   hadDisadvantage?: boolean;
   nat: number;
+}
+
+/** Drunkard's Luck — with disadvantage, spend ki to cancel it */
+function cancelDisadvantage(state: CombatState, u: CombatantState): boolean {
+  const rule = u.ref.specialRules.find((r) => r.rule === "cancelDisadvantage");
+  if (!rule || rule.rule !== "cancelDisadvantage" || (u.resources.get(rule.resource) ?? 0) < rule.cost) return false;
+  u.resources.set(rule.resource, (u.resources.get(rule.resource) ?? 0) - rule.cost);
+  say(state, `${u.name} rides a lucky bounce (Drunkard's Luck)`, u.id);
+  return true;
 }
 
 /** Tides of Chaos — spend the once-a-rest use to roll a d20 with advantage */
@@ -244,6 +254,13 @@ function rollAttackImpl(
 
   // a bodyguard companion (Steel Defender) may impose disadvantage on this roll before it's made
   if (deflectAttack(state, attacker, target, adv)) adv = combineAdv(adv, "dis");
+  // Shadow Step: the next attack roll has advantage, then the effect is spent
+  if (attacker.effects.some((e) => e.mods?.advantageOnNextAttack)) {
+    attacker.effects = attacker.effects.filter((e) => !e.mods?.advantageOnNextAttack);
+    adv = combineAdv(adv, "adv");
+  }
+  // Drunkard's Luck: spend ki to cancel disadvantage on the roll
+  if (adv === "dis" && cancelDisadvantage(state, attacker)) adv = "flat";
   // Tides of Chaos: the first d20 roll of the fight is made with advantage (spending the use)
   if (adv !== "adv" && spendTides(state, attacker)) adv = combineAdv(adv, "adv");
   // Pack Tactics: advantage when one of the attacker's allies is within 5 ft of the target and not incapacitated
@@ -292,6 +309,16 @@ function rollAttackImpl(
       crit = face >= critRange;
       autoMiss = face === 1;
     }
+  }
+
+  // Unerring Accuracy — once a turn, a missed attack roll is rolled again
+  if ((autoMiss || (!crit && face + toHit < ac)) && attacker.ref.specialRules.some((r) => r.rule === "rerollMissOncePerTurn") &&
+      claimOncePerTurn(state, attacker, "unerring-accuracy")) {
+    const again = state.rng.d20mode("flat").used;
+    say(state, `${attacker.name} rolls the miss again (Unerring Accuracy: ${face} -> ${again})`, attacker.id);
+    face = again;
+    crit = face >= critRange;
+    autoMiss = face === 1;
   }
 
   // the target may spend a reaction to change this outcome (Shield, Weight of Ages)
@@ -406,6 +433,7 @@ function rollSaveImpl(
   if (advVs && advVs.rule === "advantageOnSavesAgainst" && opts.conditions?.some((c) => advVs.conditions.includes(c))) {
     adv = combineAdv(adv, "adv");
   }
+  if (adv === "dis" && cancelDisadvantage(state, target)) adv = "flat";
   if (adv !== "adv" && spendTides(state, target)) adv = combineAdv(adv, "adv");
   if (adv !== "flat" && restoreBalance(state, target, adv)) adv = "flat";
 
@@ -526,8 +554,11 @@ export function applyDamage(
   }
 
   // Uncanny Dodge — the target spends a reaction to halve an attack's damage
-  rawAmount = reduceIncomingDamage(state, target, rawAmount, opts.viaAttack ?? false,
-    !!opts.viaAttack && state.units.get(opts.sourceId ?? "")?.zone === "melee");
+  const src = opts.sourceId ? state.units.get(opts.sourceId) : undefined;
+  const meleeHit = !!opts.viaAttack && src?.zone === "melee";
+  // a ranged WEAPON attack: an attack that isn't a spell, made from beyond arm's reach
+  const rangedWeapon = !!opts.viaAttack && !opts.viaSpell && !!src && (state.distanceFt ? state.distanceFt(src, target) > 5.001 : src.zone !== "melee");
+  rawAmount = reduceIncomingDamage(state, target, rawAmount, opts.viaAttack ?? false, meleeHit, { ranged: rangedWeapon, type });
   // Spirit Shield — a raging Ancestral Guardian nearby soaks some of it
   rawAmount = spiritShield(state, target, rawAmount, opts.sourceId);
   if (rawAmount <= 0) return 0;
@@ -653,6 +684,17 @@ export function applyDamage(
         say(state, `${target.name} clings to life (Strength of the Grave, 1 HP)`, target.id);
         return dmg;
       }
+    }
+  }
+
+  // Mastery of Death — dropping to 0, spend 1 ki (no action) to stay at 1 hit point
+  if (target.hp <= 0) {
+    const mod = target.ref.specialRules.find((r) => r.rule === "spendToSurvive");
+    if (mod && mod.rule === "spendToSurvive" && (target.resources.get(mod.resource) ?? 0) > 0) {
+      target.resources.set(mod.resource, (target.resources.get(mod.resource) ?? 0) - 1);
+      target.hp = 1;
+      say(state, `${target.name} refuses to fall (Mastery of Death, 1 HP)`, target.id);
+      return dmg;
     }
   }
 

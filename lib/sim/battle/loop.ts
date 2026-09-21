@@ -9,6 +9,7 @@ import {
   commandOnlyPlan,
   markEconomy,
   pick,
+  isAttackAction,
   spend,
   takeLairAction,
   takeLegendaryActions,
@@ -173,7 +174,11 @@ function runBonusRoutine(state: BattleState, u: CombatantState, ids: string[] | 
   if (u.bonusUsedThisTurn || state.ended) return;
   const routine = pick(state, u, ids ?? []);
   if (!routine) return;
+  if (!livingEnemies(state, u).length) return; // the fight just ended: no ki for a Flurry with nobody to hit
   const rplan = planForAction(state, u, routine);
+  // a melee bonus attack that couldn't reach its target would burn its ki and the bonus action for nothing
+  const mark = rplan.targetId ? state.units.get(rplan.targetId) : undefined;
+  if (rplan.needsMelee && mark && attackModsFor(state, u, true)(mark).unreachable) return;
   const rgeo = { geoTargets: geoTargetsFor(state, u, rplan), attackMods: attackModsFor(state, u, rplan.needsMelee) };
   spend(u, routine);
   markEconomy(u, routine);
@@ -304,7 +309,7 @@ function takeBattleTurn(state: BattleState, u: CombatantState): void {
     targetIds: usedPlan.templateHitIds ?? (usedPlan.targetId ? [usedPlan.targetId] : undefined),
     templateCells: usedPlan.templateCells,
   });
-  if (action.id === "attack") runBonusRoutine(state, u, u.ref.ai.bonusAfterAttack); // e.g. the second Psychic Blade
+  if (isAttackAction(action)) runBonusRoutine(state, u, u.ref.ai.bonusAfterAttack); // e.g. the second Psychic Blade
 }
 
 function partyHpFraction(state: BattleState): number {

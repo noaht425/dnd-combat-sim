@@ -76,7 +76,8 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   // `withinFt` narrows to allies within that many feet of the caster (battle mode's real grid
   // only — the Monte-Carlo engine has no distances, so there it still means the whole side)
   z.object({ who: z.literal("eachAlly"), withinFt: z.number().positive().optional(), excludeSelf: z.boolean().optional() }),
-  z.object({ who: z.literal("lowestHpAlly") }),      // the most-hurt ally (healing spells)
+  // the most-hurt ally (healing spells); `includeDowned` lets it reach an ally at 0 hit points (a touch that stands one back up)
+  z.object({ who: z.literal("lowestHpAlly"), includeDowned: z.boolean().optional() }),
   z.object({ who: z.literal("nearestEnemy") }),
   z.object({ who: z.literal("lowestHpEnemy") }),
   // lowest AC / lowest effective HP. `preferFresh`: skip a creature this one has already Sneak-Attacked this turn when
@@ -126,6 +127,10 @@ export const effectModsSchema = z.object({
   advantageToOthersOnly: z.boolean().optional(),
   /** opportunity attacks against the holder are made with disadvantage (an eagle totem's rage) */
   disadvantageOnOpportunityAttacks: z.boolean().optional(),
+  /** the holder's next attack roll is made with advantage, then this effect ends (Shadow Step) */
+  advantageOnNextAttack: z.boolean().optional(),
+  /** the effect ends — and invisibility with it — the moment the holder makes an attack roll (Cloak of Shadows) */
+  endsOnAttacking: z.boolean().optional(),
   /** the holder provokes no opportunity attacks while the effect lasts (Disengage) */
   noOpportunityAttacks: z.boolean().optional(),
   /** the effect ends — and invisibility with it — the moment the holder deals damage to a creature or forces a saving throw (Psychic Veil) */
@@ -211,6 +216,8 @@ export type AutomationNode =
   | { type: "insightfulFighting"; bonus: number }
   /** heal up to `total` hit points, divided among the source's allies within `withinFt` (most wounded first) — Clockwork Cavalcade */
   | { type: "healPool"; total: number; withinFt?: number }
+  /** bring the first fallen ally back to life with `dice` hit points (Hand of Ultimate Mercy) */
+  | { type: "revive"; dice: string }
   /** the source spends its bonus action (a rider that IS a bonus action: the wolf totem's topple) */
   | { type: "spendBonusAction" }
   /** the source spends its reaction (a rider that IS a reaction: Raging Storm's wave) */
@@ -299,6 +306,7 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
     z.object({ type: z.literal("spendReaction") }),
     z.object({ type: z.literal("spendBonusAction") }),
+    z.object({ type: z.literal("revive"), dice: diceSchema }),
     z.object({ type: z.literal("healPool"), total: z.number().int().positive(), withinFt: z.number().positive().optional() }),
     z.object({ type: z.literal("contest"), bonus: z.number().int(), theirs: abilitySchema, onSuccess: z.array(automationNodeSchema) }),
     z.object({ type: z.literal("commandSummon"), action: z.string(), limit: z.number().int().positive().optional(), rangeFt: z.number().positive().optional() }),
@@ -384,6 +392,16 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("rageBeyondDeath") }),
   // Dread Ambusher (Gloom Stalker): +this many feet of walking speed on the first turn of a combat
   z.object({ rule: z.literal("firstTurnSpeed"), ft: z.number().int().positive() }),
+  // Deflect Missiles (Monk): a reaction reduces a ranged weapon attack's damage by 1d10 + `bonus` (Dex + monk level)
+  z.object({ rule: z.literal("deflectMissiles"), bonus: z.number().int() }),
+  // Deflect Energy (Astral Self, 11th): a reaction reduces acid / cold / fire / force / lightning / thunder damage by 1d10 + `bonus` (Wisdom)
+  z.object({ rule: z.literal("deflectEnergy"), bonus: z.number().int() }),
+  // Mastery of Death (Long Death, 11th): dropping to 0 hit points, spend 1 of `resource` (no action) to stay at 1
+  z.object({ rule: z.literal("spendToSurvive"), resource: z.string() }),
+  // Drunkard's Luck (11th): with disadvantage on an attack roll or save, spend `cost` of `resource` to cancel it
+  z.object({ rule: z.literal("cancelDisadvantage"), resource: z.string(), cost: z.number().int().positive() }),
+  // Unerring Accuracy (Kensei, 17th): once a turn, a missed attack roll is rolled again
+  z.object({ rule: z.literal("rerollMissOncePerTurn") }),
   // Tides of Chaos: the first d20 roll of the fight (an attack roll or a save) is made with advantage, spending the use
   z.object({ rule: z.literal("advantageOnce"), resource: z.string() }),
   // Wolf totem: while raging, allies have advantage on melee attacks against hostile creatures within 5 ft of you

@@ -64,6 +64,9 @@ export function actionAvailable(state: CombatState, u: CombatantState, a: Action
   return true;
 }
 
+/** the Attack action or one of its variants (`attack-astral-arms`, `attack-breath`, ...): the after-Attack bonus action follows any of them */
+export const isAttackAction = (a: Action): boolean => a.id === "attack" || a.id.startsWith("attack-");
+
 export function spend(u: CombatantState, a: Action): void {
   if (a.limitedUse) {
     const cur = u.resources.get(a.limitedUse.resource) ?? 0;
@@ -352,7 +355,7 @@ export function takePcTurn(state: CombatState, u: CombatantState, level: number)
     spend(u, best);
     markEconomy(u, best);
     runAction(state, u, best);
-    if (best.id === "attack" && !state.ended) takeBonusRoutine(state, u, u.ref.ai.bonusAfterAttack);
+    if (isAttackAction(best) && !state.ended) takeBonusRoutine(state, u, u.ref.ai.bonusAfterAttack);
   }
 }
 

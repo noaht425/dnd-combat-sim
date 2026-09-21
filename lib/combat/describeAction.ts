@@ -118,6 +118,8 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return "";
     case "spendBonusAction":
       return "";
+    case "revive":
+      return `return a fallen ally to life with ${n.dice} hit points`;
     case "healPool":
       return `restore up to ${n.total} hit points, divided among allies nearby`;
     case "insightfulFighting":
