@@ -389,9 +389,9 @@ export function runBattleLoop(state: BattleState): void {
       if (!u || !u.alive || state.ended) continue;
       if (u.downed) {
         if (isExtraTurn(entry)) continue;
-        rollDeathSave(state, u);
+        const up = rollDeathSave(state, u); // (Searing Vengeance, Defy Death: back on their feet, the turn goes on)
         recordFrame(state, { kind: "turn", actorId: u.id, text: `${u.name} — death save` });
-        continue;
+        if (!up) continue;
       }
       startTurnEconomy(u);
       beginTurn(state, u);

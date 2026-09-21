@@ -57,6 +57,9 @@ type RKind =
   | "onDamaged"      // punish the source of any attack/spell damage (also Hellish Rebuke)
   | "onBigHit"       // react to 30+ damage from one source
   | "onDrop"         // react to a creature hitting 0 hp
+  | "armorOfHexes"  // Armor of Hexes — the Hexblade's cursed target hits: a d6, and a 4 or higher turns it into a miss
+  | "mistyEscape"    // Misty Escape — hurt, turn invisible and slip away
+  | "guardianCoil"   // Guardian Coil — shave 1d8 off damage near the tentacle
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
   | "protectAllyAttackRoll" // Cutting Words — spend Bardic Inspiration to subtract from an attack roll made against an ally
   | "deflectMissiles" // Monk — reduce a ranged weapon attack's damage
@@ -122,6 +125,10 @@ function classify(r: Action): RKind {
   if (id === "cauterizing-flames") return "cauterizingFlames";
   if (id === "warding-flare" || id === "improved-flare") return "wardingFlare";
   if (id === "sentinel-at-deaths-door") return "sentinel";
+  if (id === "entropic-ward") return "wardingFlare";
+  if (id === "armor-of-hexes") return "armorOfHexes";
+  if (id === "misty-escape") return "mistyEscape";
+  if (id === "guardian-coil") return "guardianCoil";
   if (id === "dampen-elements") return "dampenElements";
   if (id === "war-gods-blessing") return "warGodsBlessing";
   if (id === "wrath-of-the-storm") return "retaliateOnMeleeHit";
@@ -406,7 +413,7 @@ export function restoreBalance(state: CombatState, roller: CombatantState, adv: 
  */
 export function reactToIncomingAttack(
   state: CombatState,
-  p: { target: CombatantState; hitMargin: number; crit: boolean; face?: number; toHit?: number; ac?: number; critRange?: number },
+  p: { target: CombatantState; attacker?: CombatantState; hitMargin: number; crit: boolean; face?: number; toHit?: number; ac?: number; critRange?: number },
 ): { negated: boolean; shielded: boolean; face?: number; crit?: boolean } {
   const t = p.target;
   if (state.inReaction || !t.alive || t.downed) return { negated: false, shielded: false };
@@ -418,6 +425,16 @@ export function reactToIncomingAttack(
   for (const r of t.ref.reactions) {
     if (!ready(state, t, r)) continue;
     const k = classify(r);
+    // Armor of Hexes (Hexblade, 10th): "When the target cursed by your Hexblade's Curse hits you with an attack roll, you can use your reaction to roll a d6. On a 4 or higher, the attack instead misses you."
+    if (k === "armorOfHexes" && p.attacker && p.attacker.effects.some((e) => e.name === "hexblades-curse" && e.sourceId === t.id)) {
+      const ok = decideReaction(state, t, "deflectAttack", `${p.attacker.name}, cursed by you, is about to hit ${t.name} — Armor of Hexes: a d6, and a 4 or higher makes it miss.`, "Armor of Hexes", "Take the hit");
+      if (!ok) continue;
+      consume(t, r);
+      const d = state.rng.dice(1, 6);
+      if (d >= 4) { say(state, `${t.name}'s hex turns the blow aside (Armor of Hexes, rolled ${d})`, t.id); return { negated: true, shielded: false }; }
+      say(state, `${t.name}'s Armor of Hexes fails to turn the blow (rolled ${d})`, t.id);
+      continue;
+    }
     if (k === "negateHit" && (p.crit || t.hp <= t.maxHp / 3)) {
       consume(t, r);
       say(state, `${t.name} unmakes the blow (${r.name})`, t.id);
@@ -876,6 +893,18 @@ export function reactToDamageTaken(
       fire(state, t, r);
       return;
     }
+    // Misty Escape (Archfey, 6th): "When you take damage, you can use your reaction to turn invisible and teleport up to 60 feet to an unoccupied space you can see"
+    if (k === "mistyEscape" && p.fromCreature && p.amount > 0) {
+      const ok = decideReaction(state, t, "retaliate", `${t.name} was hit for ${p.amount} — Misty Escape turns them invisible and whisks them 60 feet away.`, "Misty Escape", "Stay put");
+      if (!ok) continue;
+      consume(t, r);
+      t.conditions.set("invisible", { expiresRound: state.round + 1, sourceId: t.id }); // until the start of their next turn (or until they attack or cast)
+      t.conditions.delete("grappled");
+      t.conditions.delete("restrained");
+      t.zone = "ranged";
+      say(state, `${t.name} vanishes in a swirl of mist (Misty Escape)`, t.id);
+      return;
+    }
     if (k === "onBigHit" && p.amount >= 30) {
       fire(state, t, r);
       return;
@@ -1096,17 +1125,22 @@ export function reactToDeath(state: CombatState, slain: CombatantState): void {
  * someone other than you. Called before the attack roll; returns whether disadvantage is imposed.
  */
 export function wardingFlare(state: CombatState, attacker: CombatantState, target: CombatantState, adv: "adv" | "dis" | "flat"): boolean {
-  if (state.inReaction || adv === "dis" || attacker.side === target.side || attacker.ref.conditionImmunities.includes("blinded")) return false;
+  if (state.inReaction || adv === "dis" || attacker.side === target.side) return false;
   for (const u of state.units.values()) {
     if (u.side !== target.side || !u.alive || u.downed) continue;
     for (const r of u.ref.reactions) {
       if (classify(r) !== "wardingFlare" || !ready(state, u, r)) continue;
+      const entropic = r.id === "entropic-ward"; // Great Old One, 6th: "When a creature makes an attack roll against you" (no range), and it needn't be blindable
       if (u.id !== target.id && r.id !== "improved-flare") continue; // before the 6th level only the flare's owner is protected
-      if (state.distanceFt && state.distanceFt(u, attacker) > 30.001) continue;
-      const ok = decideReaction(state, u, "deflectAttack", `${attacker.name} is attacking ${target.name} — Warding Flare imposes disadvantage on the roll.`, "Warding Flare", "Take the attack");
+      if (!entropic && attacker.ref.conditionImmunities.includes("blinded")) continue;
+      if (!entropic && state.distanceFt && state.distanceFt(u, attacker) > 30.001) continue;
+      const ok = entropic
+        ? decideReaction(state, u, "deflectAttack", `${attacker.name} is attacking ${target.name} — Entropic Ward imposes disadvantage, and a miss gives you advantage on your next attack against it.`, "Entropic Ward", "Take the attack")
+        : decideReaction(state, u, "deflectAttack", `${attacker.name} is attacking ${target.name} — Warding Flare imposes disadvantage on the roll.`, "Warding Flare", "Take the attack");
       if (!ok) continue;
       consume(u, r);
-      say(state, `${u.name}'s flare dazzles ${attacker.name} (disadvantage)`, u.id);
+      if (entropic) { state.pendingEntropicWard = u.id; say(state, `${u.name} bends the attack aside (Entropic Ward, disadvantage)`, u.id); }
+      else say(state, `${u.name}'s flare dazzles ${attacker.name} (disadvantage)`, u.id);
       return true;
     }
   }
@@ -1217,8 +1251,11 @@ export function keeperOfSouls(state: CombatState, slain: CombatantState): void {
  * if the attack goes ahead.
  */
 export function natureSanctuary(state: CombatState, attacker: CombatantState, target: CombatantState): CombatantState | "miss" | undefined {
-  if (state.inReaction || attacker.side === target.side || !target.ref.specialRules.some((r) => r.rule === "natureSanctuary")) return undefined;
-  if (!isCreatureType(attacker.ref, "beast", "plant")) return undefined;
+  if (state.inReaction || attacker.side === target.side) return undefined;
+  const rule = target.ref.specialRules.find((r) => r.rule === "natureSanctuary");
+  if (!rule || rule.rule !== "natureSanctuary") return undefined;
+  const feature = rule.types ? "Among the Dead" : "Nature's Sanctuary"; // the Undying warlock's version is for undead
+  if (!isCreatureType(attacker.ref, ...(rule.types ?? ["beast", "plant"]))) return undefined;
   if (attacker.effects.some((e) => e.name === "sanctuary-immune" && e.sourceId === target.id)) return undefined;
   const dc = 8 + target.ref.pb + Math.floor((target.ref.abilities[target.ref.spellAbility ?? "wis"] - 10) / 2);
   const save = rollSave(state, attacker, "wis", dc, { magical: true, stakes: "control", sourceId: target.id });
@@ -1228,11 +1265,30 @@ export function natureSanctuary(state: CombatState, attacker: CombatantState, ta
   }
   // "must choose a different target": someone else it could reach — the nearest other creature, or one in its own zone
   const others = [...state.units.values()].filter((u) => u.alive && !u.downed && u.side === target.side && u.id !== target.id && u.id !== attacker.id);
-  if (!others.length) { say(state, `${attacker.name} hesitates and its attack misses ${target.name} (Nature's Sanctuary)`, target.id); return "miss"; }
+  if (!others.length) { say(state, `${attacker.name} hesitates and its attack misses ${target.name} (${feature})`, target.id); return "miss"; }
   const pick = state.distanceFt ? others.sort((a, b) => state.distanceFt!(attacker, a) - state.distanceFt!(attacker, b))[0]
     : others[state.rng.int(0, others.length - 1)];
-  say(state, `${attacker.name} hesitates and turns on ${pick.name} instead (Nature's Sanctuary)`, target.id);
+  say(state, `${attacker.name} hesitates and turns on ${pick.name} instead (${feature})`, target.id);
   return pick;
+}
+
+/**
+ * Guardian Coil (Fathomless, 6th): "When you or a creature you can see within 10 feet of your tentacle takes damage, you can use your reaction to reduce that damage by 1d8"
+ * (2d8 from the 10th level). Only while the tentacle is out. Returns the damage that still lands.
+ */
+export function guardianCoil(state: CombatState, target: CombatantState, amount: number): number {
+  if (state.inReaction || amount < 2) return amount;
+  for (const u of state.units.values()) {
+    if (u.side !== target.side || !u.alive || u.downed) continue;
+    const r = u.ref.reactions.find((x) => classify(x) === "guardianCoil");
+    if (!r || !ready(state, u, r) || !u.effects.some((e) => e.name === "tentacle")) continue;
+    if (u.id !== target.id && state.distanceFt && state.distanceFt(u, target) > 40.001) continue; // the tentacle is kept near the fight: within 30 feet of its owner, then 10 feet more
+    consume(u, r);
+    const cut = Math.min(amount, state.rng.dice((u.ref.level ?? 1) >= 10 ? 2 : 1, 8));
+    say(state, `${u.name}'s tentacle coils around ${target.name}, cutting ${cut} from the blow (Guardian Coil)`, u.id);
+    return amount - cut;
+  }
+  return amount;
 }
 
 /**

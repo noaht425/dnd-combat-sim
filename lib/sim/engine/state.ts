@@ -141,6 +141,8 @@ export interface CombatState {
   activeIdx: number;
   /** bumped at the start of every turn anyone takes — Sneak Attack's "once per turn" keys off it */
   turnSerial?: number;
+  /** Entropic Ward: the warlock whose ward just imposed disadvantage on the attack being rolled (advantage on their next attack if it misses) */
+  pendingEntropicWard?: string;
   units: Map<string, CombatantState>;
   rng: Rng;
   log: LogEntry[];

@@ -49,7 +49,7 @@ export const SPELLS: Spell[] = [
   S_("chill-touch", "Chill Touch", 0, "necromancy", [S, W, K], { role: "damage", build: (c) => [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: c.toHit, onHit: [{ type: "damage", amount: `${cantripDice(c.casterLevel)}d8`, damageType: "necrotic" }, { type: "applyEffect", name: "chill-touch", durationRounds: 1, mods: { cannotHeal: true } }] }] }] }),
   S_("dancing-lights", "Dancing Lights", 0, "illusion", [B, S, W, A], { conc: true }),
   S_("druidcraft", "Druidcraft", 0, "transmutation", [D]),
-  S_("eldritch-blast", "Eldritch Blast", 0, "evocation", [K], { role: "damage", build: (c) => { const beams = c.casterLevel >= 17 ? 4 : c.casterLevel >= 11 ? 3 : c.casterLevel >= 5 ? 2 : 1; return [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: beams }, () => ({ type: "attack" as const, bonus: c.toHit, onHit: [{ type: "damage" as const, amount: `1d10+${c.spellMod}`, damageType: "force" as const }] })) }]; } }),
+  S_("eldritch-blast", "Eldritch Blast", 0, "evocation", [K], { role: "damage", build: (c) => { const beams = c.casterLevel >= 17 ? 4 : c.casterLevel >= 11 ? 3 : c.casterLevel >= 5 ? 2 : 1; return [{ type: "target", who: { who: "aiChoice" }, effects: Array.from({ length: beams }, () => ({ type: "attack" as const, bonus: c.toHit, onHit: [{ type: "damage" as const, amount: "1d10", damageType: "force" as const }] })) }]; } }), // no ability modifier: that is the Agonizing Blast invocation's
   S_("fire-bolt", "Fire Bolt", 0, "evocation", [S, W, A], { role: "damage", build: cantripAtk(10, "fire") }),
   S_("guidance", "Guidance", 0, "divination", [C, D, A], { conc: true, role: "buff" }),
   S_("light", "Light", 0, "evocation", [B, C, S, W, A]),
@@ -93,7 +93,7 @@ export const SPELLS: Spell[] = [
   S_("entangle", "Entangle", 1, "conjuration", [D], { conc: true, role: "control", build: saveCond("str", "restrained", 10, { who: { who: "chosenEnemies", upTo: 3 }, saveEnds: true }) }),
   S_("expeditious-retreat", "Expeditious Retreat", 1, "transmutation", [S, W, K, A], { conc: true, ct: "bonus" }),
   S_("faerie-fire", "Faerie Fire", 1, "evocation", [B, D, A], { conc: true, role: "control", build: (c) => [{ type: "target", who: { who: "chosenEnemies", upTo: 3 }, effects: [{ type: "save", ability: "dex", dc: c.dc, onFail: [{ type: "applyEffect", name: "faerie-fire", durationRounds: 10, mods: { attacksAgainstItAdvantage: "adv" } }] }] }] }),
-  S_("false-life", "False Life", 1, "necromancy", [S, W, A], { role: "buff", build: (c) => [{ type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: `1d4+${3 + Math.max(0, c.slotLevel - 1) * 5}` }] }] }),
+  S_("false-life", "False Life", 1, "necromancy", [S, W, A], { role: "buff", build: (c) => [{ type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: `1d4+${4 + Math.max(0, c.slotLevel - 1) * 5}` }] }] }), // "1d4 + 4 temporary hit points ... 5 additional temporary hit points for each slot level above 1st"
   S_("feather-fall", "Feather Fall", 1, "transmutation", [B, S, W, A], { ct: "reaction" }),
   S_("find-familiar", "Find Familiar", 1, "conjuration", [W], { rit: true }),
   S_("fog-cloud", "Fog Cloud", 1, "conjuration", [D, R, S, W, A], { conc: true, role: "control" }),
@@ -101,7 +101,10 @@ export const SPELLS: Spell[] = [
   S_("guiding-bolt", "Guiding Bolt", 1, "evocation", [C], { role: "damage", max: 9, build: (c) => { const d = 4 + Math.max(0, c.slotLevel - 1); return [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: c.toHit, onHit: [{ type: "damage", amount: `${d}d6`, damageType: "radiant" }, { type: "applyEffect", name: "guiding-bolt", durationRounds: 1, mods: { attacksAgainstItAdvantage: "adv" } }] }] }]; } }),
   S_("healing-word", "Healing Word", 1, "evocation", [B, C, D], { ct: "bonus", role: "heal", max: 9, build: heal(1, 1, 4, 1) }),
   S_("heroism", "Heroism", 1, "enchantment", [B, P], { conc: true, role: "buff", build: effect("heroism", {}, { who: "self" }) }),
-  S_("hex", "Hex", 1, "enchantment", [K], { conc: true, ct: "bonus", role: "buff", build: effect("hex", { extraDamageOnHit: { amount: "1d6", damageType: "force" } }, { who: "self" }) }),
+  // "You place a curse on a creature that you can see within range. Until the spell ends, you deal an extra 1d6 necrotic damage to the target whenever you hit it with an attack." (bonus action, 90 ft, concentration)
+  S_("hex", "Hex", 1, "enchantment", [K], { conc: true, ct: "bonus", role: "buff", build: () => [{ type: "target", who: { who: "aiChoice" }, effects: [
+    { type: "applyEffect", name: "hex", durationRounds: 600, mods: { extraDamageWhenHitBySource: { amount: "1d6", damageType: "necrotic" } } },
+  ] }] }),
   S_("hunters-mark", "Hunter's Mark", 1, "divination", [R], { conc: true, ct: "bonus", role: "buff", build: effect("hunters-mark", { extraDamageOnHit: { amount: "1d6", damageType: "force" } }, { who: "self" }) }),
   S_("identify", "Identify", 1, "divination", [B, W, A], { rit: true }),
   S_("inflict-wounds", "Inflict Wounds", 1, "necromancy", [C], { role: "damage", max: 9, build: (c) => { const d = 3 + Math.max(0, c.slotLevel - 1); return [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: c.toHit, onHit: [{ type: "damage", amount: `${d}d10`, damageType: "necrotic" }] }] }]; } }),
@@ -123,7 +126,11 @@ export const SPELLS: Spell[] = [
   S_("thunderwave", "Thunderwave", 1, "evocation", [B, D, S, W, A], { role: "damage", max: 9, build: saveDmg(1, "con", 2, 8, "thunder", 1, { who: "area", shape: "cube", size: 15 }) }),
   S_("unseen-servant", "Unseen Servant", 1, "conjuration", [B, W, K, A], { rit: true }),
   S_("witch-bolt", "Witch Bolt", 1, "evocation", [S, W, K], { conc: true, role: "damage", build: atk(1, 1, 12, "lightning", 1) }),
-  S_("armor-of-agathys", "Armor of Agathys", 1, "abjuration", [K], { role: "buff", max: 9, build: (c) => [{ type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: `${5 + Math.max(0, c.slotLevel - 1) * 5}` }] }] }),
+  // "you gain 5 temporary hit points for the duration. If a creature hits you with a melee attack while you have these hit points, the creature takes 5 cold damage" — both scale by 5 per slot level above 1st
+  S_("armor-of-agathys", "Armor of Agathys", 1, "abjuration", [K], { role: "buff", max: 9, build: (c) => { const n = 5 * c.slotLevel; return [{ type: "target", who: { who: "self" }, effects: [
+    { type: "tempHp", amount: `${n}` },
+    { type: "applyEffect", name: "armor-of-agathys", durationRounds: 600, mods: { hitBackDamage: { amount: `${n}`, damageType: "cold", meleeOnly: true, requiresTempHp: true } } },
+  ] }]; } }),
   S_("arms-of-hadar", "Arms of Hadar", 1, "conjuration", [K], { role: "damage", max: 9, build: saveDmg(1, "str", 2, 6, "necrotic", 1, { who: "area", shape: "emanation", size: 10 }) }),
   S_("chromatic-orb", "Chromatic Orb", 1, "evocation", [S, W], { role: "damage", max: 9, build: atk(1, 3, 8, "fire", 1) }),
   S_("compelled-duel", "Compelled Duel", 1, "enchantment", [P], { ct: "bonus", conc: true }),

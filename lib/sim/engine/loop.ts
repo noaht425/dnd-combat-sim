@@ -173,7 +173,7 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
       if (isExtraTurn(entry) && state.round !== 1) continue; // Thief's Reflexes: only the first round
       const u = units.get(turnOwner(entry))!;
       if (!u.alive || state.ended) continue;
-      if (u.downed) { if (!isExtraTurn(entry)) rollDeathSave(state, u); continue; }
+      if (u.downed && (isExtraTurn(entry) || !rollDeathSave(state, u))) continue; // (Searing Vengeance, Defy Death: back on their feet, the turn goes on)
 
       startTurnEconomy(u); // action / bonus / reaction refresh at the start of your own turn
       beginTurn(state, u);
@@ -339,10 +339,39 @@ function trySaveEndsCondition(state: CombatState, u: CombatantState, name: strin
   }
 }
 
-export function rollDeathSave(state: CombatState, u: CombatantState): void {
-  if (u.stable) return; // stabilised: unconscious at 0 HP, no more death saves until healed
+/** Makes the death saving throw for a creature at 0 hit points. Returns whether it is back on its feet and may take its turn (Searing Vengeance, Defy Death). */
+export function rollDeathSave(state: CombatState, u: CombatantState): boolean {
+  if (u.stable) return false; // stabilised: unconscious at 0 HP, no more death saves until healed
+
+  // Searing Vengeance (Celestial, 14th): "when you would make a death saving throw at the start of your turn, you can instead spring back to your feet with a burst of radiant
+  // energy": half your maximum hit points, and 2d8 + Charisma radiant to each creature of your choice within 30 feet, which is blinded until the end of the current turn
+  const sv = u.ref.specialRules.find((x) => x.rule === "searingVengeance");
+  if (sv && sv.rule === "searingVengeance" && u.alive && (u.resources.get(sv.resource) ?? 0) > 0) {
+    u.resources.set(sv.resource, (u.resources.get(sv.resource) ?? 0) - 1);
+    u.downed = false; u.stable = false; u.zeroHpRaging = false; u.deathPending = false;
+    u.deathSaves = { success: 0, fail: 0 };
+    u.hp = Math.max(1, Math.floor(u.maxHp / 2));
+    const mod = Math.floor(((u.ref.abilities[u.ref.spellAbility ?? "cha"] ?? 10) - 10) / 2);
+    say(state, `${u.name} springs back to their feet in a burst of radiance (Searing Vengeance, ${u.hp} HP)`, u.id);
+    runAutomation([{ type: "target", who: { who: "eachEnemy", withinFt: 30 }, effects: [
+      { type: "damage", amount: `2d8+${mod}`, damageType: "radiant" }, { type: "applyCondition", condition: "blinded", durationRounds: 1 },
+    ] }], { state, source: u, scope: [], last: {}, depth: 0 });
+    return true;
+  }
+
   const r = state.rng.d20();
-  if (r === 20) { u.downed = false; u.stable = false; u.zeroHpRaging = false; u.deathPending = false; u.hp = 1; u.deathSaves = { success: 0, fail: 0 }; say(state, `${u.name} rallies (1 HP)`, u.id); return; }
+  // Defy Death (Undying, 6th): "When you succeed on a death saving throw ... you can regain hit points equal to 1d8 + your Constitution modifier (minimum of 1 hit point)"
+  const dd = u.ref.specialRules.find((x) => x.rule === "defyDeath");
+  if (r >= 10 && dd && dd.rule === "defyDeath" && u.alive && (u.resources.get(dd.resource) ?? 0) > 0) {
+    u.resources.set(dd.resource, (u.resources.get(dd.resource) ?? 0) - 1);
+    const heal = Math.max(1, state.rng.dice(1, 8) + Math.floor(((u.ref.abilities.con ?? 10) - 10) / 2));
+    u.downed = false; u.stable = false; u.zeroHpRaging = false; u.deathPending = false;
+    u.deathSaves = { success: 0, fail: 0 };
+    u.hp = heal;
+    say(state, `${u.name} defies death and rises with ${heal} HP (Defy Death)`, u.id);
+    return true;
+  }
+  if (r === 20) { u.downed = false; u.stable = false; u.zeroHpRaging = false; u.deathPending = false; u.hp = 1; u.deathSaves = { success: 0, fail: 0 }; say(state, `${u.name} rallies (1 HP)`, u.id); return false; }
   if (r >= 10) u.deathSaves.success++;
   else u.deathSaves.fail += r === 1 ? 2 : 1;
   if (u.deathSaves.success >= 3) { u.stable = true; say(state, `${u.name} stabilises (still unconscious)`, u.id); }
@@ -352,6 +381,7 @@ export function rollDeathSave(state: CombatState, u: CombatantState): void {
       u.deathPending = true;
     } else { u.alive = false; say(state, `${u.name} dies`, u.id); }
   }
+  return false;
 }
 
 // -------------------------------------------------------------------- end check

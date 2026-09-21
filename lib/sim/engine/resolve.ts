@@ -30,6 +30,7 @@ import {
   cosmicWoe,
   hawkSpirit,
   protectiveBond,
+  guardianCoil,
   warGodsBlessing,
   wardingFlare,
   projectedWard,
@@ -205,7 +206,17 @@ export function rollAttack(
   critRange = 20,
   extraTargetAc = 0,
 ): AttackResult {
+  state.pendingEntropicWard = undefined;
   const result = rollAttackImpl(state, attacker, target, toHit, intrinsicAdv, critRange, extraTargetAc);
+  // Entropic Ward: "If the attack misses you, your next attack roll against the creature has advantage if you make it before the end of your next turn"
+  const ward = state.pendingEntropicWard;
+  state.pendingEntropicWard = undefined;
+  if (ward && !result.hit && attacker.alive) {
+    attacker.effects = attacker.effects.filter((e) => !(e.name === "entropic-ward" && e.sourceId === ward));
+    attacker.effects.push({ name: "entropic-ward", expiresRound: state.round + 1, sourceId: ward, mods: { attacksAgainstItAdvantage: "adv", advantageFromSourceOnly: true } });
+  }
+  // ...and that advantage is spent by the first attack roll the warlock makes against it
+  for (const e of [...target.effects]) if (e.name === "entropic-ward" && e.sourceId === attacker.id) target.effects = target.effects.filter((x) => x !== e);
   attacker.combatEventSerial = state.turnSerial ?? 0; // "attacked a hostile creature" — keeps a Rage going
   (state.attackLog ??= []).push({ round: state.round, attackerId: attacker.id, targetId: target.id, hit: result.hit });
   return result;
@@ -252,7 +263,7 @@ function rollAttackImpl(
     if (e.mods?.attacksAgainstItAdvantage === "dis") adv = combineAdv(adv, "dis");
     // "attack rolls against that target have advantage" — only for the side that put it there (Help, Ambush Master)
     if (e.mods?.attacksAgainstItAdvantage === "adv" && (e.sourceId === target.id || state.units.get(e.sourceId)?.side === attacker.side) &&
-        !(e.mods.advantageToOthersOnly && e.sourceId === attacker.id)) adv = combineAdv(adv, "adv");
+        !(e.mods.advantageToOthersOnly && e.sourceId === attacker.id) && !(e.mods.advantageFromSourceOnly && e.sourceId !== attacker.id)) adv = combineAdv(adv, "adv");
   }
   // Wolf totem: a raging wolf-totem barbarian's allies have advantage on melee attacks against hostile creatures within 5 ft of it
   if (adv !== "adv" && wolfTotemAdvantage(state, attacker, target)) adv = combineAdv(adv, "adv");
@@ -386,7 +397,7 @@ function rollAttackImpl(
 
   // the target may spend a reaction to change this outcome (Shield, Weight of Ages)
   if (!state.inReaction && !autoMiss) {
-    const rr = reactToIncomingAttack(state, { target, hitMargin: face + toHit - ac, crit, face, toHit, ac, critRange });
+    const rr = reactToIncomingAttack(state, { target, attacker, hitMargin: face + toHit - ac, crit, face, toHit, ac, critRange });
     if (rr.negated) return { hit: false, crit: false, hadAdvantage: adv === "adv", hadDisadvantage: adv === "dis", nat: face };
     if (rr.face !== undefined) { face = rr.face; crit = face >= critRange; autoMiss = face === 1; } // Chronal Shift: the attack was rolled again
     if (rr.crit === false) crit = false; // Sentinel at Death's Door
@@ -539,11 +550,42 @@ function rollSaveImpl(
   if (!passed && maybeForcedEndurance(state, target, face + mod, dc, opts.stakes ?? "damage")) {
     return { passed: true, usedLegendaryResistance: false };
   }
+  // Dark One's Own Luck: "you can use this feature to add a d10 to your roll" — spent on a save it can plausibly turn
+  if (!passed && darkOnesOwnLuck(state, target, face + mod, dc)) {
+    return { passed: true, usedLegendaryResistance: false };
+  }
   // an ally artificer's Flash of Genius (+INT) may turn this failure into a success
   if (!passed && reactToFailedSave(state, target, face + mod, dc, mod, stakes)) {
     return { passed: true, usedLegendaryResistance: false };
   }
   return maybeLegendary(state, target, passed, opts);
+}
+
+/** roll "2d10+9" / "5" with the fight's own dice */
+function rollSimple(state: CombatState, notation: string): number {
+  let total = 0;
+  for (const term of notation.match(/[+-]?(\d*d\d+|\d+)/gi) ?? []) {
+    const sign = term.startsWith("-") ? -1 : 1;
+    const body = term.replace(/^[+-]/, "");
+    const dm = body.match(/^(\d*)d(\d+)$/i);
+    total += sign * (dm ? state.rng.dice(dm[1] ? Number(dm[1]) : 1, Number(dm[2])) : Number(body));
+  }
+  return total;
+}
+
+/**
+ * Dark One's Own Luck (Fiend, 6th): "When you make an ability check or a saving throw, you can use this feature to add a d10 to your roll. You can do so after
+ * seeing the initial roll but before any of the roll's effects occur." Spent (once per rest) on a failed save the die can plausibly turn — about even odds or better.
+ */
+function darkOnesOwnLuck(state: CombatState, target: CombatantState, rollTotal: number, dc: number): boolean {
+  const rule = target.ref.specialRules.find((r) => r.rule === "luckDie");
+  if (!rule || rule.rule !== "luckDie" || (target.resources.get(rule.resource) ?? 0) <= 0) return false;
+  const shortfall = dc - rollTotal;
+  if (shortfall <= 0 || shortfall > Math.ceil(rule.sides / 2) + 1) return false;
+  target.resources.set(rule.resource, (target.resources.get(rule.resource) ?? 0) - 1);
+  const die = state.rng.dice(1, rule.sides);
+  say(state, `${target.name} calls on their luck (+${die} to the save${die >= shortfall ? "" : ", not enough"})`, target.id);
+  return die >= shortfall;
 }
 
 /** Endurance rider: +CON mod to a save it just failed; +1 Endurance point held and NdX force per point held. */
@@ -724,6 +766,15 @@ export function applyDamage(
   // "...until it takes damage": a turned or charmed creature is free of it the moment it is hurt
   for (const [c, inst] of [...target.conditions]) if (inst.endsOnDamage) target.conditions.delete(c);
 
+  // Thought Shield (Great Old One, 10th): "when you take psychic damage, the creature that deals the damage to you takes the same amount of damage that you do"
+  if (type === "psychic" && opts.sourceId && opts.sourceId !== target.id && !opts.redirected && target.ref.specialRules.some((r) => r.rule === "thoughtShield")) {
+    const src = state.units.get(opts.sourceId);
+    if (src && src.alive && src.side !== target.side) {
+      say(state, `${src.name} feels the ${dmg} psychic damage turned back on them (Thought Shield)`, target.id);
+      applyDamage(state, src, dmg, "psychic", { redirected: true, sourceId: target.id });
+    }
+  }
+
   // Arcane Ward — the ward takes the damage first; whatever it can't hold lands (temporary hit points and hit points come after)
   if (target.arcaneWard && target.arcaneWard.hp > 0) {
     const soak = Math.min(target.arcaneWard.hp, dmg);
@@ -734,6 +785,9 @@ export function applyDamage(
   }
   // Projected Ward — another abjurer's ward may take it instead
   dmg = projectedWard(state, target, dmg);
+  if (dmg <= 0) return 0;
+  // Guardian Coil (Fathomless, 6th): a reaction to reduce the damage a creature near the tentacle takes by 1d8 (2d8 from the 10th level)
+  dmg = guardianCoil(state, target, dmg);
   if (dmg <= 0) return 0;
 
   // Bastion of Law — the warded creature expends d8s from its ward, rolling each and reducing the
@@ -795,14 +849,16 @@ export function applyDamage(
   if (target.concentratingOn && dmg > 0) {
     // Focused Conjuration: damage can't break concentration on a spell of the named schools
     const conc = target.ref.actions.find((a) => a.id === target.concentratingOn);
-    const immune = target.ref.specialRules.some((r) => r.rule === "concentrationImmune" && !!conc?.school && r.schools.includes(conc.school));
+    const immune = target.effects.some((e) => e.mods?.noConcentrationLoss) ||
+      target.ref.specialRules.some((r) => r.rule === "concentrationImmune" && !!conc?.school && r.schools.includes(conc.school));
     if (!immune) {
       const dc = Math.max(10, Math.floor(dmg / 2));
       // Bladesong adds Intelligence to the Constitution save
       const bonus = target.effects.reduce((n, e) => n + (e.mods?.concentrationSaveBonus ?? 0), 0);
       // the Dragon constellation: a roll of 9 or lower counts as a 10
       const d20Floor = target.effects.reduce((n, e) => Math.max(n, e.mods?.concentrationD20Floor ?? 0), 0);
-      const s = rollSave(state, target, "con", dc, { magical: false, stakes: "damage", allowLegendaryResistance: false, bonus, d20Floor });
+      const advantage = target.ref.specialRules.some((r) => r.rule === "concentrationAdvantage") ? "adv" as const : undefined; // Eldritch Mind
+      const s = rollSave(state, target, "con", dc, { magical: false, stakes: "damage", allowLegendaryResistance: false, bonus, d20Floor, adv: advantage });
       if (!s.passed) breakConcentration(state, target, "damage");
     }
   }
@@ -872,6 +928,24 @@ export function applyDamage(
       target.resources.set(mod.resource, (target.resources.get(mod.resource) ?? 0) - 1);
       target.hp = 1;
       say(state, `${target.name} refuses to fall (Mastery of Death, 1 HP)`, target.id);
+      return dmg;
+    }
+  }
+
+  // Necrotic Husk (Undead, 10th): "When you are reduced to 0 hit points, you can use your reaction to drop to 1 hit point instead. Each creature of your choice within
+  // 30 feet takes necrotic damage" (no save) — and it can't be used again until 1d4 long rests (once a rest here)
+  if (target.hp <= 0 && !target.reactionUsed && !state.inReaction) {
+    const husk = target.ref.specialRules.find((r) => r.rule === "necroticHusk");
+    if (husk && husk.rule === "necroticHusk" && (target.resources.get(husk.resource) ?? 0) > 0) {
+      target.resources.set(husk.resource, (target.resources.get(husk.resource) ?? 0) - 1);
+      target.reactionUsed = true;
+      target.hp = 1;
+      say(state, `${target.name}'s husk bursts with necrotic energy and they hang on at 1 HP (Necrotic Husk)`, target.id);
+      for (const foe of [...state.units.values()]) {
+        if (foe.side === target.side || !foe.alive || foe.downed) continue;
+        if (state.distanceFt && state.distanceFt(target, foe) > 30.001) continue;
+        applyDamage(state, foe, rollSimple(state, husk.damage), "necrotic", { sourceId: target.id, redirected: true });
+      }
       return dmg;
     }
   }

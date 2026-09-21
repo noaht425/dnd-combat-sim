@@ -95,6 +95,8 @@ export interface RunActionOpts {
    *  `who` resolution — used for a retaliation trait that must hit whoever just
    *  attacked it, not "aiChoice"/"eachEnemy" from the trait-bearer's own AI. */
   forceScope?: CombatantState[];
+  /** the creature(s) an on-kill / trigger action is "about" — the first `target` in a branch expression (`target.has('…')`) reads it; doesn't change who any node picks */
+  scope?: CombatantState[];
 }
 
 const LOCK_CONDITIONS: Condition[] = ["stunned", "paralyzed", "incapacitated", "unconscious", "petrified"];
@@ -193,12 +195,12 @@ function fireOnDeathTraits(state: CombatState, dying: CombatantState): void {
  *  benefit), so unlike fireOnHitTraits this needs no forceScope. Declared
  *  in the schema's trigger enum from the start but never actually
  *  dispatched anywhere until now. */
-function fireOnKillTraits(state: CombatState, source: CombatantState): void {
+function fireOnKillTraits(state: CombatState, source: CombatantState, victim?: CombatantState): void {
   for (const trait of source.ref.traits) {
     if (trait.trigger !== "onKill" || !trait.automation.length) continue;
     runAction(state, source, {
       id: trait.id, name: trait.name, cost: {}, recharge: "none", automation: trait.automation,
-    }, { asReaction: true, skipIncapacitatedCheck: true });
+    }, { asReaction: true, skipIncapacitatedCheck: true, scope: victim ? [victim] : undefined });
   }
 }
 
@@ -295,6 +297,15 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/target\.wounded_?at_?hit/i, () => ctx.last.woundedAtHit === true],
     [/party\.missing_?hp\s*>=\s*(\d+)/i, () => livingAllies(st, s).reduce((n, a) => n + Math.max(0, a.maxHp - a.hp), 0) >= Number(RegExp.$1)],
     [/any_?enemy\.has\('([^']+)'\)/i, () => livingEnemies(st, s).some((e) => e.effects.some((x) => x.name === RegExp.$1 && x.sourceId === s.id))],
+    // Hex: the warlock is still concentrating on it, but the creature it was on is gone (a bonus action moves it to a new target)
+    [/self\.hex_?needs_?target/i, () => (s.concentratingOn === "cast-hex" || s.concentratingOn === "hex-move") && !livingEnemies(st, s).some((e) => e.effects.some((x) => x.name === "hex" && x.sourceId === s.id))],
+    // a warlock with nothing else to concentrate on and no creature already carrying its Hex (the spell is worth a slot again)
+    [/self\.needs_?hex/i, () => livingEnemies(st, s).length > 0 && !s.concentratingOn && !livingEnemies(st, s).some((e) => e.effects.some((x) => x.name === "hex" && x.sourceId === s.id))],
+    [/target\.incapacitated/i, () => !!tgt && isIncapacitated(tgt)],
+    // an incapacitated creature of a kind (Create Thrall: "an incapacitated humanoid")
+    [/any_?enemy\.incapacitated\('([a-z]+)'\)/i, () => livingEnemies(st, s).some((e) => isIncapacitated(e) && isCreatureType(e.ref, RegExp.$1 as never))],
+    // a creature carries the warlock's Hex or Hexblade's Curse (Maddening Hex needs one)
+    [/self\.has_?curse/i, () => livingEnemies(st, s).some((e) => e.effects.some((x) => (x.name === "hex" || x.name === "hexblades-curse") && x.sourceId === s.id))],
     [/party\.has_?downed/i, () => [...st.units.values()].some((u) => u.side === s.side && u.alive && u.downed && u.summonerId === undefined)],
     [/party\.has_?dead/i, () => [...st.units.values()].some((u) => u.side === s.side && !u.alive && u.summonerId === undefined)],
     [/self\.has_?companion/i, () => [...st.units.values()].some((u) => u.summonerId === s.id && u.alive && !u.downed)],
@@ -372,6 +383,11 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
     }
     case "aiChoice": {
       if (!enemies.length) return [];
+      // an attack goes to the creature the caster has marked with a rider only they cash in (Hex, Hexblade's Curse, Slayer's Prey) — they keep on it
+      if (node.effects.some((e) => e.type === "attack")) {
+        const mine = enemies.find((e) => e.effects.some((x) => x.sourceId === source.id && x.mods?.extraDamageWhenHitBySource));
+        if (mine) return [mine];
+      }
       // both sides gang up on a shared focus target (party or monster pack)
       const sharedFocus = source.side === "party" ? state.focusId
         : source.ref.ai.focusFire ? state.monsterFocusId : undefined;
@@ -544,7 +560,9 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           break; // out of melee reach — the swing never connects
         }
         const adv = tweak?.disadvantage ? "dis" : node.adv;
-        const critRange = Math.min(node.critRange ?? 20, critRangeFor(source));
+        // Hexblade's Curse: "Your attack rolls against the cursed target are critical hits on a roll of 19 or 20 on the d20"
+        const cursedRange = t.effects.reduce((n, e) => (e.sourceId === source.id && e.mods?.critRangeAgainstBySource ? Math.min(n, e.mods.critRangeAgainstBySource) : n), 20);
+        const critRange = Math.min(node.critRange ?? 20, critRangeFor(source), cursedRange);
         const res = rollAttack(state, source, t, bonus, adv, critRange, tweak?.acBonus ?? 0);
         if (ctx.attackTally) {
           ctx.attackTally.rolled++;
@@ -559,6 +577,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           if (!source.footwork.ids.includes(t.id)) source.footwork.ids.push(t.id);
         }
         if (res.hit) {
+          const hadTempHp = t.tempHp > 0; // Armor of Agathys: "While you have these hit points, if a creature hits you with a melee attack, the creature takes ... cold damage"
           tagAmbushTarget(state, source, t);
           // Path to the Grave: "the creature has vulnerability to all of that damage, and then the curse ends"
           const grave = t.effects.find((e) => e.mods?.doubleNextHit && state.units.get(e.sourceId)?.side === source.side);
@@ -584,7 +603,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           }
           for (const e of [...t.effects]) { // a surge / Spiked Retribution: whoever hits the holder takes damage back
             const hb = e.mods?.hitBackDamage;
-            if (!hb || !t.alive || !source.alive || (hb.meleeOnly && source.zone !== "melee")) continue;
+            if (!hb || !t.alive || !source.alive || (hb.meleeOnly && source.zone !== "melee") || (hb.requiresTempHp && !hadTempHp)) continue;
             applyDamage(state, source, rollDamage(state, hb.amount), hb.damageType as DamageType, { sourceId: t.id });
           }
         } else if (node.onMiss) runAutomation(node.onMiss, next);
@@ -654,7 +673,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         if (wasUp && (!t.alive || t.downed)) {
           fireOnDeathTraits(state, t);
           if (t.side !== source.side) {
-            fireOnKillTraits(state, source);
+            fireOnKillTraits(state, source, t);
             grimHarvest(state, source, t, ctx);
           }
           if (!t.alive) reactToDeath(state, t); // a Spores druid's zombie, a Wildfire druid's flames
@@ -1074,7 +1093,7 @@ export function runAction(
   const appliedNames: string[] | undefined = action.concentration ? [] : undefined;
 
   if (!state.verbose) {
-    runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, spell, spellSchool: action.school, spellLevel: action.spellLevel, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
+    runAutomation(action.automation, { state, source, scope: opts.scope ?? [], last: {}, depth: 0, spell, spellSchool: action.school, spellLevel: action.spellLevel, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
     if (action.concentration && appliedNames && appliedNames.length) {
       source.concentratingOn = action.id;
       source.concentrationEffects = [...new Set(appliedNames)];
@@ -1091,7 +1110,7 @@ export function runAction(
   const shapeBefore = new Map([...state.units.values()].map((u) => [u.id, u.shape?.form ?? ""]));
   const saveLog = new Map<string, boolean>();
   const attackTally = { rolled: 0, hit: 0, unreachable: false };
-  runAutomation(action.automation, { state, source, scope: [], last: {}, depth: 0, saveLog, attackTally, spell, spellSchool: action.school, spellLevel: action.spellLevel, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
+  runAutomation(action.automation, { state, source, scope: opts.scope ?? [], last: {}, depth: 0, saveLog, attackTally, spell, spellSchool: action.school, spellLevel: action.spellLevel, appliedNames, forceScope: opts.forceScope, ranged: action.ranged, ...geo });
   if (action.concentration && appliedNames && appliedNames.length) {
     source.concentratingOn = action.id;
     source.concentrationEffects = [...new Set(appliedNames)];

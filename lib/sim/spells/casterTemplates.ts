@@ -9,6 +9,7 @@ import { RANGER_BUILDERS } from "./rangerTemplates";
 import { WIZARD_BUILDERS } from "./wizardTemplates";
 import { DRUID_BUILDERS } from "./druidTemplates";
 import { CLERIC_BUILDERS } from "./clericTemplates";
+import { WARLOCK_BUILDERS } from "./warlockTemplates";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
@@ -991,34 +992,6 @@ export function loreBard(level: number): Combatant {
   return { ...c, resources: { ...c.resources, bardic_inspiration: { max: Math.max(1, cha), recharge: "shortRest" } } };
 }
 
-export function warlock(level: number): Combatant {
-  const pb = pbFor(level);
-  const cha = pb === 6 ? 5 : 4;
-  return makeCaster({
-    id: "warlock", name: `Warlock ${level}`, level, spellClass: "warlock", casterKind: "warlock", spellAbility: "cha",
-    ac: 16, hp: between(level, 9, 7 * 20 + 12),
-    abilities: { str: score(-1), dex: score(2), con: score(2), int: score(1), wis: score(1), cha: score(cha) },
-    proficientSaves: ["con", "wis", "cha"], focus: "blaster",
-    // Dark One's Blessing (Fiend Patron): temp HP = CHA mod + level (min 1)
-    // on reducing a hostile creature to 0 HP — the "onKill" trigger was
-    // declared in the schema from the start but never actually dispatched
-    // by the engine until now.
-    extraTraits: [{
-      id: "dark-ones-blessing", name: "Dark One's Blessing", trigger: "onKill",
-      automation: [{ type: "target", who: { who: "self" }, effects: [{ type: "tempHp", amount: `${Math.max(1, cha + level)}` }] }],
-    }],
-    // Eldritch Blast is the workhorse — make it the fallback `attack` too
-    extraActions: [{
-      id: "attack", name: "Eldritch Blast (Agonizing)", cost: { action: 1 }, recharge: "none", isSpell: true,
-      automation: [{ type: "target", who: { who: "aiChoice" }, effects: Array.from(
-        { length: level >= 17 ? 4 : level >= 11 ? 3 : level >= 5 ? 2 : 1 },
-        () => ({ type: "attack" as const, bonus: pb + cha, onHit: [{ type: "damage" as const, amount: `1d10+${cha}`, damageType: "force" as const }] }),
-      ) }],
-    }],
-    keepDistance: true, opener: [], targetPriority: "lowestHp",
-  });
-}
-
 export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   ...WIZARD_BUILDERS,
   ...CLERIC_BUILDERS,
@@ -1039,5 +1012,5 @@ export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   "clockwork-soul-sorcerer": clockworkSoulSorcerer,
   ...DRUID_BUILDERS,
   "lore-bard": loreBard,
-  "warlock": warlock,
+  ...WARLOCK_BUILDERS,
 };

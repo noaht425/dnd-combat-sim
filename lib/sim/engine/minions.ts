@@ -621,6 +621,32 @@ export function feySpiritFor(spellLevel: number, pb: number, wis: number): strin
  * charmed / frightened / grappled / prone / restrained. Flame Seed is a ranged spell attack at the druid's spell attack modifier for 1d6 + PB fire, at 60 ft.
  * It "shares your initiative count" but only Dodges unless the druid uses a bonus action to command it. Not modeled: Fiery Teleportation.
  */
+/**
+ * The specter a Hexblade binds with Accursed Specter (6th): the Monster Manual's specter — Medium undead, armor class 12, 22 hit points, fly 50 ft., Life Drain (melee spell
+ * attack +4, 3d6 necrotic) — that "gains a special bonus to its attack rolls equal to your Charisma modifier". Resistant to acid, cold, fire, lightning and thunder, and to nonmagical
+ * bludgeoning, piercing and slashing; immune to necrotic and poison. Life Drain's maximum-hit-point reduction (Constitution save, DC 10) and Sunlight Sensitivity aren't modeled.
+ */
+export function accursedSpecterFor(chaBonus: number): string {
+  const id = `accursed-specter-C${chaBonus}`;
+  if (PC_SUMMONS[id]) return id;
+  PC_SUMMONS[id] = minion({
+    id, creatureType: "undead", name: "Specter", cr: "1", size: "medium",
+    ac: 12, maxHp: 22,
+    speeds: { walk: 0, fly: 50 },
+    abilities: { str: 1, dex: 14, con: 11, int: 10, wis: 10, cha: 11 },
+    pb: 2,
+    resistances: ["acid", "cold", "fire", "lightning", "thunder"],
+    resistancesNonmagical: ["bludgeoning", "piercing", "slashing"],
+    immunities: ["necrotic", "poison"],
+    conditionImmunities: ["charmed", "exhaustion", "grappled", "paralyzed", "petrified", "poisoned", "prone", "restrained", "unconscious"],
+    actions: [{
+      id: "attack", name: "Life Drain", cost: { action: 1 }, recharge: "none",
+      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "attack", bonus: 4 + chaBonus, onHit: [{ type: "damage", amount: "3d6", damageType: "necrotic" }] }] }],
+    }],
+  });
+  return id;
+}
+
 export function wildfireSpiritFor(level: number, pb: number, wis: number): string {
   const id = `wildfire-spirit-L${level}`;
   if (PC_SUMMONS[id]) return id;

@@ -157,6 +157,8 @@ export const effectModsSchema = z.object({
   endsOnDealingDamage: z.boolean().optional(),
   /** the holder has disadvantage on saving throws against effects the creature that applied this came from (the Hound of Ill Omen's mark) */
   saveDisadvantageAgainstSource: z.boolean().optional(),
+  /** damage can't make the holder lose concentration while this lasts (Grasping Tentacles: "you can't lose concentration on it from taking damage") */
+  noConcentrationLoss: z.boolean().optional(),
   /** a natural d20 lower than this counts as this (Trance of Order: 10) on the holder's attack rolls, saving throws and checks */
   d20Floor: z.number().int().optional(),
   /** attack rolls against the holder can't have advantage (Trance of Order) */
@@ -166,6 +168,10 @@ export const effectModsSchema = z.object({
   /** a mark on the holder: whenever the creature that applied this effect hits the holder with an attack, the holder takes this extra
    *  damage (Slayer's Prey, Planar Warrior); `oncePerTurn` = at most once each turn */
   extraDamageWhenHitBySource: z.object({ amount: diceSchema, damageType: damageTypeSchema, oncePerTurn: z.boolean().optional() }).optional(),
+  /** attack rolls by the creature that applied this effect score a critical hit on this d20 or higher against the holder (Hexblade's Curse: 19) */
+  critRangeAgainstBySource: z.number().int().min(2).max(20).optional(),
+  /** with `attacksAgainstItAdvantage`: only the creature that applied the effect gets the advantage (Entropic Ward) */
+  advantageFromSourceOnly: z.boolean().optional(),
   /** the holder's AC is this much higher against attacks by the creature that applied the effect (Multiattack Defense) */
   acBonusAgainstSource: z.number().int().optional(),
   /** temporary resistance to these damage types while the effect lasts (Rage: bludgeoning / piercing / slashing) */
@@ -189,7 +195,7 @@ export const effectModsSchema = z.object({
   /** the holder can't gain these conditions while the effect lasts (Mindless Rage) */
   immuneConditions: z.array(conditionSchema).optional(),
   /** whoever hits the holder takes this damage back (a wild-magic surge, Spiked Retribution); `meleeOnly` = only from a melee attack */
-  hitBackDamage: z.object({ amount: diceSchema, damageType: damageTypeSchema, meleeOnly: z.boolean().optional() }).optional(),
+  hitBackDamage: z.object({ amount: diceSchema, damageType: damageTypeSchema, meleeOnly: z.boolean().optional(), requiresTempHp: z.boolean().optional() }).optional(),
   /** extra reach in feet (Path of the Giant) */
   reachBonusFt: z.number().int().optional(),
   /** the holder's attacks deal resisted damage to anyone but the creature that applied this effect (Ancestral Protectors) */
@@ -494,7 +500,19 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   // Blazing Revival (Wildfire, 14th): dropping to 0 hit points with the wildfire spirit near, the spirit falls to 0 and you regain half your hit points and stand
   z.object({ rule: z.literal("blazingRevival"), resource: z.string() }),
   // Nature's Sanctuary (Land, 14th): a beast or plant attacking the druid makes a Wisdom save against the druid's spell save DC or must choose another target (or the attack misses)
-  z.object({ rule: z.literal("natureSanctuary") }),
+  z.object({ rule: z.literal("natureSanctuary"), types: z.array(creatureTypeSchema).optional() }), // `types` overrides beast/plant (Among the Dead: undead)
+  // Eldritch Mind (invocation): advantage on the Constitution saves that keep a spell going
+  z.object({ rule: z.literal("concentrationAdvantage") }),
+  // Dark One's Own Luck (Fiend, 6th): a die added to a saving throw that would otherwise fail, once per rest
+  z.object({ rule: z.literal("luckDie"), resource: z.string(), sides: z.number().int().min(2).max(20) }),
+  // Thought Shield (Great Old One, 10th): a creature that deals psychic damage to the holder takes the same amount
+  z.object({ rule: z.literal("thoughtShield") }),
+  // Searing Vengeance (Celestial, 14th): at the start of a turn that would be a death save, regain half the maximum hit points, stand, and sear the nearby foes
+  z.object({ rule: z.literal("searingVengeance"), resource: z.string() }),
+  // Defy Death (Undying, 6th): succeeding on a death saving throw restores 1d8 + Constitution modifier hit points
+  z.object({ rule: z.literal("defyDeath"), resource: z.string() }),
+  // Necrotic Husk (Undead, 10th): reduced to 0 hit points, a reaction drops the holder to 1 instead and bursts necrotic damage on the foes within 30 ft
+  z.object({ rule: z.literal("necroticHusk"), resource: z.string(), damage: z.string() }),
   // Spell Resistance (Abjuration, 14th): advantage on saving throws against spells, and resistance to spell damage
   z.object({ rule: z.literal("spellResistance") }),
   // Durable Magic (War Magic, 10th): +2 AC and +2 to every saving throw while concentrating on a spell

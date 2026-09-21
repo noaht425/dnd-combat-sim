@@ -169,6 +169,10 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
       } else if (n.type === "applyEffect") {
         if (t.side === actor.side && t.id === actor.id && n.mods?.attackAdvantage === "adv" && !t.effects.some((e) => e.name === n.name)) damage += pMul * 8; // advantage on the caster's own attacks (Invoke Duplicity)
         if (t.side !== actor.side && !t.effects.some((e) => e.name === n.name) && n.mods?.doubleNextHit) damage += pMul * 12; // Path to the Grave: the next hit does double
+        // a mark only the applier cashes in (Hex, Hexblade's Curse): a rider on every hit it lands while the mark lasts, and a wider crit range
+        if (t.side !== actor.side && !t.effects.some((e) => e.name === n.name) && n.mods?.extraDamageWhenHitBySource) damage += pMul * (avgDice(n.mods.extraDamageWhenHitBySource.amount) ?? 0) * 2.5;
+        if (t.side !== actor.side && !t.effects.some((e) => e.name === n.name) && n.mods?.critRangeAgainstBySource) damage += pMul * 3;
+        if (t === actor && n.mods?.hitBackDamage && !t.effects.some((e) => e.name === n.name)) damage += pMul * (avgDice(n.mods.hitBackDamage.amount) ?? 0) * 1.5; // Armor of Agathys: the attackers that touch it are burned
         if (n.tick?.some((x) => x.type === "tempHp") && t.side === actor.side && !t.effects.some((e) => e.name === n.name)) heal += pMul * 6; // Twilight Sanctuary's temporary hit points, turn after turn
         if (t.side !== actor.side && !t.effects.some((e) => e.name === n.name) && (n.mods?.speedZero || n.mods?.noReactions || n.mods?.saveAdvantage === "dis")) control += pMul * 10;
         const tick = n.tick?.find((x) => x.type === "damage");

@@ -77,7 +77,8 @@ export function similarity(query: string, label: string): number {
     let best = 0;
     for (const lt of l) {
       if (qt === lt) { best = 1; break; }
-      if (lt.includes(qt) || qt.includes(lt)) best = Math.max(best, 0.8);
+      // a fragment of three letters or fewer inside a longer word is no evidence ("old" in "kobold", "one" in "stone")
+      if ((lt.includes(qt) || qt.includes(lt)) && Math.min(qt.length, lt.length) >= 4) best = Math.max(best, 0.8);
       const d = editDistance(qt, lt);
       const maxLen = Math.max(qt.length, lt.length);
       best = Math.max(best, maxLen ? 1 - d / maxLen : 0);
