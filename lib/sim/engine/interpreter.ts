@@ -799,6 +799,19 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
 
       case "removeEffect": {
         const t = ctx.scope[0] ?? source;
+        if (node.name === "*") {
+          // Dispel Magic: nothing in this engine is literally named "*", so this used to be a silent no-op.
+          // `effects` is the closest thing to "standing magical effects" the engine has, so that's what gets
+          // wiped — except "exhaustion", which mirrors `t.exhaustion` and is never recomputed mid-fight, so
+          // clearing it here would desync the two and leave the penalty gone for the rest of the encounter.
+          // `conditions` is left alone entirely: it carries plain physical states (grappled, prone) and
+          // monster-inflicted ones (a ghoul's paralysis, a spider's poison) through the exact same tags a
+          // spell would use, with no record of which (if any) came from a spell — and since this spell's
+          // own targeting ("aiChoice") only ever reaches an enemy, clearing their conditions would as often
+          // undo the caster's own side's crowd control as it would end a real spell effect.
+          t.effects = t.effects.filter((e) => e.name === "exhaustion");
+          break;
+        }
         t.effects = t.effects.filter((e) => e.name !== node.name);
         t.conditions.delete(node.name as Condition);
         if (node.name === "restrained") { t.conditions.delete("restrained"); t.conditions.delete("grappled"); }

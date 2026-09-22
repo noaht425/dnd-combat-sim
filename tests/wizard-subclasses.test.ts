@@ -12,7 +12,7 @@ import { applyDamage, rollAttack, rollSave } from "../lib/sim/engine/resolve";
 import { actionAvailable, spend } from "../lib/sim/engine/ai";
 import { applyRest } from "../lib/sim/engine/day";
 import { mayCounterspell } from "../lib/sim/engine/reactions";
-import { beginTurn, effectiveAc, initCombatant, type CombatState, type CombatantState } from "../lib/sim/engine/state";
+import { beginTurn, effectiveAc, initCombatant, syncExhaustion, type CombatState, type CombatantState } from "../lib/sim/engine/state";
 import { makeRng } from "../lib/sim/engine/rng";
 import { score } from "../lib/sim/engine/pcBase";
 import { cantripsKnown, preparedCount } from "../lib/sim/spells/prepare";
@@ -249,6 +249,33 @@ describe("School of Abjuration", () => {
     expect(modes.at(-1)).toBe("adv");
     rollSave(s, w, "dex", 15, { magical: false });
     expect(modes.at(-1)).toBe("flat");
+  });
+});
+
+describe("Dispel Magic", () => {
+  it("clears the target's standing magical effects, but leaves its conditions and exhaustion penalty alone", () => {
+    // the engine has no record of which (if any) spell caused a given condition — poisoned could be a
+    // monster's bite, grappled is never magical — so a wildcard clear only touches `effects`; exhaustion
+    // is excluded even there because it mirrors `target.exhaustion` and nothing re-derives it mid-fight
+    const w = wiz("abjuration-wizard", 5);
+    const { s, target } = arena(15, w);
+    target.effects.push({ name: "mage-armor", mods: { acBonus: 3 }, expiresRound: Infinity, sourceId: target.id });
+    target.exhaustion = 3;
+    syncExhaustion(target);
+    target.conditions.set("poisoned", { expiresRound: Infinity, sourceId: target.id });
+    target.conditions.set("grappled", { expiresRound: Infinity, sourceId: target.id });
+    expect(target.effects.some((e) => e.name === "exhaustion")).toBe(true); // sanity: syncExhaustion worked
+
+    const dispelMagic: Action = {
+      id: "x", name: "Dispel Magic", cost: { action: 1 }, recharge: "none", isSpell: true, school: "abjuration", spellLevel: 3,
+      automation: SPELLS_BY_ID["dispel-magic"].build!({ slotLevel: 3, casterLevel: 5, spellMod: 4, dc: 15, toHit: 7, pb: 3 }),
+    };
+    runAction(s, w, dispelMagic);
+
+    expect(target.effects.some((e) => e.name === "mage-armor")).toBe(false);
+    expect(target.effects.some((e) => e.name === "exhaustion")).toBe(true);
+    expect(target.conditions.has("poisoned")).toBe(true);
+    expect(target.conditions.has("grappled")).toBe(true);
   });
 });
 
