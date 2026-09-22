@@ -14,13 +14,18 @@
 // `-blade` / `-tome` / `-chain` / `-talisman` name the others. The imp is the only familiar offered (pseudodragon, quasit and sprite are the other special forms); the Tome build's Repelling Blast and
 // Lance of Lethargy, and the Blade build's Grasp of Hadar, are why those are the ones picked.
 //
-// Not modeled anywhere: Eldritch Master (20th: a minute to regain every slot), Eldritch Spear, Devil's Sight and the other utility invocations, Tomb of Levistus, Cloak of Flies, Beguiling Defenses'
-// reflection, Fathomless Plunge, Gift of the Sea, Limited Wish, Genie's Vessel and Sanctuary Vessel, Elemental Gift's flight, Spirit Projection, Grave Touched's change of damage type, Among the Dead
-// against spells, Awakened Mind, Create Thrall's permanence past the fight, Undying Nature, the Chain familiar's forgone-attack reaction (it needs the Attack action, and Eldritch Blast is a spell),
-// Voice of the Chain Master, Celestial's bonus cantrip Light (it has no automation) and Spare the Dying. The catalog has automation for only three warlock cantrips (Eldritch Blast, Chill Touch,
-// Poison Spray), so the fourth cantrip at 10th level isn't filled. Known approximations: the AI never chooses Bond of the Talisman; forced movement is one square (5 feet) at a time along the nearest of
-// eight directions; Necrotic Husk and the "1d4 long rests" features come back every long rest; Necrotic Husk's exhaustion and immunity are dropped; Dark Delirium and Fey Presence's charm-or-fear are built
-// as the charm (a turned creature for Dark Delirium); Maddening Hex hits only the cursed creature; Hurl Through Hell's 10d10 lands the moment the creature is sent away, not when it returns.
+// Not modeled anywhere: Eldritch Master (20th — verified impossible to matter here, not just unbuilt: it costs 1 uninterrupted minute, which no
+// combat round has room for, and the slots it refills already come back on a short rest, which every warlock already gets), Devil's Sight, Ghostly
+// Gaze and the other darkness/sight utility invocations (verified: the engine has no darkness/light-level model at all, only a `wall` terrain type
+// that blocks sight outright), Fathomless Plunge, Gift of the Sea, Genie's Vessel and Sanctuary Vessel (both out-of-combat), Spirit Projection,
+// Awakened Mind, Create Thrall's permanence past the fight, Undying Nature, the Chain familiar's forgone-attack reaction (it needs the Attack
+// action, and Eldritch Blast is a spell), Voice of the Chain Master, Celestial's bonus cantrip Light (it has no automation), and Among the Dead's
+// reciprocal 24-hour immunity when the warlock attacks an undead first (the 24-hour immunity the OTHER way, on a successful save, is modeled). The
+// catalog has automation for only three warlock cantrips (Eldritch Blast, Chill Touch, Poison Spray), so the fourth cantrip at 10th level isn't
+// filled. Known approximations: Limited Wish is always Disintegrate; the AI never chooses Bond of the Talisman; forced movement is one square (5
+// feet) at a time along the nearest of eight directions; Necrotic Husk and the "1d4 long rests" features come back every long rest; Necrotic Husk's
+// exhaustion and immunity are dropped; Dark Delirium and Fey Presence's charm-or-fear are built as the charm (a turned creature for Dark Delirium);
+// Maddening Hex hits only the cursed creature; Hurl Through Hell's 10d10 lands the moment the creature is sent away, not when it returns.
 
 import type { Action, AutomationNode, Combatant, DamageType } from "../schema";
 import { between, pbFor, score } from "../engine/pcBase";
@@ -95,19 +100,24 @@ const TOME_PICKS: Pick[] = [
   { id: "agonizing-blast", minLevel: 2 }, { id: "armor-of-shadows", minLevel: 2 }, { id: "repelling-blast", minLevel: 2 }, { id: "maddening-hex", minLevel: 5 }, { id: "eldritch-mind", minLevel: 2 },
   { id: "lance-of-lethargy", minLevel: 2 }, { id: "fiendish-vigor", minLevel: 2 }, { id: "mire-the-mind", minLevel: 5 }, { id: "dreadful-word", minLevel: 7 }, { id: "sign-of-ill-omen", minLevel: 5 },
   { id: "bewitching-whispers", minLevel: 7 }, { id: "thief-of-five-fates", minLevel: 2 }, { id: "minions-of-chaos", minLevel: 9 },
+  { id: "tomb-of-levistus", minLevel: 5 }, { id: "cloak-of-flies", minLevel: 5 }, { id: "eldritch-spear", minLevel: 2 },
 ];
 const BLADE_PICKS: Pick[] = [
   { id: "improved-pact-weapon", minLevel: 3 }, { id: "agonizing-blast", minLevel: 2 }, { id: "thirsting-blade", minLevel: 5 }, { id: "eldritch-smite", minLevel: 5 }, { id: "armor-of-shadows", minLevel: 2 },
   { id: "grasp-of-hadar", minLevel: 2 }, { id: "relentless-hex", minLevel: 7 }, { id: "lifedrinker", minLevel: 12 }, { id: "maddening-hex", minLevel: 5 }, { id: "eldritch-mind", minLevel: 2 },
-  { id: "fiendish-vigor", minLevel: 2 }, { id: "mire-the-mind", minLevel: 5 },
+  { id: "fiendish-vigor", minLevel: 2 }, { id: "mire-the-mind", minLevel: 5 }, { id: "tomb-of-levistus", minLevel: 5 }, { id: "cloak-of-flies", minLevel: 5 },
 ];
 const CHAIN_PICKS: Pick[] = [
   { id: "agonizing-blast", minLevel: 2 }, { id: "investment-of-the-chain-master", minLevel: 3 }, { id: "armor-of-shadows", minLevel: 2 }, { id: "repelling-blast", minLevel: 2 }, { id: "maddening-hex", minLevel: 5 },
   { id: "eldritch-mind", minLevel: 2 }, { id: "gift-of-the-ever-living-ones", minLevel: 3 }, { id: "chains-of-carceri", minLevel: 15 }, { id: "lance-of-lethargy", minLevel: 2 }, { id: "fiendish-vigor", minLevel: 2 },
+  { id: "tomb-of-levistus", minLevel: 5 }, { id: "cloak-of-flies", minLevel: 5 }, { id: "eldritch-spear", minLevel: 2 },
 ];
 const TALISMAN_PICKS: Pick[] = [
+  // Tomb of Levistus and Cloak of Flies take the Talisman build's 7th and 8th invocations (15th, 18th level) in place of Maddening Hex and
+  // Eldritch Mind — a defensive/utility pair fits a build already built around keeping an ally standing better than two more marginal picks
   { id: "agonizing-blast", minLevel: 2 }, { id: "rebuke-of-the-talisman", minLevel: 3 }, { id: "armor-of-shadows", minLevel: 2 }, { id: "repelling-blast", minLevel: 2 }, { id: "protection-of-the-talisman", minLevel: 7 },
-  { id: "bond-of-the-talisman", minLevel: 12 }, { id: "maddening-hex", minLevel: 5 }, { id: "eldritch-mind", minLevel: 2 }, { id: "lance-of-lethargy", minLevel: 2 }, { id: "fiendish-vigor", minLevel: 2 },
+  { id: "bond-of-the-talisman", minLevel: 12 }, { id: "tomb-of-levistus", minLevel: 5 }, { id: "cloak-of-flies", minLevel: 5 }, { id: "maddening-hex", minLevel: 5 }, { id: "eldritch-mind", minLevel: 2 },
+  { id: "lance-of-lethargy", minLevel: 2 }, { id: "fiendish-vigor", minLevel: 2 }, { id: "eldritch-spear", minLevel: 2 },
 ];
 const PICKS: Record<Boon, Pick[]> = { tome: TOME_PICKS, blade: BLADE_PICKS, chain: CHAIN_PICKS, talisman: TALISMAN_PICKS };
 
@@ -196,10 +206,12 @@ function build(spec: Spec): Combatant {
     });
   };
 
-  // ---- Eldritch Blast, with Agonizing Blast (+ Charisma to each beam's damage)
+  // ---- Eldritch Blast, with Agonizing Blast (+ Charisma to each beam's damage) and Eldritch Spear (300ft range, so the
+  // shared long-range-disadvantage threshold at 120ft never bites)
   const blastBase = SPELLS_BY_ID["eldritch-blast"].build!(ctx);
   const agonizing = has("agonizing-blast") ? mapNodes(blastBase, (n) => (n.type === "damage" ? { ...n, amount: addFlatBonus(n.amount, cha) } : n)) : blastBase;
-  const blastNodes = withRiders(agonizing, everyHitBlast, firstHit);
+  const withRange = has("eldritch-spear") ? mapNodes(agonizing, (n) => (n.type === "attack" ? { ...n, longRangeFt: 300 } : n)) : agonizing;
+  const blastNodes = withRiders(withRange, everyHitBlast, firstHit);
   const blast = (id: string): Action => ({ id, name: "Eldritch Blast", cost: { action: 1 }, recharge: "none", isSpell: true, school: "evocation", spellLevel: 0, ranged: true, automation: blastNodes });
 
   // ---- the pact weapon (Pact of the Blade): a longsword for the Hexblade (Charisma), a rapier for the rest (Dexterity); Thirsting Blade makes two attacks
@@ -322,16 +334,38 @@ function build(spec: Spec): Combatant {
     });
   }
 
-  // ---- the patron's features
   const pool = (name: string, max: number, recharge: "shortRest" | "longRest") => { resources[name] = { max, recharge }; return { resource: name, amount: 1 }; };
 
+  // ---- Tomb of Levistus (a reaction to being hurt: temporary hit points, at the cost of being iced) and Cloak of Flies
+  // (a bonus-action aura that stings anything, ally or foe, that starts its turn beside the warlock)
+  if (has("tomb-of-levistus")) {
+    reactions.push({
+      id: "tomb-of-levistus", name: "Tomb of Levistus", cost: { reaction: 1 }, recharge: "none", trigger: "self.tookDamageFromAttackOrSpell",
+      limitedUse: pool("tomb_of_levistus", 1, "shortRest"), automation: [{ type: "note", text: "Tomb of Levistus (engine hook)" }],
+    });
+  }
+  if (has("cloak-of-flies")) {
+    actions.push({
+      id: "cloak-of-flies", name: "Cloak of Flies", cost: { bonus: 1 }, recharge: "none", limitedUse: pool("cloak_of_flies", 1, "shortRest"),
+      automation: [{ type: "target", who: { who: "self" }, effects: [
+        { type: "applyEffect", name: "cloak-of-flies", durationRounds: 999999, mods: { auraTick: { amount: Math.max(0, cha), type: "poison" } } },
+      ] }],
+    });
+    bonusRoutine.push("cloak-of-flies");
+  }
+
+  // ---- the patron's features
   if (patron === "archfey") {
     actions.push({
       id: "fey-presence", name: "Fey Presence", cost: { action: 1 }, recharge: "none", limitedUse: pool("fey_presence", 1, "shortRest"),
       automation: [{ type: "target", who: { who: "area", shape: "emanation", size: 10 }, effects: [{ type: "save", ability: "wis", dc, onFail: [{ type: "applyCondition", condition: "charmed", durationRounds: 1 }], onSuccess: [] }] }],
     });
     if (level >= 6) reactions.push({ id: "misty-escape", name: "Misty Escape", cost: { reaction: 1 }, recharge: "none", trigger: "self.tookDamageFromAttackOrSpell", limitedUse: pool("misty_escape", 1, "shortRest"), automation: [{ type: "note", text: "Misty Escape (engine hook)" }] });
-    if (level >= 10) conditionImmunities.push("charmed");
+    if (level >= 10) {
+      conditionImmunities.push("charmed");
+      // Beguiling Defenses (10th): immune to being charmed (above) + a reaction that turns a failed charm attempt back on whoever tried it — no rest limit
+      reactions.push({ id: "beguiling-defenses", name: "Beguiling Defenses", cost: { reaction: 1 }, recharge: "none", trigger: "a creature tries to charm self", automation: [{ type: "note", text: "Beguiling Defenses (engine hook)" }] });
+    }
     if (level >= 14) {
       actions.push({
         id: "dark-delirium", name: "Dark Delirium", cost: { action: 1 }, recharge: "none", concentration: true, limitedUse: pool("dark_delirium", 1, "shortRest"),
@@ -463,6 +497,9 @@ function build(spec: Spec): Combatant {
       automation: [{ type: "branch", if: "self.hasnt('form-of-dread')", then: [{ type: "target", who: { who: "self" }, effects: [formOn, { type: "tempHp", amount: `1d10+${level}` }] }] }],
     });
     bonusRoutine.unshift("form-of-dread");
+    // Grave Touched (6th): "Once during each of your turns, when you hit a creature with an attack and roll damage against the
+    // creature, you can replace the damage type with necrotic damage" — any attack, not just while in Form of Dread
+    if (level >= 6) rules.push({ rule: "weaponDamageSwap", types: ["necrotic"] });
     if (level >= 10) {
       resistances.push("necrotic");
       resources.necrotic_husk = { max: 1, recharge: "longRest" };
@@ -471,7 +508,12 @@ function build(spec: Spec): Combatant {
   }
 
   if (patron === "undying") {
-    rules.push({ rule: "natureSanctuary", types: ["undead"] }); // Among the Dead
+    rules.push({ rule: "natureSanctuary", types: ["undead"] }); // Among the Dead (the attack/spell-redirect half; see also the "save" case in interpreter.ts)
+    // Among the Dead also teaches the Spare the Dying cantrip for free: an action that stabilizes (not heals) a downed ally
+    actions.push({
+      id: "spare-the-dying", name: "Spare the Dying", cost: { action: 1 }, recharge: "none", isSpell: true, school: "necromancy", spellLevel: 0, usableWhen: { allyHpBelow: 0.5 },
+      automation: [{ type: "target", who: { who: "lowestHpAlly", includeDowned: true }, effects: [{ type: "stabilize" }] }],
+    });
     if (level >= 6) { resources.defy_death = { max: 1, recharge: "longRest" }; rules.push({ rule: "defyDeath", resource: "defy_death" }); }
     if (level >= 14) {
       actions.push({
@@ -482,7 +524,29 @@ function build(spec: Spec): Combatant {
     }
   }
 
-  if (genieType && level >= 6) resistances.push(genieType); // Elemental Gift
+  if (genieType && level >= 6) {
+    resistances.push(genieType); // Elemental Gift (the resistance half)
+    // "...as a bonus action, you can give yourself a flying speed of 30 feet that lasts for 10 minutes, during which you can
+    // hover. You can use this bonus action a number of times equal to your proficiency bonus" — 10 minutes is effectively the
+    // rest of any one fight (100 rounds), so it's modeled as lasting the encounter once triggered
+    actions.push({
+      id: "elemental-gift-fly", name: "Elemental Gift (fly)", cost: { bonus: 1 }, recharge: "none", limitedUse: pool("elemental_gift_fly", pb, "longRest"),
+      automation: [{ type: "branch", if: "self.hasnt('elemental-gift-fly')", then: [
+        { type: "target", who: { who: "self" }, effects: [{ type: "applyEffect", name: "elemental-gift-fly", durationRounds: 100, mods: { grantsFly: true } }] },
+      ] }],
+    });
+    bonusRoutine.push("elemental-gift-fly");
+  }
+  // Limited Wish (14th): "requesting the effect of one spell that is 6th level or lower and has a casting time of 1 action... Once you use this
+  // feature, you can't use it again until you finish 1d4 long rests" — modeled, like this file's other "1d4 long rests" features, as every long
+  // rest; the spell itself is a DM/player choice each time, approximated here as Disintegrate (a reliable, resistance-proof 6th-level nuke)
+  if (genieType && level >= 14 && SPELLS_BY_ID["disintegrate"]?.build) {
+    actions.push({
+      id: "limited-wish", name: "Limited Wish (Disintegrate)", cost: { action: 1 }, recharge: "none", isSpell: true, school: "transmutation", spellLevel: 6,
+      limitedUse: pool("limited_wish", 1, "longRest"),
+      automation: SPELLS_BY_ID["disintegrate"].build({ ...ctx, slotLevel: 6 }),
+    });
+  }
 
   // ---- the spell list itself
   const built = makeCaster({

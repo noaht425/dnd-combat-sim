@@ -73,6 +73,8 @@ type RKind =
   | "vigilantRebuke" // Oath of the Watchers — force damage back at whoever forced a save an ally just beat
   | "soulOfVengeance" // Oath of Vengeance, 15th — a melee attack when the vowed enemy attacks
   | "rebukeTheViolent" // Oath of Redemption — an attacker within range of the paladin takes radiant damage back for hurting someone
+  | "beguilingDefenses" // Archfey warlock, 10th — a charm attempt against the warlock is turned back on whoever tried it
+  | "tombOfLevistus"    // an invocation — entomb in ice for temporary hit points, at a cost
   | "talismanRebuke" // Rebuke of the Talisman — the amulet's wearer is hit: psychic damage to the attacker, and it is pushed away
   | "chainResist"    // Investment of the Chain Master — the familiar takes damage: resistance to it
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
@@ -153,6 +155,8 @@ function classify(r: Action): RKind {
   if (id === "soul-of-vengeance") return "soulOfVengeance";
   if (id === "aura-of-the-guardian") return "divineAllegiance"; // the same mechanic as Divine Allegiance: take an ally's damage in full
   if (id === "rebuke-the-violent") return "rebukeTheViolent";
+  if (id === "beguiling-defenses") return "beguilingDefenses";
+  if (id === "tomb-of-levistus") return "tombOfLevistus";
   if (id === "chain-master-resistance") return "chainResist";
   if (id === "dampen-elements") return "dampenElements";
   if (id === "war-gods-blessing") return "warGodsBlessing";
@@ -941,6 +945,8 @@ export function reactToDamageTaken(
       return;
     }
   }
+  // Tomb of Levistus checks its own reaction independently (it has its own prompt/consume), so it only fires when nothing above already claimed the reaction
+  if (p.amount > 0) tombOfLevistus(state, t, p.amount);
 }
 
 // ------------------------------------------------------- a creature dropped to 0
@@ -1111,6 +1117,23 @@ export function cosmicWoe(state: CombatState, roller: CombatantState, surplus: n
  * deal 1d4 necrotic damage to that creature unless it succeeds on a Constitution saving throw against your spell save DC." Called as a hostile creature's
  * turn begins. (Creatures moving up to the druid mid-turn aren't watched for.)
  */
+/**
+ * Cloak of Flies (an invocation, 5th level): "The aura extends 5 feet from you in every direction... Any other creature that starts its turn in the aura takes poison damage equal to
+ * your Charisma modifier (minimum of 0 damage)." Called as `u`'s turn starts, for every enemy of `u` who is wearing the cloak within 5 feet.
+ */
+export function cloakOfFlies(state: CombatState, u: CombatantState): void {
+  if (!u.alive || u.downed) return;
+  for (const w of state.units.values()) {
+    // "Any OTHER creature that starts its turn in the aura" — the text doesn't spare the warlock's own allies
+    if (w.id === u.id || !w.alive || w.downed) continue;
+    const cloak = w.effects.find((e) => e.name === "cloak-of-flies" && e.sourceId === w.id && e.mods?.auraTick);
+    if (!cloak?.mods?.auraTick) continue;
+    const near = state.distanceFt ? state.distanceFt(w, u) <= 5.001 : u.zone === "melee" && w.zone === "melee";
+    if (!near) continue;
+    applyDamage(state, u, Math.max(0, cloak.mods.auraTick.amount), cloak.mods.auraTick.type, { sourceId: w.id, attackerMagical: true });
+  }
+}
+
 export function haloOfSpores(state: CombatState, mover: CombatantState): void {
   if (state.inReaction || !mover.alive || mover.downed) return;
   for (const u of state.units.values()) {
@@ -1279,12 +1302,15 @@ export function keeperOfSouls(state: CombatState, slain: CombatantState): void {
  * Nature's Sanctuary (Circle of the Land, 14th): "When a beast or plant creature attacks you, that creature must make a Wisdom saving throw against your druid
  * spell save DC. On a failed save, the creature must choose a different target, or the attack automatically misses. On a successful save, the creature is
  * immune to this effect for 24 hours." Called before the attack roll. Returns the creature it turns on instead, "miss" if there is no one else, or undefined
- * if the attack goes ahead.
+ * if the attack goes ahead. The Undying warlock's Among the Dead shares this engine (`rule.types` set to `["undead"]`) but, unlike Nature's Sanctuary, also
+ * triggers against a single-target harmful SPELL ("If an undead targets you directly with an attack or a harmful spell...") — `viaSpell` gates that half,
+ * on only the `rule.types` (Among the Dead) variant; plain Nature's Sanctuary's own text says "attacks you", not spells, so it never engages for one.
  */
-export function natureSanctuary(state: CombatState, attacker: CombatantState, target: CombatantState): CombatantState | "miss" | undefined {
+export function natureSanctuary(state: CombatState, attacker: CombatantState, target: CombatantState, viaSpell?: boolean): CombatantState | "miss" | undefined {
   if (state.inReaction || attacker.side === target.side) return undefined;
   const rule = target.ref.specialRules.find((r) => r.rule === "natureSanctuary");
   if (!rule || rule.rule !== "natureSanctuary") return undefined;
+  if (viaSpell && !rule.types) return undefined;
   const feature = rule.types ? "Among the Dead" : "Nature's Sanctuary"; // the Undying warlock's version is for undead
   if (!isCreatureType(attacker.ref, ...(rule.types ?? ["beast", "plant"]))) return undefined;
   if (attacker.effects.some((e) => e.name === "sanctuary-immune" && e.sourceId === target.id)) return undefined;
@@ -1491,6 +1517,51 @@ export function rebukeTheViolent(state: CombatState, attacker: CombatantState, d
     } finally { state.inReaction = false; }
     return;
   }
+}
+
+/**
+ * Beguiling Defenses (Archfey warlock, 10th): "when a creature attempts to charm you, you can use your reaction to attempt to turn the charm back on that creature. The creature must succeed on a
+ * Wisdom saving throw against your warlock spell save DC or be charmed by you for 1 minute or until the creature takes any damage." The warlock's own immunity to being charmed (also 10th level)
+ * already blocks the attempt outright; this is the strictly-better option a player would take instead of just shrugging it off. Returns whether it intercepted (the original charm never lands either way).
+ */
+export function beguilingDefenses(state: CombatState, caster: CombatantState, warlock: CombatantState): boolean {
+  if (state.inReaction || caster.id === warlock.id) return false;
+  const r = warlock.ref.reactions.find((x) => classify(x) === "beguilingDefenses");
+  if (!r || !ready(state, warlock, r)) return false;
+  const ok = decideReaction(state, warlock, "retaliate", `${caster.name} tries to charm ${warlock.name} — Beguiling Defenses can turn it back on them.`, "Turn it back", "Just shrug it off");
+  if (!ok) return true; // declined the reflect, but the warlock's own immunity still blocks the charm
+  warlock.reactionUsed = true;
+  const dc = 8 + warlock.ref.pb + Math.floor((warlock.ref.abilities.cha - 10) / 2);
+  const save = rollSave(state, caster, "wis", dc, { magical: true, stakes: "control", sourceId: warlock.id, conditions: ["charmed"] });
+  if (!save.passed) {
+    caster.conditions.set("charmed", { expiresRound: state.round + 10, sourceId: warlock.id, endsOnDamage: true });
+    say(state, `${warlock.name} turns the charm back on ${caster.name} (Beguiling Defenses)`, warlock.id);
+  } else {
+    say(state, `${warlock.name} tries to turn the charm back, but ${caster.name} resists (Beguiling Defenses)`, warlock.id);
+  }
+  return true;
+}
+
+/**
+ * Tomb of Levistus (an invocation, 5th level): "As a reaction when you take damage, you can entomb yourself in ice, which melts away at the end of your next turn. You gain 10 temporary hit points
+ * per warlock level, which take as much of the triggering damage as possible. Immediately after you take the damage, you gain vulnerability to fire damage, your speed is reduced to 0, and you are
+ * incapacitated. These effects, including any remaining temporary hit points, all end when the ice melts. Once you use this invocation, you can't use it again until you finish a short or long rest."
+ * Called from `reactToDamageTaken`, after the triggering hit has already come off real hit points (this engine resolves a hit fully before any
+ * post-hit reaction runs, the same as Misty Escape or Hellish Rebuke) — so, as an approximation, the temporary hit points don't retroactively
+ * cover the hit that triggered them; they're a cushion against what comes next before the ice melts.
+ */
+export function tombOfLevistus(state: CombatState, target: CombatantState, amount: number): void {
+  if (state.inReaction || amount <= 0) return;
+  const r = target.ref.reactions.find((x) => classify(x) === "tombOfLevistus");
+  if (!r || !ready(state, target, r)) return;
+  const ok = decideReaction(state, target, "spiritShield", `${target.name} takes ${amount} damage — Tomb of Levistus entombs them in ice for temporary hit points, at the cost of being incapacitated and vulnerable to fire.`, "Entomb in ice", "Stay free");
+  if (!ok) return;
+  consume(target, r);
+  const temp = 10 * Math.max(1, target.ref.level ?? 1);
+  target.tempHp = Math.max(target.tempHp, temp);
+  target.conditions.set("incapacitated", { expiresRound: state.round + 1, sourceId: target.id });
+  target.effects.push({ name: "tomb-of-levistus", expiresRound: state.round + 1, sourceId: target.id, mods: { speedZero: true, vulnerableTypes: ["fire"] } });
+  say(state, `${target.name} entombs themselves in ice (+${temp} temporary hit points, incapacitated, vulnerable to fire)`, target.id);
 }
 
 /**

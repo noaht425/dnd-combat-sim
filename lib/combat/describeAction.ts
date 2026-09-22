@@ -82,6 +82,8 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
     }
     case "heal":
       return `heals ${n.amount}`;
+    case "stabilize":
+      return "stabilizes it (no more death saves, still unconscious)";
     case "tempHp":
       return `${n.amount} temp HP`;
     case "applyCondition": {

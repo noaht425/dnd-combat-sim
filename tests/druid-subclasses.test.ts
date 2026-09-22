@@ -524,6 +524,15 @@ describe("Circle of the Land", () => {
     expect(lost(d2)).toBe(10); // immune to the effect for the rest of the day
   });
 
+  it("Nature's Sanctuary doesn't cover a spell (unlike the Undying warlock's Among the Dead, which shares this engine) — its own text says \"attacks you\", not spells", () => {
+    const d = dru("forest-land-druid", 14);
+    const wolf = foe("wolf", "beast");
+    const s = state(15); // a clean hit; a natural 1 would auto-miss regardless of Nature's Sanctuary
+    put(s, d, wolf);
+    runAutomation([{ type: "attack", bonus: 99, onHit: [{ type: "damage", amount: "5", damageType: "necrotic" }] }], { state: s, source: wolf, scope: [d], last: {}, depth: 0, spell: true });
+    expect(lost(d)).toBe(5);
+  });
+
   it("Nature's Sanctuary works on beasts and plants only", () => {
     const d = dru("forest-land-druid", 14);
     const ogre = foe("ogre", "giant");

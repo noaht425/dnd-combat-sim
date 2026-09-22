@@ -18,6 +18,7 @@ import { SPELLS_BY_ID } from "../lib/sim/spells/catalog";
 import { pactSlotLevel } from "../lib/sim/spells/slots";
 import { preparedCount } from "../lib/sim/spells/prepare";
 import { WARLOCK_BUILDERS } from "../lib/sim/spells/warlockTemplates";
+import { canFly } from "../lib/sim/battle/state";
 import type { Action, AutomationNode, Combatant, CreatureType, DamageType } from "../lib/sim/schema";
 
 const ALL = Object.keys(WARLOCK_BUILDERS);
@@ -379,6 +380,34 @@ describe("The Archfey", () => {
   it("Beguiling Defenses (10th): immune to being charmed", () => {
     expect(makeTemplate("archfey-warlock", 9).conditionImmunities).not.toContain("charmed");
     expect(makeTemplate("archfey-warlock", 10).conditionImmunities).toContain("charmed");
+  });
+
+  it("Beguiling Defenses: a reaction can turn a charm attempt back on whoever tried it — a failed Wisdom save charms them instead", () => {
+    const w = wlk("archfey-warlock", 10);
+    const a = foe("a");
+    const s = state(1); // the reflected save always fails
+    put(s, w, a);
+    runAutomation([{ type: "applyCondition", condition: "charmed", durationRounds: 10 }], { state: s, source: a, scope: [w], last: {}, depth: 0 });
+    expect(hasCond(w, "charmed")).toBe(false); // the warlock's own immunity holds either way
+    expect(hasCond(a, "charmed")).toBe(true); // turned back on the caster
+    expect(w.reactionUsed).toBe(true);
+  });
+
+  it("...a successful save just shrugs it off, and it never triggers below 10th level", () => {
+    const w = wlk("archfey-warlock", 10);
+    const a = foe("a");
+    const s = state(20); // the reflected save always succeeds
+    put(s, w, a);
+    runAutomation([{ type: "applyCondition", condition: "charmed", durationRounds: 10 }], { state: s, source: a, scope: [w], last: {}, depth: 0 });
+    expect(hasCond(w, "charmed")).toBe(false);
+    expect(hasCond(a, "charmed")).toBe(false);
+    expect(w.reactionUsed).toBe(true);
+    const w9 = wlk("archfey-warlock", 9, "-w9");
+    const a9 = foe("a9");
+    const s9 = state(1);
+    put(s9, w9, a9);
+    runAutomation([{ type: "applyCondition", condition: "charmed", durationRounds: 10 }], { state: s9, source: a9, scope: [w9], last: {}, depth: 0 });
+    expect(hasCond(w9, "charmed")).toBe(true); // no immunity, and no reaction, below 10th
   });
 
   it("Dark Delirium (14th): a creature that fails a Wisdom save is lost in the illusion until it takes damage, and the warlock concentrates", () => {
@@ -759,6 +788,18 @@ describe("The Undead", () => {
     expect(dealt(5, true) - dealt(5, false)).toBe(0);
   });
 
+  it("Grave Touched (6th): a hit's damage can become necrotic to beat a resistance — once a turn, and not gated on Form of Dread", () => {
+    const resistantToForce = (level: number) => {
+      const w = wlk("undead-warlock", level);
+      const a = foe("a", undefined, {}, { resistances: ["force"] });
+      const { s } = arena(15, w, a);
+      act(s, w, "attack"); // Eldritch Blast — two beams from 5th, force damage
+      return lost(a);
+    };
+    expect(resistantToForce(5)).toBe(2 * 7); // no Grave Touched yet: both beams resisted (1d10+4 = 14, halved to 7)
+    expect(resistantToForce(6)).toBe(14 + 7); // the first beam becomes necrotic (full 14), the second stays force (resisted) — once a turn
+  });
+
   it("Necrotic Husk (10th): dropped to 0 hit points a reaction leaves the warlock at 1 and burns every foe within 30 feet — 2d10 + the level, no save — once", () => {
     const w = wlk("undead-warlock", 10);
     const a = foe("a");
@@ -792,6 +833,58 @@ describe("The Undying", () => {
     const { s: s2 } = arena(5, w2, orc);
     swing(s2, orc, w2, 99, "20");
     expect(lost(w2)).toBe(20);
+  });
+
+  it("Among the Dead also covers a single-target harmful SPELL, not just an attack — but not an area one", () => {
+    const w = wlk("undying-warlock", 5);
+    const zombie = foe("z", "undead");
+    const s = state(1); // the Wisdom save always fails
+    put(s, w, zombie);
+    // a single-target save-based spell: forced onto exactly one scope, as a "target" node with one creature would leave it
+    runAutomation(
+      [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "save", ability: "wis", dc: 15, onFail: [{ type: "damage", amount: "20", damageType: "necrotic" }] }] }],
+      { state: s, source: zombie, scope: [], last: {}, depth: 0, spell: true, forceScope: [w] },
+    );
+    expect(lost(w)).toBe(0); // no other ally to turn on: the zombie wastes the spell
+    // an area spell (more than one creature caught) is explicitly exempt in the printed text
+    const w2 = wlk("undying-warlock", 5, "-w2");
+    const s2 = state(1);
+    put(s2, w2, w, zombie);
+    runAutomation(
+      [{ type: "target", who: { who: "aiChoice" }, effects: [{ type: "save", ability: "wis", dc: 15, onFail: [{ type: "damage", amount: "20", damageType: "necrotic" }] }] }],
+      { state: s2, source: zombie, scope: [], last: {}, depth: 0, spell: true, forceScope: [w, w2] },
+    );
+    expect(lost(w)).toBe(20);
+    expect(lost(w2)).toBe(20);
+  });
+
+  it("...and a single-target spell ATTACK roll too (Nature's Sanctuary, which shares this engine, never covers spells — see druid-subclasses.test.ts)", () => {
+    const w = wlk("undying-warlock", 5);
+    const zombie = foe("z", "undead");
+    const s = state(2); // a hit (bonus 99 overwhelms the target's AC) that isn't a natural 1 — that would auto-miss regardless of Among the Dead
+    put(s, w, zombie);
+    runAutomation([{ type: "attack", bonus: 99, onHit: [{ type: "damage", amount: "20", damageType: "necrotic" }] }], { state: s, source: zombie, scope: [w], last: {}, depth: 0, spell: true });
+    expect(lost(w)).toBe(0);
+  });
+
+  it("Spare the Dying (1st, taught for free by Among the Dead): an action that stabilizes a downed ally — no hit points restored", () => {
+    const w = wlk("undying-warlock", 1);
+    const ally = fighter(5, "-a");
+    const s = state();
+    put(s, w, ally, foe("f"));
+    expect(actionAvailable(s, w, action(w, "spare-the-dying"))).toBe(false); // no one is even hurt
+    ally.hp = 0;
+    ally.downed = true;
+    expect(actionAvailable(s, w, action(w, "spare-the-dying"))).toBe(true);
+    act(s, w, "spare-the-dying");
+    expect(ally.stable).toBe(true);
+    expect(ally.hp).toBe(0);
+    // it targets the lowest-hp ally regardless of whether they're actually downed — running it on one who isn't is simply a no-op
+    ally.downed = false;
+    ally.stable = false;
+    ally.hp = 1;
+    act(s, w, "spare-the-dying");
+    expect(ally.stable).toBe(false);
   });
 
   it("Defy Death (6th): a successful death saving throw restores 1d8 + the Constitution modifier hit points, once a long rest", () => {
@@ -843,6 +936,131 @@ describe("The Genie", () => {
       expect(makeTemplate(`${kind}-genie-warlock`, 5).resistances, kind).not.toContain(type);
       expect(makeTemplate(`${kind}-genie-warlock`, 6).resistances, kind).toContain(type);
     }
+  });
+
+  it("Elemental Gift: ...and, as a bonus action, a 30ft flying speed — proficiency-bonus times a long rest", () => {
+    const w = wlk("djinni-genie-warlock", 6);
+    const s = state();
+    put(s, w, foe("f"));
+    expect(canFly(w)).toBe(false);
+    expect(res(w, "elemental_gift_fly")).toBe(3); // proficiency bonus at 6th
+    cast(s, w, "elemental-gift-fly");
+    expect(canFly(w)).toBe(true);
+    expect(res(w, "elemental_gift_fly")).toBe(2);
+    expect(actionAvailable(s, w, action(w, "elemental-gift-fly"))).toBe(false); // already flying
+    expect(makeTemplate("djinni-genie-warlock", 5).actions.some((a) => a.id === "elemental-gift-fly")).toBe(false);
+  });
+
+  it("Limited Wish (14th): once every long rest, an action that casts a 6th-level-or-lower spell with a 1-action casting time and no slot (Disintegrate here)", () => {
+    const w = wlk("efreeti-genie-warlock", 14);
+    const a = foe("a");
+    const { s } = arena(1, w, a); // the Dexterity save always fails
+    const slots = res(w, "pactSlot");
+    cast(s, w, "limited-wish");
+    expect(res(w, "pactSlot")).toBe(slots); // no slot spent
+    expect(lost(a)).toBe(100); // 10d6 (rigged to max) + 40 force damage
+    expect(actionAvailable(s, w, action(w, "limited-wish"))).toBe(false);
+    expect(makeTemplate("efreeti-genie-warlock", 13).actions.some((a2) => a2.id === "limited-wish")).toBe(false);
+  });
+});
+
+describe("Tomb of Levistus and Cloak of Flies (invocations, 5th level — reachable on the Talisman build's 7th and 8th picks)", () => {
+  it("Tomb of Levistus: a reaction to taking damage — 10 temporary hit points a warlock level, incapacitated, speed 0, vulnerable to fire until the ice melts", () => {
+    // the Great Old One (unlike the Fiend or the Efreeti/Dao genies) has no fire resistance to cancel the vulnerability out
+    const w = wlk("great-old-one-warlock-talisman", 15);
+    const a = foe("a");
+    const { s } = arena(15, w, a);
+    w.resources.set("pactSlot", 0); // no Hellish Rebuke competing for the reaction
+    w.resources.set("entropic_ward", 0); // ...nor Entropic Ward (it fires on the attack roll itself, before any damage lands)
+    swing(s, a, w, 99, "5");
+    expect(lost(w)).toBe(5); // the triggering hit itself isn't retroactively absorbed
+    expect(w.tempHp).toBe(10 * 15);
+    expect(hasCond(w, "incapacitated")).toBe(true);
+    expect(hasEffect(w, "tomb-of-levistus")).toBe(true);
+    expect(w.reactionUsed).toBe(true);
+    const tempBefore = w.tempHp;
+    applyDamage(s, w, 10, "fire", { sourceId: a.id });
+    expect(tempBefore - w.tempHp).toBe(20); // vulnerable: doubled — 20 taken off the temporary hit points, real hp untouched
+    expect(lost(w)).toBe(5);
+    expect(res(w, "tomb_of_levistus")).toBe(0);
+  });
+
+  it("...once a short or long rest, and not present before 5th level on that build", () => {
+    const w = wlk("fiend-warlock-talisman", 15);
+    const a = foe("a");
+    const { s } = arena(15, w, a);
+    w.resources.set("pactSlot", 0);
+    swing(s, a, w, 99, "5");
+    expect(w.tempHp).toBe(150);
+    w.tempHp = 0; // clear the cushion to isolate the second hit
+    w.reactionUsed = false;
+    const before = lost(w);
+    swing(s, a, w, 99, "5"); // no charges left
+    expect(lost(w) - before).toBe(5); // a plain hit — no more temp HP, no more incapacitation
+    expect(w.tempHp).toBe(0);
+    expect(makeTemplate("fiend-warlock-talisman", 14).reactions.some((r) => r.id === "tomb-of-levistus")).toBe(false);
+  });
+
+  it("Cloak of Flies: a bonus-action aura — any OTHER creature, ally or foe, that starts its turn beside the warlock takes Charisma-modifier poison damage", async () => {
+    const { startOfTurn } = await import("../lib/sim/engine/loop");
+    const w = wlk("fiend-warlock-talisman", 18);
+    const a = foe("a");
+    const ally = fighter(18, "-a2");
+    const s = state();
+    put(s, w, a, ally);
+    w.zone = a.zone = ally.zone = "melee";
+    expect(makeTemplate("fiend-warlock-talisman", 17).actions.some((act2) => act2.id === "cloak-of-flies")).toBe(false);
+    cast(s, w, "cloak-of-flies");
+    expect(hasEffect(w, "cloak-of-flies")).toBe(true);
+    startOfTurn(s, a);
+    expect(lost(a)).toBe(5); // Charisma modifier at 18th level (proficiency bonus +6, so Charisma 20: +5)
+    startOfTurn(s, ally);
+    expect(lost(ally)).toBe(5); // the text doesn't spare the warlock's own side
+    startOfTurn(s, w);
+    expect(lost(w)).toBe(0); // never itself
+    expect(res(w, "cloak_of_flies")).toBe(0); // once a short or long rest
+  });
+
+  it("...only within 5 feet, and only while it's up", async () => {
+    const { startOfTurn } = await import("../lib/sim/engine/loop");
+    const w = wlk("fiend-warlock-talisman", 18);
+    const far = foe("far");
+    const s = state();
+    put(s, w, far);
+    w.zone = "melee";
+    far.zone = "ranged"; // more than 5 feet away
+    cast(s, w, "cloak-of-flies");
+    startOfTurn(s, far);
+    expect(lost(far)).toBe(0);
+    far.zone = "melee";
+    startOfTurn(s, far);
+    expect(lost(far)).toBe(5);
+  });
+});
+
+describe("Eldritch Spear (an invocation): Eldritch Blast's range becomes 300 feet, past the shared 120ft long-range-disadvantage threshold", () => {
+  it("an attack node carries its own long-range threshold through the battle seam", async () => {
+    const { attackModsFor } = await import("../lib/sim/battle/ai");
+    const { makeGrid } = await import("../lib/sim/battle/grid");
+    const rogue = fighter(5);
+    const far = foe("f");
+    const bs = { grid: makeGrid(40, 40), units: new Map([[rogue.id, rogue], [far.id, far]]), pos: new Map([[rogue.id, { x: 0, y: 0 }], [far.id, { x: 28, y: 0 }]]) } as never;
+    const mods = attackModsFor(bs, rogue);
+    expect(mods(far, { ranged: true }).disadvantage).toBe(true); // 140 feet: past the normal 120ft
+    expect(mods(far, { ranged: true, longRangeFt: 300 }).disadvantage).toBeUndefined(); // Eldritch Spear's 300ft
+  });
+
+  it("the interpreter reads an attack node's longRangeFt and passes it to the battle seam", () => {
+    const w = wlk("fiend-warlock", 5);
+    const a = foe("a");
+    const s = state();
+    put(s, w, a);
+    let seen: { longRangeFt?: number } | undefined;
+    runAutomation(
+      [{ type: "attack", bonus: 99, longRangeFt: 300, onHit: [{ type: "damage", amount: "5", damageType: "force" }] } as AutomationNode],
+      { state: s, source: w, scope: [a], last: {}, depth: 0, attackMods: (_t, info) => { seen = info; return {}; } },
+    );
+    expect(seen?.longRangeFt).toBe(300);
   });
 });
 

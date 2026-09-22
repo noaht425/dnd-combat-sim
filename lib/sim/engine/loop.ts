@@ -9,7 +9,7 @@ import { takeLairAction, takeLegendaryActions, takeMonsterTurn, takePcTurn } fro
 import { fireEncounterStartTraits, runAutomation } from "./interpreter";
 import { chooseFocusTarget } from "./score";
 import { REVERTS_ON_SUMMONER_DEATH } from "./minions";
-import { haloOfSpores, talismanBoost } from "./reactions";
+import { cloakOfFlies, haloOfSpores, talismanBoost } from "./reactions";
 import { paladinEndOfTurn, paladinStartOfTurn } from "./paladin";
 import { isCreatureType } from "./creatureType";
 import {
@@ -223,6 +223,7 @@ export function startOfTurn(state: CombatState, u: CombatantState): void {
   if (u.zeroHpRaging && u.hp <= 0 && u.alive) rollDeathSave(state, u); // Rage Beyond Death still makes death saves
   paladinStartOfTurn(state, u); // an enemy paladin's aura (Aura of Conquest, Holy Nimbus, Dread Lord, Avenging Angel)
   haloOfSpores(state, u); // a Spores druid's reaction as a creature starts its turn beside them
+  cloakOfFlies(state, u); // a warlock's Cloak of Flies invocation stinging nearby foes
   // Absorb Elements resistance lasts "until the start of your next turn"
   if (u.absorbElements && state.round >= u.absorbElements.untilRound) u.absorbElements = undefined;
 

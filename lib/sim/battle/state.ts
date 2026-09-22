@@ -152,8 +152,10 @@ export function unitReachFt(u: CombatantState): number {
 export const speedFt = (u: CombatantState): number =>
   Math.max(0, (u.ref.speeds?.walk ?? u.ref.speeds?.fly ?? 30) + u.effects.reduce((n, e) => n + (e.mods?.speedBonusFt ?? 0), 0)); // (a speed can be cut to nothing, never below it)
 
-/** does this unit have a flying speed? (it ignores difficult terrain + ground hazards) */
-export const canFly = (u: CombatantState): boolean => (u.ref.speeds?.fly ?? 0) > 0;
+/** does this unit have a flying speed? (it ignores difficult terrain + ground hazards) — including a
+ *  temporary grant (Elemental Gift) even over a stat block with no fly speed at all */
+export const canFly = (u: CombatantState): boolean =>
+  (u.ref.speeds?.fly ?? 0) > 0 || u.effects.some((e) => e.mods?.grantsFly);
 
 /** min edge-to-edge feet from `u` to any living enemy */
 export function nearestEnemyFt(state: BattleState, u: CombatantState): number {

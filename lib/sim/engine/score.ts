@@ -194,6 +194,8 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
           const perHit = avgDice(n.mods.extraDamageOnHit.amount) ?? 0;
           damage += pMul * perHit * (n.oneShot ? 0.7 : 2.5);
         }
+      } else if (n.type === "stabilize") {
+        if (t.downed && t.alive) heal += pMul * 5; // no hit points back, but it stops the death saves (Spare the Dying)
       } else if (n.type === "heal") {
         const amt = avgDice(n.amount) ?? 0;
         const missing = Math.max(0, t.maxHp - t.hp);

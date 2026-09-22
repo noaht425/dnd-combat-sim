@@ -765,6 +765,16 @@ export function applyDamage(
     }
   }
 
+  // Grave Touched (Undead warlock, 6th): "once during each of your turns... you can replace the damage type with necrotic damage" — used the same way, to get past a resistance or immunity
+  if (opts.viaAttack && src && !opts.ignoreResistances) {
+    const swap = src.ref.specialRules.find((r) => r.rule === "weaponDamageSwap");
+    const blocked = (t: DamageType) => ref.immunities.includes(t) || ref.resistances.includes(t) || target.effects.some((e) => e.mods?.resistTypes?.includes(t));
+    if (swap && swap.rule === "weaponDamageSwap" && blocked(type)) {
+      const alt = swap.types.find((t) => t !== type && !blocked(t)) ?? swap.types[0];
+      if (alt && alt !== type && claimOncePerTurn(state, src, "weapon-damage-swap")) { say(state, `${src.name} lets the wound fester (${type} -> ${alt})`, src.id); type = alt; }
+    }
+  }
+
   if (ref.immunities.includes(type)) return 0;
 
   if (!opts.ignoreResistances) {
@@ -796,7 +806,7 @@ export function applyDamage(
     }
   }
   // vulnerability holds even when resistance is ignored (Inescapable Destruction, Elemental Adept); Path to the Grave is vulnerability to all of that damage
-  if (ref.vulnerabilities.includes(type)) dmg *= 2;
+  if (ref.vulnerabilities.includes(type) || target.effects.some((e) => e.mods?.vulnerableTypes?.includes(type))) dmg *= 2;
   if (opts.doubled) dmg *= 2;
 
   dmg = Math.max(0, Math.floor(dmg));

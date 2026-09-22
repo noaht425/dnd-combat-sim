@@ -186,6 +186,11 @@ export const effectModsSchema = z.object({
   denyAdvantageToAttackers: z.boolean().optional(),
   /** extra walking speed in feet while the effect lasts (an elk totem's +15, a gloom stalker's first turn) */
   speedBonusFt: z.number().int().optional(),
+  /** the holder can fly (and hover) while this lasts, whatever its stat block says (Elemental Gift) */
+  grantsFly: z.boolean().optional(),
+  /** creatures other than the source that start their turn within `rangeFt` (default 5) of the source holding this take this flat
+   *  damage — not a dice roll (Cloak of Flies: poison damage equal to the warlock's Charisma modifier) */
+  auraTick: z.object({ amount: z.number().int(), type: damageTypeSchema, rangeFt: z.number().int().optional() }).optional(),
   /** a mark on the holder: whenever the creature that applied this effect hits the holder with an attack, the holder takes this extra
    *  damage (Slayer's Prey, Planar Warrior); `oncePerTurn` = at most once each turn */
   extraDamageWhenHitBySource: z.object({ amount: diceSchema, damageType: damageTypeSchema, oncePerTurn: z.boolean().optional() }).optional(),
@@ -197,6 +202,8 @@ export const effectModsSchema = z.object({
   acBonusAgainstSource: z.number().int().optional(),
   /** temporary resistance to these damage types while the effect lasts (Rage: bludgeoning / piercing / slashing) */
   resistTypes: z.array(damageTypeSchema).optional(),
+  /** temporary vulnerability to these damage types while the effect lasts (Tomb of Levistus: fire) */
+  vulnerableTypes: z.array(damageTypeSchema).optional(),
   /** advantage on saving throws with these abilities (Rage: Strength) */
   saveAdvantageOn: z.array(abilitySchema).optional(),
   /** creatures of these types have disadvantage on attack rolls against the holder and can't charm or frighten it (Protection from Evil and Good) */
@@ -249,10 +256,11 @@ export const saveEndsSchema = z.object({
 export type AutomationNode =
   | { type: "note"; text: string }
   | { type: "target"; who: TargetSpec; effects: AutomationNode[]; filter?: TargetFilter }
-  | { type: "attack"; bonus: number | string; adv?: AdvMode; critRange?: number; onHit: AutomationNode[]; onMiss?: AutomationNode[] }
+  | { type: "attack"; bonus: number | string; adv?: AdvMode; critRange?: number; longRangeFt?: number; onHit: AutomationNode[]; onMiss?: AutomationNode[] }
   | { type: "save"; ability: Ability; dc: number | string; adv?: AdvMode; onFail: AutomationNode[]; onSuccess?: AutomationNode[] }
   | { type: "damage"; amount: string; damageType: DamageType; half?: boolean; ignoreResistances?: boolean; diceMultiplier?: number; requiresSneakAttack?: boolean; weaponDice?: boolean; oncePerTurn?: string }
   | { type: "heal"; amount: string; oncePerTurn?: string }
+  | { type: "stabilize" } // Spare the Dying: a downed creature stops making death saves, without healing it
   /** `perAlly`: instead of `amount`, `each` temp HP for every other living ally within 30 ft (up to `max` of them) — Call the Hunt */
   | { type: "tempHp"; amount: string; perAlly?: { each: number; max: number } }
   | { type: "applyCondition"; condition: Condition; durationRounds?: number; saveEnds?: z.infer<typeof saveEndsSchema>; endsOnDamage?: boolean }
@@ -327,6 +335,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       bonus: z.union([z.number().int(), exprSchema]),
       adv: advModeSchema.optional(),
       critRange: z.number().int().min(2).max(20).optional(),
+      /** overrides the normal 120ft long-range-disadvantage threshold for this attack roll only (Eldritch Spear: 300ft) */
+      longRangeFt: z.number().int().optional(),
       onHit: z.array(automationNodeSchema),
       onMiss: z.array(automationNodeSchema).optional(),
     }),
@@ -392,6 +402,7 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
       else: z.array(automationNodeSchema).optional(),
     }),
     z.object({ type: z.literal("spendResource"), resource: z.string(), amount: z.number().int().optional(), from: z.literal("party").optional() }),
+    z.object({ type: z.literal("stabilize") }),
     z.object({ type: z.literal("restoreSlot") }),
     z.object({ type: z.literal("arcaneWard"), maxHp: z.number().int().positive(), slotLevel: z.number().int().min(1).max(9) }),
     z.object({ type: z.literal("regainSlot"), below: z.number().int().min(2).max(9) }),
@@ -564,6 +575,9 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("grimHarvest") }),
   // Awakened Spellbook (Scribes): a spell you cast with a slot can swap its damage type for one of these when the target resists or is immune to it
   z.object({ rule: z.literal("spellbookSwap"), types: z.array(damageTypeSchema) }),
+  // Grave Touched (Undead warlock, 6th): "once during each of your turns, when you hit a creature with an attack and roll damage, you can replace the damage type with necrotic damage" —
+  // built to fire automatically when the roll would otherwise be resisted or blocked, the same way Awakened Spellbook does for a spell
+  z.object({ rule: z.literal("weaponDamageSwap"), types: z.array(damageTypeSchema) }),
   // One with the Word (Scribes, 14th): once a day, damage that would drop you to 0 hit points is negated — paid for with spell slots (see the rule's handler)
   z.object({ rule: z.literal("negateLethalDamage"), resource: z.string() }),
   // Tides of Chaos: the first d20 roll of the fight (an attack roll or a save) is made with advantage, spending the use

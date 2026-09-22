@@ -9,6 +9,7 @@ import { creatureTypeOf, crValue, isCreatureType, matchesFilter } from "./creatu
 import { BEAST_FORMS, shapedAs } from "./beastForms";
 import { heldDie, inspireDamage } from "./bardic";
 import { auraBlocks } from "./paladin";
+import { beguilingDefenses } from "./reactions";
 import { unbreakableMajesty, instinctiveCharm, natureSanctuary, reactToDeath, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, soulOfVengeance, violentAttraction } from "./reactions";
 import {
   CombatantState,
@@ -75,12 +76,16 @@ interface RunCtx {
   geoTargets?: (node: Extract<AutomationNode, { type: "target" }>, source: CombatantState) => CombatantState[] | null;
   /** battle mode only: per-target attack tweaks (cover -> +AC, long range -> disadvantage,
    *  a melee routine whose target is out of reach -> the swing simply doesn't land) */
-  attackMods?: (target: CombatantState, info?: { ranged?: boolean }) => { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean; soloDuel?: boolean };
+  attackMods?: (target: CombatantState, info?: { ranged?: boolean; longRangeFt?: number }) => { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean; soloDuel?: boolean };
   /** the action being run makes RANGED attacks (Action.ranged) */
   ranged?: boolean;
   /** running count of attack rolls this action made, so `runAction` can say
    *  "misses" / "can't reach" instead of a flat "(no effect)" */
   attackTally?: { rolled: number; hit: number; unreachable: boolean };
+  /** false while resolving a "target" node that caught more than one creature — an area effect, which
+   *  Among the Dead / Nature's Sanctuary don't apply against ("an undead needn't make the save when it
+   *  includes you in an area effect"). true (or unset, at the top of an action) for a single target. */
+  singleTarget?: boolean;
 }
 
 /** Options passed to `runAction`; `geo` seeds the battle-mode seams onto the root ctx. */
@@ -553,7 +558,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         const saveLog = multi ? (ctx.saveLog ?? new Map<string, boolean>()) : ctx.saveLog;
         for (const t of targets) {
           runAutomation(node.effects, {
-            ...ctx, scope: [t], forceScope: undefined, sharedRolls, saveLog,
+            ...ctx, scope: [t], forceScope: undefined, sharedRolls, saveLog, singleTarget: !multi,
             depth: ctx.depth + 1, last: { ...ctx.last },
           });
         }
@@ -566,8 +571,9 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         // Instinctive Charm: an attacker that fails the Wisdom save must swing at another creature instead
         const diverted = !ctx.spell ? instinctiveCharm(state, source, t) : undefined;
         if (diverted) t = diverted;
-        // Nature's Sanctuary: a beast or plant that fails the Wisdom save attacks someone else, or misses
-        const hesitates = !ctx.spell ? natureSanctuary(state, source, t) : undefined;
+        // Nature's Sanctuary / Among the Dead: a beast, plant or (against an Undying warlock) undead attacker that
+        // fails the Wisdom save attacks someone else, or misses — Among the Dead alone also covers a spell attack roll
+        const hesitates = natureSanctuary(state, source, t, ctx.spell);
         if (hesitates === "miss") { if (ctx.attackTally) ctx.attackTally.rolled++; break; }
         if (hesitates) t = hesitates;
         // Unbreakable Majesty (Glamour): the first attack against the bard each turn needs a Charisma save
@@ -580,7 +586,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           source.conditions.delete("invisible");
         }
         const bonus = typeof node.bonus === "number" ? node.bonus : 12;
-        const tweak = ctx.attackMods?.(t, { ranged: ctx.ranged });
+        const tweak = ctx.attackMods?.(t, { ranged: ctx.ranged, longRangeFt: node.longRangeFt });
         if (tweak?.unreachable) {
           if (ctx.attackTally) ctx.attackTally.unreachable = true;
           break; // out of melee reach — the swing never connects
@@ -640,9 +646,14 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
       }
 
       case "save": {
-        const t = ctx.scope[0];
+        let t = ctx.scope[0];
         if (!t) break;
         endInvisibilityOnStrike(source);
+        // Among the Dead (Undying warlock, 1st): a single-target harmful spell forcing a save is the other half of
+        // "an attack or a harmful spell" — an area save (ctx.singleTarget === false) is explicitly exempt in the text
+        const hesitates = ctx.spell && ctx.singleTarget !== false ? natureSanctuary(state, source, t, true) : undefined;
+        if (hesitates === "miss") break;
+        if (hesitates) t = hesitates;
         const dc = typeof node.dc === "number" ? node.dc : 18;
         // the conditions this save is against (Psychic Defenses: advantage vs charmed/frightened)
         const conditions = node.onFail.flatMap((n) => (n.type === "applyCondition" ? [n.condition] : []));
@@ -721,6 +732,13 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         break;
       }
 
+      case "stabilize": {
+        // Spare the Dying: "a creature you touch that has 0 hit points becomes stable" — no healing, just no more death saves
+        const t = ctx.scope[0] ?? source;
+        if (t.downed && t.alive) { t.stable = true; say(state, `${t.name} is stabilised`, source.id); }
+        break;
+      }
+
       case "tempHp": {
         const t = ctx.scope[0] ?? source;
         let temp = rollDamage(state, node.amount);
@@ -735,7 +753,11 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
 
       case "applyCondition": {
         const t = ctx.scope[0];
-        if (!t || t.ref.conditionImmunities.includes(node.condition) || !t.alive) break;
+        if (!t || !t.alive) break;
+        // Beguiling Defenses (Archfey, 10th): the warlock's own flat immunity to being charmed (below) would otherwise silently
+        // swallow the attempt — this has to react to the ATTEMPT itself, so it's checked before that immunity ever gets a say
+        if (node.condition === "charmed" && t.side !== source.side && beguilingDefenses(state, source, t)) break;
+        if (t.ref.conditionImmunities.includes(node.condition)) break;
         if (t.effects.some((e) => e.mods?.immuneConditions?.includes(node.condition))) break; // Mindless Rage
         // Protection from Evil and Good: creatures of the named types can't charm or frighten the warded creature
         if ((node.condition === "charmed" || node.condition === "frightened") && t.side !== source.side) {

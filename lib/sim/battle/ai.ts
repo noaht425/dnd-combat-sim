@@ -359,7 +359,7 @@ export function geoTargetsFor(state: BattleState, u: CombatantState, plan: Battl
 export function attackModsFor(state: BattleState, u: CombatantState, needsMelee = false) {
   const LONG_RANGE_FT = 120;
   const reach = unitReachFt(u);
-  return (target: CombatantState, info?: { ranged?: boolean }): { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean; soloDuel?: boolean } => {
+  return (target: CombatantState, info?: { ranged?: boolean; longRangeFt?: number }): { acBonus?: number; disadvantage?: boolean; unreachable?: boolean; allyAdjacent?: boolean; soloDuel?: boolean } => {
     const me = boxOfUnit(state, u);
     // a ranged attack made with a hostile creature within 5 ft (that isn't incapacitated) is made at disadvantage
     const pinned = !!info?.ranged && [...state.units.values()].some((x) =>
@@ -380,7 +380,7 @@ export function attackModsFor(state: BattleState, u: CombatantState, needsMelee 
     const cover = coverBetween(state.grid, me, tb, blockers);
     return {
       acBonus: coverAcBonus(cover),
-      disadvantage: gap > LONG_RANGE_FT || pinned || undefined,
+      disadvantage: gap > (info?.longRangeFt ?? LONG_RANGE_FT) || pinned || undefined,
       unreachable: needsMelee && gap > reach + 0.001 ? true : undefined,
       allyAdjacent: allyAdjacent || undefined,
       soloDuel: (gap <= 5.001 && !crowded) || undefined,
