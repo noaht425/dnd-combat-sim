@@ -7,14 +7,16 @@
 // here, +2 to ranged attack rolls), Extra Attack (5th; two attacks, never three), Land's Stride, Hide in Plain Sight, Vanish and
 // Feral Senses (non-combat or sight-based; not modeled). A conclave's own spells are "always known" and don't count against the total.
 //
-// Not modeled anywhere: Favored Enemy and Foe Slayer (20th: Wisdom to an attack or damage roll against a favored enemy — the sim's
-// monsters carry no creature type, so there is no way to say which are favored), Natural Explorer / Deft Explorer, Primeval
+// Not modeled anywhere: Favored Enemy's own benefit (advantage on Wisdom (Survival) checks to track it and Intelligence checks to recall
+// information about it — ability checks aren't modeled anywhere in this sim — plus a language), Natural Explorer / Deft Explorer, Primeval
 // Awareness, and other exploration features.
 //
 // Build assumptions the books leave open: a longbow (1d8) and the Archery style; studded leather (AC 12 + Dex); Dex 18 (20 from 17th);
-// Wisdom 16; and each conclave's own optional choices as noted on its builder.
+// Wisdom 16; a favored enemy of undead (`kit().favoredEnemy` — the book leaves the type open, and creature types now exist in this engine,
+// so Foe Slayer (20th: once a turn, the Wisdom modifier added to the damage roll of a hit against that type) is built); and each conclave's
+// own optional choices as noted on its builder.
 
-import type { Action, AutomationNode, Combatant, DamageType, EffectMods } from "../schema";
+import type { Action, AutomationNode, Combatant, CreatureType, DamageType, EffectMods } from "../schema";
 import { drakeFor, feySpiritFor, primalBeastFor, rangerCompanionFor, type PrimalBeastKind } from "../engine/minions";
 import { between, pbFor, score } from "../engine/pcBase";
 import { makeCaster } from "./caster";
@@ -27,18 +29,24 @@ interface Kit {
   dex: number;
   attacks: number;
   dc: number; // spell save DC
+  favoredEnemy: CreatureType; // Favored Enemy (1st): fixed here — see the header. Its only combat payoff is Foe Slayer (20th)
 }
 
 function kit(level: number): Kit {
   const pb = pbFor(level);
-  return { level, pb, dex: pb === 6 ? 5 : 4, attacks: level >= 5 ? 2 : 1, dc: 8 + pb + WIS };
+  return { level, pb, dex: pb === 6 ? 5 : 4, attacks: level >= 5 ? 2 : 1, dc: 8 + pb + WIS, favoredEnemy: "undead" };
 }
 
-/** one longbow shot: +Archery to hit, 1d8 + Dex piercing, then whatever rides on a hit or a miss */
+/** one longbow shot: +Archery to hit, 1d8 + Dex piercing, then whatever rides on a hit or a miss, and (20th) Foe Slayer */
 function shot(k: Kit, onHit: AutomationNode[] = [], onMiss?: AutomationNode[]): AutomationNode {
+  // Foe Slayer (20th): "Once on each of your turns, you can add your Wisdom modifier to the attack roll or the damage
+  // roll of an attack you make against one of your favored enemies" — added to the damage roll here, once a turn
+  const foeSlayer: AutomationNode[] = k.level >= 20 ? [{
+    type: "branch", if: `target.is('${k.favoredEnemy}')`, then: [{ type: "damage", amount: String(WIS), damageType: "piercing", oncePerTurn: "foe-slayer" }],
+  }] : [];
   return {
     type: "attack", bonus: k.pb + k.dex + 2,
-    onHit: [{ type: "damage", amount: `1d8+${k.dex}`, damageType: "piercing", weaponDice: true }, ...onHit],
+    onHit: [{ type: "damage", amount: `1d8+${k.dex}`, damageType: "piercing", weaponDice: true }, ...onHit, ...foeSlayer],
     ...(onMiss ? { onMiss } : {}),
   };
 }

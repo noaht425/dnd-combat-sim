@@ -109,6 +109,35 @@ describe("the Ranger table", () => {
   it("no ranger cantrips of its own: every spell a ranger learns is 1st level or higher", () => {
     expect(RANGER_LEARNED.every((l) => SPELLS_BY_ID[l.spell].level >= 1)).toBe(true);
   });
+
+  it("Foe Slayer (20th): once a turn, the Wisdom modifier is added to a hit's damage against the favored enemy (undead here) — not against anything else, and not before 20th", () => {
+    const undead = (id = "z"): CombatantState => {
+      const base = makeTemplate("gwm-fighter", 5);
+      const u = initCombatant({ ...base, ac: 8, creatureType: "undead" }, "monster", `-${id}`);
+      u.hp = u.maxHp = 1000;
+      return u;
+    };
+    // the Horizon Walker's plain "attack" has no other once-a-turn on-hit riders to isolate Foe Slayer from;
+    // one enemy per fight keeps `aiChoice` targeting unambiguous
+    const s = state(15);
+    const r = ranger("horizon-walker-ranger", 20);
+    const zombie = undead();
+    put(s, r, zombie);
+    act(s, r, "attack"); // two shots (Extra Attack): 2 x (1d8+5) piercing, plus Wisdom (3) once against the favored enemy
+    expect(lost(zombie)).toBe(2 * 13 + 3);
+    const s2 = state(15);
+    const r2 = ranger("horizon-walker-ranger", 20);
+    const orc = foe("o");
+    put(s2, r2, orc);
+    act(s2, r2, "attack");
+    expect(lost(orc)).toBe(2 * 13); // not a favored enemy: no bonus
+    const r19 = ranger("horizon-walker-ranger", 19);
+    const s19 = state(15);
+    const zombie19 = undead("z2");
+    put(s19, r19, zombie19);
+    act(s19, r19, "attack");
+    expect(lost(zombie19)).toBe(2 * 13); // same PB/Dex tier (17th-20th) as 20th, but no Foe Slayer yet
+  });
 });
 
 describe("Hunter (PHB)", () => {
