@@ -67,6 +67,12 @@ type RKind =
   | "mistyEscape"    // Misty Escape — hurt, turn invisible and slip away
   | "guardianCoil"   // Guardian Coil — shave 1d8 off damage near the tentacle
   | "infectious"    // Infectious Inspiration — a die that worked hands another to a friend
+  | "divineAllegiance" // Oath of the Crown — take an ally's damage in full, no reduction possible
+  | "interception"  // the Interception fighting style — soak 1d10 + PB off a nearby ally's damage
+  | "gloriousDefense" // Oath of Glory — armor class up by the die, and a swing back on a miss
+  | "vigilantRebuke" // Oath of the Watchers — force damage back at whoever forced a save an ally just beat
+  | "soulOfVengeance" // Oath of Vengeance, 15th — a melee attack when the vowed enemy attacks
+  | "rebukeTheViolent" // Oath of Redemption — an attacker within range of the paladin takes radiant damage back for hurting someone
   | "talismanRebuke" // Rebuke of the Talisman — the amulet's wearer is hit: psychic damage to the attacker, and it is pushed away
   | "chainResist"    // Investment of the Chain Master — the familiar takes damage: resistance to it
   | "deflectAttack"  // Steel Defender — impose disadvantage on an attack against its summoner / another ally
@@ -140,6 +146,13 @@ function classify(r: Action): RKind {
   if (id === "guardian-coil") return "guardianCoil";
   if (id === "rebuke-of-the-talisman") return "talismanRebuke";
   if (id === "infectious-inspiration") return "infectious";
+  if (id === "divine-allegiance") return "divineAllegiance";
+  if (id === "interception") return "interception";
+  if (id === "glorious-defense") return "gloriousDefense";
+  if (id === "vigilant-rebuke") return "vigilantRebuke";
+  if (id === "soul-of-vengeance") return "soulOfVengeance";
+  if (id === "aura-of-the-guardian") return "divineAllegiance"; // the same mechanic as Divine Allegiance: take an ally's damage in full
+  if (id === "rebuke-the-violent") return "rebukeTheViolent";
   if (id === "chain-master-resistance") return "chainResist";
   if (id === "dampen-elements") return "dampenElements";
   if (id === "war-gods-blessing") return "warGodsBlessing";
@@ -435,6 +448,8 @@ export function reactToIncomingAttack(
   if (p.crit && sentinelAtDeathsDoor(state, t)) return { negated: false, shielded: false, crit: false };
   // Combat Inspiration (Valor): a held Bardic Inspiration die added to armor class as a reaction
   if (!p.crit && inspireAc(state, t, p.hitMargin)) return { negated: true, shielded: false };
+  // Glorious Defense (Glory, 15th): another paladin's Charisma modifier added to the defender's armor class
+  if (!p.crit && gloriousDefense(state, t, p.hitMargin, p.attacker)) return { negated: true, shielded: false };
 
   for (const r of t.ref.reactions) {
     if (!ready(state, t, r)) continue;
@@ -1337,6 +1352,145 @@ export function chainMasterResistance(state: CombatState, familiar: CombatantSta
   const kept = Math.floor(amount / 2);
   say(state, `${w.name} shields ${familiar.name} (resistance, ${amount - kept} less)`, w.id);
   return kept;
+}
+
+/**
+ * Divine Allegiance (Crown, 7th): "When a creature within 5 feet of you takes damage, you can use your reaction to cause yourself to suffer that damage instead of the creature. This feature doesn't
+ * transfer any other effects that the damage might have, and it doesn't prevent damage to yourself from any source but this feature." Returns the amount the paladin has taken instead, or 0.
+ */
+export function divineAllegiance(state: CombatState, target: CombatantState, amount: number): CombatantState | undefined {
+  if (state.inReaction || amount <= 0) return undefined;
+  for (const p of livingAllies(state, target)) {
+    if (p.id === target.id || p.reactionUsed || !canTakeReactions(p) || isIncapacitated(p)) continue;
+    const r = p.ref.reactions.find((x) => classify(x) === "divineAllegiance");
+    if (!r || !ready(state, p, r)) continue;
+    if (state.distanceFt && state.distanceFt(p, target) > 5.001) continue;
+    const ok = decideReaction(state, p, "spiritShield", `${target.name} is about to take ${amount} damage — ${p.name}'s Divine Allegiance can take it instead.`, "Take the damage", "Let it land");
+    if (!ok) continue;
+    p.reactionUsed = true;
+    say(state, `${p.name} steps in and takes ${target.name}'s blow (Divine Allegiance)`, p.id);
+    return p;
+  }
+  return undefined;
+}
+
+/**
+ * The Interception fighting style: "When a creature you can see hits a target, other than you, within 5 feet of you with an attack, you can use your reaction to reduce the damage the target takes
+ * by 1d10 + your proficiency bonus... You must be wielding a shield or a simple or martial weapon to use this reaction." Returns the damage that still lands.
+ */
+export function interceptionReduce(state: CombatState, target: CombatantState, amount: number): number {
+  if (state.inReaction || amount < 4) return amount;
+  for (const p of livingAllies(state, target)) {
+    if (p.id === target.id || p.reactionUsed || !canTakeReactions(p) || isIncapacitated(p)) continue;
+    const r = p.ref.reactions.find((x) => classify(x) === "interception");
+    if (!r || !ready(state, p, r)) continue;
+    if (state.distanceFt && state.distanceFt(p, target) > 5.001) continue;
+    const ok = decideReaction(state, p, "spiritShield", `${target.name} is about to take ${amount} damage — ${p.name}'s Interception can soak some of it.`, "Use Interception", "Let it land");
+    if (!ok) continue;
+    p.reactionUsed = true;
+    const cut = Math.min(amount, state.rng.dice(1, 10) + p.ref.pb);
+    say(state, `${p.name} steps between them (Interception, ${cut} less)`, p.id);
+    return amount - cut;
+  }
+  return amount;
+}
+
+/**
+ * Glorious Defense (Glory, 15th): "When a creature you can see hits you or another creature within 10 feet of you with an attack, you can use your reaction to add your Charisma modifier (minimum of +1)
+ * to the defender's AC against that attack, potentially causing it to miss. If the attack misses, you can then make one weapon attack against the creature that made the attack." Charisma-modifier uses.
+ */
+export function gloriousDefense(state: CombatState, target: CombatantState, hitMargin: number, attacker?: CombatantState): boolean {
+  if (state.inReaction) return false;
+  for (const p of livingAllies(state, target)) {
+    if (!p.reactionUsed && canTakeReactions(p) && !isIncapacitated(p)) {
+      const r = p.ref.reactions.find((x) => classify(x) === "gloriousDefense");
+      if (!r || !ready(state, p, r)) continue;
+      if (state.distanceFt && p.id !== target.id && state.distanceFt(p, target) > 10.001) continue;
+      const bonus = Math.max(1, p.ref.pb === 6 ? 5 : 4);
+      if (hitMargin >= bonus) continue;
+      const ok = decideReaction(state, p, "spiritShield", `An attack hits ${target.name} by ${hitMargin} — ${p.name}'s Glorious Defense (+${bonus} AC) can turn it into a miss.`, "Use Glorious Defense", "Take the hit");
+      if (!ok) continue;
+      consume(p, r);
+      say(state, `${p.name} turns the blow aside (Glorious Defense)`, p.id);
+      // "If the attack misses, you can then make one weapon attack against the creature that made the attack"
+      const swing = attacker && (state.distanceFt ? state.distanceFt(p, attacker) <= 5.001 : attacker.zone === "melee") ? basicSwing(p) : undefined;
+      if (attacker && swing && swing.type === "attack") {
+        state.inReaction = true;
+        try { runAutomation(swing.onHit, { state, source: p, scope: [attacker], last: {}, depth: 0, inAttack: true }); } finally { state.inReaction = false; }
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Vigilant Rebuke (Watchers, 15th): "When you or a creature within 30 feet of you succeeds on an Intelligence, Wisdom, or Charisma saving throw, you can use your reaction to deal 2d8 + your Charisma
+ * modifier force damage to the creature that forced the saving throw."
+ */
+export function vigilantRebuke(state: CombatState, target: CombatantState, forcerId: string | undefined): void {
+  if (state.inReaction || !forcerId) return;
+  const forcer = state.units.get(forcerId);
+  if (!forcer || !forcer.alive || forcer.side === target.side) return;
+  for (const p of livingAllies(state, target)) {
+    if (p.reactionUsed || !canTakeReactions(p) || isIncapacitated(p)) continue;
+    const r = p.ref.reactions.find((x) => classify(x) === "vigilantRebuke");
+    if (!r || !ready(state, p, r)) continue;
+    if (state.distanceFt && p.id !== target.id && state.distanceFt(p, target) > 30.001) continue;
+    consume(p, r);
+    const cha = Math.max(0, p.ref.pb === 6 ? 5 : 4);
+    say(state, `${p.name} rebukes ${forcer.name} for the attempt (Vigilant Rebuke)`, p.id);
+    state.inReaction = true;
+    try { applyDamage(state, forcer, state.rng.dice(2, 8) + cha, "force", { sourceId: p.id, attackerMagical: true }); } finally { state.inReaction = false; }
+    return;
+  }
+}
+
+/**
+ * Soul of Vengeance (Vengeance, 15th): "Whenever a creature affected by your Vow of Enmity makes an attack, you can use your reaction to make a melee weapon attack against that creature if you are
+ * within range." Fires when the vowed enemy takes an action, if it's in the paladin's melee reach.
+ */
+export function soulOfVengeance(state: CombatState, attacker: CombatantState): void {
+  if (state.inReaction) return;
+  for (const p of state.units.values()) {
+    if (!p.alive || p.downed || p.reactionUsed || !canTakeReactions(p) || isIncapacitated(p) || p.side === attacker.side) continue;
+    if (!attacker.effects.some((e) => e.name === "vow-of-enmity" && e.sourceId === p.id)) continue;
+    const r = p.ref.reactions.find((x) => classify(x) === "soulOfVengeance");
+    if (!r || !ready(state, p, r)) continue;
+    const swing = basicSwing(p);
+    if (!swing || swing.type !== "attack") continue;
+    if (state.distanceFt && state.distanceFt(p, attacker) > 5.001) continue;
+    consume(p, r);
+    say(state, `${p.name} lunges at ${attacker.name}, sworn to vengeance (Soul of Vengeance)`, p.id);
+    state.inReaction = true;
+    try { runAutomation(swing.onHit, { state, source: p, scope: [attacker], last: {}, depth: 0, inAttack: true }); } finally { state.inReaction = false; }
+    return;
+  }
+}
+
+/**
+ * Rebuke the Violent (Redemption, 3rd): "When a creature you can see within 30 feet of you hits another creature with an attack, you can use your reaction to force the attacker to make a Wisdom
+ * saving throw. On a failed save, the attacker takes radiant damage equal to the damage it just dealt. On a successful save, it takes half as much damage." `dealt` is the damage that landed.
+ */
+export function rebukeTheViolent(state: CombatState, attacker: CombatantState, dealt: number): void {
+  if (state.inReaction || dealt <= 0) return;
+  for (const p of state.units.values()) {
+    if (!p.alive || p.downed || p.reactionUsed || !canTakeReactions(p) || isIncapacitated(p) || p.side === attacker.side) continue;
+    const r = p.ref.reactions.find((x) => classify(x) === "rebukeTheViolent");
+    if (!r || !ready(state, p, r)) continue;
+    if (state.distanceFt && state.distanceFt(p, attacker) > 30.001) continue;
+    const ok = decideReaction(state, p, "retaliate", `${attacker.name} hit for ${dealt} — ${p.name}'s Rebuke the Violent forces a Wisdom save, or it takes that much radiant damage back.`, "Use Rebuke the Violent", "Let it go");
+    if (!ok) continue;
+    consume(p, r);
+    const dc = 8 + p.ref.pb + Math.max(0, p.ref.pb === 6 ? 5 : 4);
+    say(state, `${p.name} rebukes ${attacker.name} for the violence (Rebuke the Violent)`, p.id);
+    state.inReaction = true;
+    try {
+      const save = rollSave(state, attacker, "wis", dc, { magical: true, stakes: "damage", sourceId: p.id });
+      applyDamage(state, attacker, save.passed ? Math.floor(dealt / 2) : dealt, "radiant", { sourceId: p.id, attackerMagical: true });
+    } finally { state.inReaction = false; }
+    return;
+  }
 }
 
 /**

@@ -8,7 +8,8 @@ import { addFlatBonus, maxOfDice } from "../spells/spellTransforms";
 import { creatureTypeOf, crValue, isCreatureType, matchesFilter } from "./creatureType";
 import { BEAST_FORMS, shapedAs } from "./beastForms";
 import { heldDie, inspireDamage } from "./bardic";
-import { unbreakableMajesty, instinctiveCharm, natureSanctuary, reactToDeath, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, violentAttraction } from "./reactions";
+import { auraBlocks } from "./paladin";
+import { unbreakableMajesty, instinctiveCharm, natureSanctuary, reactToDeath, isSpell, mayCounterspell, opportunist, provokeOpportunityAttacks, reactToAttackResolved, soulOfVengeance, violentAttraction } from "./reactions";
 import {
   CombatantState,
   CombatState,
@@ -100,6 +101,8 @@ export interface RunActionOpts {
   scope?: CombatantState[];
 }
 
+/** the conditions a Cleansing Touch is worth an action to end on a friend */
+const AFFLICTIONS: Condition[] = ["paralyzed", "stunned", "charmed", "frightened", "restrained", "incapacitated", "blinded", "petrified", "poisoned", "prone"];
 const LOCK_CONDITIONS: Condition[] = ["stunned", "paralyzed", "incapacitated", "unconscious", "petrified"];
 const CONTROL_CONDITIONS: Condition[] = ["charmed", "restrained", "transfixed", "frightened", "prone", "blinded", "marked-for-reckoning"];
 
@@ -307,6 +310,12 @@ function evalExpr(expr: string, ctx: RunCtx): boolean {
     [/any_?enemy\.imposes\('([a-z|]+)'\)/i, () => { const conds = RegExp.$1.split("|"); return livingEnemies(st, s).some((e) => conds.some((c) => JSON.stringify(e.ref.actions).includes(`"condition":"${c}"`))); }],
     // an incapacitated creature of a kind (Create Thrall: "an incapacitated humanoid")
     [/any_?enemy\.incapacitated\('([a-z]+)'\)/i, () => livingEnemies(st, s).some((e) => isIncapacitated(e) && isCreatureType(e.ref, RegExp.$1 as never))],
+    // Divine Smite has been used this turn (Inspiring Smite is taken after one)
+    [/self\.smote_?this_?turn/i, () => s.smiteSerial !== undefined && s.smiteSerial === (st.turnSerial ?? 0)],
+    // the creature is at or below half its hit points (Turn the Tide)
+    [/target\.bloodied/i, () => !!tgt && tgt.hp <= tgt.maxHp / 2],
+    [/target\.cr_?below\((\d+)\)/i, () => !!tgt && (crValue(tgt.ref) ?? Infinity) < Number(RegExp.$1)],
+    [/party\.ally_?afflicted/i, () => livingAllies(st, s).some((a) => AFFLICTIONS.some((c) => a.conditions.has(c)))],
     // no enemy carries an effect this creature applied (the mirror of `any_enemy.has`): Unsettling Words is only worth another use on a creature it isn't already on
     [/no_?enemy\.has\('([^']+)'\)/i, () => !livingEnemies(st, s).some((e) => e.effects.some((x) => x.name === RegExp.$1 && x.sourceId === s.id))],
     // a bard with more than N uses of Bardic Inspiration left and an ally (not itself, not a summon) who isn't already carrying a die
@@ -413,6 +422,10 @@ function selectTargets(node: Extract<AutomationNode, { type: "target" }>, ctx: R
         if (m && m.alive && !m.downed && eligible(m)) return [m];
       }
       return [pool[0]];
+    }
+    case "afflictedAlly": {
+      const pool = allies.filter((a) => AFFLICTIONS.some((c) => a.conditions.has(c)));
+      return pool.length ? [pool.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0]] : [];
     }
     case "anotherEnemy": {
       const others = enemies.filter((e) => e.id !== source.lastAttackTargetId).sort((a, b) => a.ac - b.ac || a.hp - b.hp);
@@ -622,6 +635,7 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           }
         } else if (node.onMiss) runAutomation(node.onMiss, next);
         reactToAttackResolved(state, { attacker: source, target: t, hit: res.hit, melee: source.zone === "melee" });
+        soulOfVengeance(state, source); // Oath of Vengeance, 15th
         break;
       }
 
@@ -728,6 +742,8 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
           const st = creatureTypeOf(source.ref);
           if (st && t.effects.some((e) => e.mods?.protectedFromTypes?.includes(st) || e.mods?.noCharmFrightFromTypes?.includes(st))) break;
         }
+        // Aura of Courage / Aura of Devotion: immune to being frightened / charmed while inside the aura
+        if ((node.condition === "frightened" || node.condition === "charmed") && auraBlocks(state, t, node.condition)) break;
         const expires = node.durationRounds && node.durationRounds > 0 ? state.round + node.durationRounds : Infinity;
         t.conditions.set(node.condition, {
           ...(node.endsOnDamage ? { endsOnDamage: true } : {}),
@@ -934,6 +950,42 @@ export function runAutomation(nodes: AutomationNode[], ctx: RunCtx): void {
         t.downed = false;
         say(state, node.type === "destroy" ? `${t.name} is destroyed` : `${t.name} is banished`, source.id);
         if (node.type === "destroy") fireOnDeathTraits(state, t);
+        break;
+      }
+
+      case "divineSmite": {
+        // Divine Smite (Paladin, 2nd): "when you hit a creature with a melee weapon attack, you can expend one spell slot to deal radiant damage to the target, in addition to the weapon's damage. The damage is 2d8 for a
+        // 1st-level spell slot, plus 1d8 for each spell level higher than 1st, to a maximum of 5d8. The damage increases by 1d8 if the target is an undead or a fiend, to a maximum of 6d8."
+        const t = ctx.scope[0];
+        if (!t || !t.alive || ctx.spell || ctx.ranged) break;
+        const levels = [1, 2, 3, 4, 5].filter((l) => (source.resources.get(`slot${l}`) ?? 0) > 0);
+        if (!levels.length) break;
+        const extra = isCreatureType(t.ref, "undead", "fiend") ? 1 : 0;
+        const dice = (l: number) => Math.min(5, l + 1) + extra;
+        const expected = (l: number) => dice(l) * 4.5 * (ctx.crit ? 2 : 1);
+        const finishers = levels.filter((l) => expected(l) >= t.hp + t.tempHp);
+        const slotsLeft = levels.reduce((n, l) => n + (source.resources.get(`slot${l}`) ?? 0), 0);
+        // a paladin's choice: the biggest slot on a critical hit (the dice double), the smallest that finishes the creature, otherwise the smallest — and the very last slot only for those two
+        if (slotsLeft <= 1 && !ctx.crit && !finishers.length) break;
+        const pick = ctx.crit ? levels[levels.length - 1] : finishers.length ? finishers[0] : levels[0];
+        source.resources.set(`slot${pick}`, (source.resources.get(`slot${pick}`) ?? 0) - 1);
+        source.smiteSerial = state.turnSerial ?? 0;
+        say(state, `${source.name} smites with a ${pick}${pick === 1 ? "st" : pick === 2 ? "nd" : pick === 3 ? "rd" : "th"}-level slot (${dice(pick)}d8 radiant)`, source.id);
+        runAutomation([{ type: "damage", amount: `${dice(pick)}d8`, damageType: "radiant" }], { ...ctx, depth: ctx.depth + 1 });
+        break;
+      }
+
+      case "layOnHands": {
+        // Lay on Hands (Paladin, 1st): "a pool of healing power that replenishes when you take a long rest. With that pool, you can restore a total number of hit points equal to your paladin level x 5" — "This feature has no effect on undead and constructs."
+        const t = ctx.scope[0] ?? source;
+        if (!t.alive || isCreatureType(t.ref, "undead", "construct")) break;
+        const pool = source.resources.get("lay_on_hands") ?? 0;
+        const missing = t.downed ? t.maxHp : t.maxHp - t.hp;
+        if (pool <= 0 || missing <= 0) break;
+        const amount = Math.min(pool, Math.max(1, missing));
+        source.resources.set("lay_on_hands", pool - amount);
+        const healed = applyHealing(state, t, amount);
+        say(state, `${source.name} lays on hands: ${t.name} regains ${healed} (${pool - amount} left in the pool)`, source.id);
         break;
       }
 

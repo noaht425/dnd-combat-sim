@@ -11,6 +11,7 @@ import { DRUID_BUILDERS } from "./druidTemplates";
 import { CLERIC_BUILDERS } from "./clericTemplates";
 import { WARLOCK_BUILDERS } from "./warlockTemplates";
 import { BARD_BUILDERS } from "./bardTemplates";
+import { PALADIN_BUILDERS } from "./paladinTemplates";
 import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare } from "./prepare";
@@ -28,35 +29,6 @@ function stub(dmg: string, bonus: number): Combatant["actions"] {
   }];
 }
 
-export function vengeancePaladin(level: number): Combatant {
-  const pb = pbFor(level);
-  const cha = pb === 6 ? 5 : 4;
-  const attacks = level >= 5 ? 2 : 1;
-  const smite = `${Math.min(5, 2 + Math.floor(level / 5))}d8`;
-  return makeCaster({
-    id: "vengeance-paladin", name: `Paladin ${level}`, level, spellClass: "paladin", casterKind: "half", spellAbility: "cha",
-    ac: 20, hp: between(level, 12, 8 * 20 + 18),
-    abilities: { str: score(pb === 6 ? 5 : 4), dex: score(0), con: score(3), int: score(0), wis: score(1), cha: score(cha) },
-    proficientSaves: ["wis", "cha"],
-    saveBonusAll: level >= 6 ? cha : 0, // Aura of Protection (buildParty shares it)
-    focus: "balanced",
-    extraTraits: [{ id: "aura-of-protection", name: "Aura of Protection", trigger: "always", automation: [], text: "+CHA to saves, self + allies" }],
-    extraActions: [{
-      id: "attack", name: "Multiattack + Divine Smite", cost: { action: 1 }, recharge: "none",
-      automation: [{ type: "target", who: { who: "aiChoice" }, effects: [
-        ...Array.from({ length: attacks }, () => ({ type: "attack" as const, bonus: pb + cha, adv: "adv" as const, onHit: [
-          { type: "damage" as const, amount: `1d8+${cha}`, damageType: "slashing" as const },
-          { type: "damage" as const, amount: "1d8", damageType: "radiant" as const },
-        ] })),
-        { type: "branch", if: "self.resource('slot2') > 0", then: [
-          { type: "spendResource", resource: "slot2", amount: 1 },
-          { type: "damage", amount: smite, damageType: "radiant" },
-        ] },
-      ] }],
-    }],
-    keepDistance: false, opener: ["attack"], targetPriority: "lowestHp",
-  });
-}
 
 // ============================================================================ Artificer
 // Every feature below is built from the printed Tasha's Cauldron of Everything text (the Artificer
@@ -973,7 +945,7 @@ export function arcaneTricksterRogue(level: number): Combatant {
 export const CASTER_BUILDERS: Record<string, (level: number) => Combatant> = {
   ...WIZARD_BUILDERS,
   ...CLERIC_BUILDERS,
-  "vengeance-paladin": vengeancePaladin,
+  ...PALADIN_BUILDERS,
   ...RANGER_BUILDERS,
   "battlesmith-artificer": battleSmithArtificer,
   "artillerist-artificer": artilleristArtificer,

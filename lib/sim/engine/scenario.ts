@@ -30,7 +30,6 @@ export interface PartyMemberSpec {
   weapon?: string;
 }
 
-const isPaladin = (p: Combatant): boolean => p.templateId === "vengeance-paladin" || p.templateId === "paladin";
 
 /** Turn specs into schema-valid combatants, with unique ids and the paladin aura shared. */
 export function buildParty(specs: PartyMemberSpec[]): Combatant[] {
@@ -48,13 +47,7 @@ export function buildParty(specs: PartyMemberSpec[]): Combatant[] {
     return c;
   });
 
-  // Aura of Protection: a paladin extends its +CHA save bonus to every ally.
-  const auraBonus = Math.max(0, ...party.map((p) => (isPaladin(p) ? p.saveBonusAll : 0)));
-  if (auraBonus > 0) {
-    for (const p of party) {
-      if (!isPaladin(p)) p.saveBonusAll = Math.max(p.saveBonusAll, auraBonus);
-    }
-  }
+  // Aura of Protection now lives on the paladin as a `paladinAura` special rule, read dynamically by `saveModifierOf` — no static copy needed here.
   // Experimental Elixir (Alchemist): every party member can spend their own action to drink one of the
   // Alchemist's flasks — the stock lives on the Alchemist, the drinking actions on everyone
   const alchemist = party.find((p) => p.templateId === "alchemist-artificer" && (p.level ?? 1) >= 3);

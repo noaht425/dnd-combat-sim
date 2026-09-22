@@ -107,6 +107,8 @@ export const targetSpecSchema = z.discriminatedUnion("who", [
   z.object({ who: z.literal("enemyRank"), rank: z.number().int().min(0) }),
   // an enemy other than the creature this one last attacked (Horde Breaker's second target)
   z.object({ who: z.literal("anotherEnemy") }),
+  // the ally (or the caster) most in need of a condition ended — paralyzed, stunned, charmed, frightened, restrained, ... (Cleansing Touch)
+  z.object({ who: z.literal("afflictedAlly") }),
   z.object({ who: z.literal("chosenEnemies"), upTo: z.number().int().positive(), withinFt: z.number().positive().optional() }),
   z.object({
     who: z.literal("area"),
@@ -172,6 +174,10 @@ export const effectModsSchema = z.object({
   saveMalusDie: diceSchema.optional(),
   /** advantage on saving throws against being given these conditions (Countercharm) */
   saveAdvantageAgainst: z.array(conditionSchema).optional(),
+  /** the holder's attack rolls score a critical hit on this d20 or higher while the effect lasts (Invincible Conqueror: 19) */
+  critRange: z.number().int().min(2).max(20).optional(),
+  /** Living Legend (Glory, 20th): once each turn a missed weapon attack becomes a hit, and a failed saving throw may be rerolled once */
+  livingLegend: z.boolean().optional(),
   /** damage can't make the holder lose concentration while this lasts (Grasping Tentacles: "you can't lose concentration on it from taking damage") */
   noConcentrationLoss: z.boolean().optional(),
   /** a natural d20 lower than this counts as this (Trance of Order: 10) on the holder's attack rolls, saving throws and checks */
@@ -290,6 +296,8 @@ export type AutomationNode =
   | { type: "banish"; crMax: number }
   /** the creature this node's scope is (an ally the source just cast a spell on) spends its reaction to make one weapon attack against an enemy of the source's choice (Voice of Authority) */
   | { type: "allyStrike" }
+  | { type: "divineSmite" }
+  | { type: "layOnHands" }
   /** Inquisitive's Insightful Fighting: `bonus` is the rogue's Wisdom (Insight) modifier, rolled against the
    *  target's Charisma (Deception). On a success the rogue may Sneak Attack that target without advantage. */
   | { type: "insightfulFighting"; bonus: number }
@@ -394,6 +402,8 @@ export const automationNodeSchema: z.ZodType<AutomationNode> = z.lazy(() =>
     z.object({ type: z.literal("destroy"), crMax: z.number().min(0) }),
     z.object({ type: z.literal("banish"), crMax: z.number().min(0) }),
     z.object({ type: z.literal("allyStrike") }),
+    z.object({ type: z.literal("divineSmite") }),
+    z.object({ type: z.literal("layOnHands") }),
     z.object({ type: z.literal("insightfulFighting"), bonus: z.number().int() }),
     z.object({ type: z.literal("spendReaction") }),
     z.object({ type: z.literal("spendBonusAction") }),
@@ -520,6 +530,14 @@ export const specialRuleSchema = z.discriminatedUnion("rule", [
   z.object({ rule: z.literal("natureSanctuary"), types: z.array(creatureTypeSchema).optional() }), // `types` overrides beast/plant (Among the Dead: undead)
   // Gift of the Ever-Living Ones (Pact of the Chain invocation): with the familiar within 100 feet, the dice of any hit points the holder regains count as their maximum
   z.object({ rule: z.literal("familiarGift") }),
+  // A paladin's aura (Aura of Protection, Aura of Courage, an oath's aura): it reaches the paladin and every friendly creature within `rangeFt` while the paladin is conscious. `protection` adds `bonus` to
+  // saving throws; `immunity` makes creatures immune to `conditions` (Courage: frightened, Devotion: charmed); `spellResistance` gives resistance to damage from spells (Ancients);
+  // `conquest` deals `bonus` psychic damage to a frightened enemy that starts its turn in it.
+  // Purity of Spirit (Devotion, 15th): creatures of these types have disadvantage on attack rolls against the holder
+  z.object({ rule: z.literal("disadvantageFromTypes"), types: z.array(creatureTypeSchema) }),
+  // Protective Spirit (Redemption, 15th): ending your turn below half your hit points, while not incapacitated, restores 1d6 + half your paladin level
+  z.object({ rule: z.literal("protectiveSpirit") }),
+  z.object({ rule: z.literal("paladinAura"), kind: z.enum(["protection", "immunity", "spellResistance", "conquest"]), rangeFt: z.number().int().positive(), bonus: z.number().int().optional(), conditions: z.array(conditionSchema).optional() }),
   // Song of Rest (Bard, 2nd): after a short rest, every creature that spent Hit Dice regains an extra die of this many faces
   z.object({ rule: z.literal("songOfRest"), faces: z.number().int() }),
   // Eldritch Mind (invocation): advantage on the Constitution saves that keep a spell going

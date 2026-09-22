@@ -99,6 +99,8 @@ export interface CombatantState {
   onceTurn?: { serial: number; keys: string[] };
   /** has taken a turn in this combat (Assassinate: advantage against creatures that haven't) */
   hasTakenTurn?: boolean;
+  /** the turn (`turnSerial`) this creature last used Divine Smite: Inspiring Smite is only taken after one */
+  smiteSerial?: number;
   /** the creature this one last made an attack roll against (Horde Breaker attacks a different one) */
   lastAttackTargetId?: string;
   /** Fancy Footwork — the creatures it has made a melee attack against this turn (no opportunity attacks from them) */

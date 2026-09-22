@@ -10,6 +10,7 @@ import { fireEncounterStartTraits, runAutomation } from "./interpreter";
 import { chooseFocusTarget } from "./score";
 import { REVERTS_ON_SUMMONER_DEATH } from "./minions";
 import { haloOfSpores, talismanBoost } from "./reactions";
+import { paladinEndOfTurn, paladinStartOfTurn } from "./paladin";
 import { isCreatureType } from "./creatureType";
 import {
   CombatState,
@@ -220,6 +221,7 @@ export function runCombat(monsters: Combatant[], opts: RunOptions = {}): CombatS
 
 export function startOfTurn(state: CombatState, u: CombatantState): void {
   if (u.zeroHpRaging && u.hp <= 0 && u.alive) rollDeathSave(state, u); // Rage Beyond Death still makes death saves
+  paladinStartOfTurn(state, u); // an enemy paladin's aura (Aura of Conquest, Holy Nimbus, Dread Lord, Avenging Angel)
   haloOfSpores(state, u); // a Spores druid's reaction as a creature starts its turn beside them
   // Absorb Elements resistance lasts "until the start of your next turn"
   if (u.absorbElements && state.round >= u.absorbElements.untilRound) u.absorbElements = undefined;
@@ -271,6 +273,7 @@ export function startOfTurn(state: CombatState, u: CombatantState): void {
 }
 
 export function endOfTurn(state: CombatState, u: CombatantState): void {
+  paladinEndOfTurn(state, u); // Protective Spirit (Redemption, 15th)
   // Guardian Spirit (Shepherd, 10th): a beast or fey the druid summoned regains half the druid's level in hit points as its turn ends, while a totem stands
   if (u.summonerId !== undefined && u.alive && u.hp > 0 && isCreatureType(u.ref, "beast", "fey")) {
     const druid = state.units.get(u.summonerId);

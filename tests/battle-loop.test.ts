@@ -120,11 +120,11 @@ describe("battle mode — full grid fight", () => {
   });
 
   it("a whiffed attack routine reads as a miss, and a buff shows what it applied", () => {
-    // level-16 party curbstomps a CR3 owlbear — plenty of monster whiffs + a Bless
+    // level-16 party vs five owlbears — enough rounds for whiffs on both sides, plus a Bless (a stronger, correctly-built paladin now clears fewer owlbears too fast to log a miss)
     let sawMiss = false;
     let sawBuff = false;
     for (const seed of [1, 2, 3, 4, 5, 6]) {
-      const out = runBattle({ party: standardParty(16), enemies: ["owlbear"], seed });
+      const out = runBattle({ party: standardParty(16), enemies: ["owlbear", "owlbear", "owlbear", "owlbear", "owlbear"], seed });
       for (const f of out.frames) {
         if (/\((all miss|misses)\)/.test(f.text ?? "")) sawMiss = true;
         if (/Bless -> .*Bless/.test(f.text ?? "")) sawBuff = true;

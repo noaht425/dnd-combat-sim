@@ -4,8 +4,9 @@
 
 import type { Ability, AdvMode, Condition, DamageType } from "../schema";
 import { abilityMod } from "../math";
-import { creatureTypeOf } from "./creatureType";
+import { creatureTypeOf, isCreatureType } from "./creatureType";
 import { inspireAttack, inspireSave } from "./bardic";
+import { auraSaveBonus, auraResistsSpells } from "./paladin";
 import {
   CombatantState,
   CombatState,
@@ -42,6 +43,10 @@ import {
   slayersCounter,
   beguilingTwist,
   spiritShield,
+  interceptionReduce,
+  divineAllegiance,
+  vigilantRebuke,
+  rebukeTheViolent,
 } from "./reactions";
 
 function combineAdv(...parts: Array<AdvMode | undefined>): AdvMode {
@@ -72,7 +77,8 @@ function rollBonusDice(state: CombatState, dice: string): number {
  *  Critical, Invincible Conqueror, etc.) — 20 if it has no such special rule. */
 export function critRangeFor(u: CombatantState): number {
   const r = u.ref.specialRules.find((x) => x.rule === "critRange");
-  return r && r.rule === "critRange" ? r.value : 20;
+  const base = r && r.rule === "critRange" ? r.value : 20;
+  return u.effects.reduce((n, e) => Math.min(n, e.mods?.critRange ?? 20), base); // (Invincible Conqueror's 19-20 while it lasts)
 }
 
 // ---------------------------------------------------- precognition (d20 replacement)
@@ -296,6 +302,11 @@ function rollAttackImpl(
     const at = creatureTypeOf(attacker.ref);
     if (at && target.effects.some((e) => e.mods?.protectedFromTypes?.includes(at))) adv = combineAdv(adv, "dis");
   }
+  // Purity of Spirit (Devotion, 15th): the listed creature types have disadvantage attacking the paladin
+  {
+    const purity = target.ref.specialRules.find((r) => r.rule === "disadvantageFromTypes");
+    if (purity && purity.rule === "disadvantageFromTypes" && isCreatureType(attacker.ref, ...purity.types)) adv = combineAdv(adv, "dis");
+  }
   // Assassin's Assassinate: advantage against a creature that hasn't taken a turn yet
   if (!target.hasTakenTurn && attacker.ref.specialRules.some((r) => r.rule === "assassinate")) adv = combineAdv(adv, "adv");
   // Ambush / Assassinate — advantage on round 1 vs foes that haven't acted
@@ -421,6 +432,11 @@ function rollAttackImpl(
       say(state, `${attacker.name} turns the miss into a hit with Stroke of Luck`, attacker.id);
     }
   }
+  // Living Legend (Glory, 20th): "once per turn when you miss with a weapon attack, you can turn the attack into a hit"
+  if (!hit && attacker.effects.some((e) => e.mods?.livingLegend) && claimOncePerTurn(state, attacker, "living-legend")) {
+    hit = true;
+    say(state, `${attacker.name} refuses to miss (Living Legend)`, attacker.id);
+  }
   // a hit with a melee attack against a paralyzed or unconscious creature is a
   // critical hit (attacker within 5 ft)
   let finalCrit = crit;
@@ -436,12 +452,13 @@ function rollAttackImpl(
 
 // ------------------------------------------------------------------ save rolls
 
-export function saveModifierOf(u: CombatantState, ability: Ability): number {
+export function saveModifierOf(u: CombatantState, ability: Ability, state?: CombatState): number {
   const base = abilityMod(u.ref.abilities[ability]);
   const prof = u.ref.proficientSaves.includes(ability) ? u.ref.pb : 0;
   let bonus = u.ref.saveBonusAll;
   for (const e of u.effects) if (e.mods?.saveBonusAll) bonus += e.mods.saveBonusAll;
   if (u.concentratingOn) for (const r of u.ref.specialRules) if (r.rule === "durableMagic") bonus += r.bonus; // Durable Magic
+  if (state) bonus += auraSaveBonus(state, u); // Aura of Protection
   return base + prof + bonus;
 }
 
@@ -485,7 +502,10 @@ export function rollSave(
     else if (disrupt === "fail") result = maybeLegendary(state, target, false, opts);
   }
   (state.saveLog ??= []).push({ round: state.round, unitId: target.id, ability, passed: result.passed });
-  if (result.passed) beguilingTwist(state, target, opts.conditions); // a Fey Wanderer turns a shrugged-off charm or fear on someone else
+  if (result.passed) {
+    beguilingTwist(state, target, opts.conditions); // a Fey Wanderer turns a shrugged-off charm or fear on someone else
+    if (["int", "wis", "cha"].includes(ability)) vigilantRebuke(state, target, opts.sourceId); // Oath of the Watchers, 15th
+  }
   return result;
 }
 
@@ -536,7 +556,7 @@ function rollSaveImpl(
   if (adv !== "flat" && restoreBalance(state, target, adv)) adv = "flat";
 
   const stakes = opts.stakes ?? "damage";
-  let mod = saveModifierOf(target, ability) + (opts.bonus ?? 0);
+  let mod = saveModifierOf(target, ability, state) + (opts.bonus ?? 0);
   // Portent: a control effect on either side can be settled by a foretelling die — unless Legendary Resistance would just undo a failure
   const portent = stakes !== "damage" && !(target.side === "monster" && (target.resources.get("__legendaryResistance") ?? 0) > 0)
     ? portentFor(state, target, (f) => f + mod >= dc)
@@ -765,6 +785,7 @@ export function applyDamage(
       heldBack ||
       target.effects.some((e) => e.mods?.resistTypes?.includes(type)) || // Rage, a totem spirit, a storm's resistance
       (!!opts.viaSpell && ref.specialRules.some((r) => r.rule === "spellResistance")) || // Spell Resistance: resistance to the damage of spells
+      (!!opts.viaSpell && auraResistsSpells(state, target)) || // Aura of Warding
 
       (bps && !opts.attackerMagical && ref.resistancesNonmagical.includes(type)) ||
       (bps && !opts.hadAdvantage && ref.specialRules.some((r) => r.rule === "resistNonAdvantageAttacks"));
@@ -793,6 +814,19 @@ export function applyDamage(
     }
   }
 
+  // Emissary of Redemption (Redemption, 20th): resistance to everything, and half of what lands reflects as radiant back at whoever dealt it (approximated: the printed exclusion for a
+  // creature the paladin has attacked, cast a spell on, or damaged since its last turn isn't tracked)
+  if (opts.sourceId && opts.sourceId !== target.id && !opts.redirected && target.effects.some((e) => e.name === "emissary-of-redemption")) {
+    const src = state.units.get(opts.sourceId);
+    if (src && src.alive && src.side !== target.side) {
+      const back = Math.floor(dmg / 2);
+      if (back > 0) {
+        say(state, `${target.name}'s radiance answers ${src.name} (Emissary of Redemption)`, target.id);
+        applyDamage(state, src, back, "radiant", { redirected: true, sourceId: target.id, attackerMagical: true });
+      }
+    }
+  }
+
   // Arcane Ward — the ward takes the damage first; whatever it can't hold lands (temporary hit points and hit points come after)
   if (target.arcaneWard && target.arcaneWard.hp > 0) {
     const soak = Math.min(target.arcaneWard.hp, dmg);
@@ -811,6 +845,13 @@ export function applyDamage(
   if (dmg <= 0) return 0;
   if (opts.viaAttack) dmg = cuttingWordsDamage(state, target, dmg, opts.sourceId); // a Lore bard's reaction against the damage roll
   if (dmg <= 0) return 0;
+  if (opts.viaAttack && opts.sourceId && !opts.redirected) { const src = state.units.get(opts.sourceId); if (src) rebukeTheViolent(state, src, dmg); }
+  if (!opts.redirected) dmg = interceptionReduce(state, target, dmg); // the Interception fighting style
+  if (dmg <= 0) return 0;
+  if (!opts.redirected) {
+    const protector = divineAllegiance(state, target, dmg); // Oath of the Crown, 7th: another paladin takes the blow whole, unreduced
+    if (protector) return applyDamage(state, protector, dmg, type, { ...opts, redirected: true });
+  }
 
   // Bastion of Law — the warded creature expends d8s from its ward, rolling each and reducing the
   // damage by the total (used one at a time until the damage is gone or the ward runs dry)

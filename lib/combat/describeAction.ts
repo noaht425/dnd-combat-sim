@@ -138,6 +138,10 @@ function describeNode(n: AutomationNode, siblings: Action[], depth: number): str
       return `banishes it if its challenge rating is ${n.crMax < 1 && n.crMax > 0 ? "1/2" : n.crMax} or lower`;
     case "allyStrike":
       return "lets the ally make a weapon attack with its reaction";
+    case "divineSmite":
+      return "smites with a spell slot: radiant damage (2d8, +1d8 a slot level, up to 5d8; 1d8 more against undead and fiends)";
+    case "layOnHands":
+      return "restores hit points from the Lay on Hands pool";
     case "wildShape":
       return `assumes the shape of a ${n.form.replace(/-/g, " ")}`;
     case "takeControl":

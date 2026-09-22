@@ -163,6 +163,16 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
           value += give * (a.downed ? 1.4 : frac < 0.3 ? 1 : frac < 0.5 ? 0.4 : 0.1);
         }
         heal += pMul * value;
+      } else if (n.type === "layOnHands") {
+        // Lay on Hands: the paladin's own pool, valued like a heal on whoever it would land on
+        const pool = actor.resources.get("lay_on_hands") ?? 0;
+        const missing = Math.max(0, t.maxHp - t.hp);
+        const amt = Math.min(pool, Math.max(1, missing));
+        const frac = t.hp / Math.max(1, t.maxHp);
+        heal += pMul * amt * (t.downed ? 1.4 : frac < 0.3 ? 1 : frac < 0.5 ? 0.4 : 0.1);
+      } else if (n.type === "divineSmite") {
+        // an optional rider on the same attack roll the weapon damage already scored — credit its expected payoff so a paladin doesn't undervalue Attack against a spell
+        if (t.side !== actor.side) damage += pMul * 8;
       } else if (n.type === "allyStrike") {
         // Voice of Authority: an ally's free weapon attack — a modest bonus on top of the spell that grants it
         if (t.side === actor.side && t.id !== actor.id && !t.reactionUsed) damage += pMul * 7;

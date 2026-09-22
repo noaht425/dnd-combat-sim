@@ -5,7 +5,7 @@ import { buildParty, runScenario, runScenarioOnce, standardParty } from "../lib/
 import { monteCarlo } from "../lib/sim/engine/montecarlo";
 import { MINIONS } from "../lib/sim/engine/minions";
 import { FIXTURES_BY_ID } from "../lib/sim/fixtures";
-import { applyDamage } from "../lib/sim/engine/resolve";
+import { applyDamage, saveModifierOf } from "../lib/sim/engine/resolve";
 import { scoreAction } from "../lib/sim/engine/score";
 import { initCombatant, type CombatState } from "../lib/sim/engine/state";
 import { makeRng } from "../lib/sim/engine/rng";
@@ -25,12 +25,17 @@ describe("Phase 3 — PC templates & scenarios", () => {
     }
   });
 
-  it("buildParty gives unique ids and shares the paladin's aura", () => {
+  it("buildParty gives unique ids; the paladin's Aura of Protection reaches its allies dynamically", () => {
     const party = buildParty(standardParty(20));
     expect(new Set(party.map((p) => p.id)).size).toBe(4);
     const paladin = party.find((p) => p.templateId === "vengeance-paladin")!;
-    expect(paladin.saveBonusAll).toBeGreaterThan(0);
-    for (const p of party) expect(p.saveBonusAll).toBeGreaterThanOrEqual(paladin.saveBonusAll);
+    expect(paladin.specialRules.some((r) => r.rule === "paladinAura" && r.kind === "protection")).toBe(true);
+    const s: CombatState = { round: 1, order: [], activeIdx: 0, units: new Map(), rng: makeRng(1), log: [], maxRounds: 10, ended: false, verbose: false, summonCounter: 0 };
+    const units = party.map((p, i) => initCombatant(p, "party", `-${i}`));
+    for (const u of units) s.units.set(u.id, u);
+    const bonus = saveModifierOf(units[0], "wis", s) - saveModifierOf(units[0], "wis"); // with vs. without the aura
+    expect(bonus).toBeGreaterThan(0);
+    for (const u of units) expect(saveModifierOf(u, "wis", s) - saveModifierOf(u, "wis")).toBeGreaterThanOrEqual(0);
   });
 
   it("runs a scenario to a well-formed distribution", () => {
