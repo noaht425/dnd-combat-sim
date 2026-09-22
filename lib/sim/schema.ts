@@ -139,6 +139,8 @@ export const effectModsSchema = z.object({
   checkAdvantage: advModeSchema.optional(),         // the affected creature's own ability checks
   attackBonusDice: diceSchema.optional(),           // a die rolled and added to each of the holder's attack rolls (Boldness elixir: d4)
   saveBonusDice: diceSchema.optional(),             // ...and to each of its saving throws
+  /** attackBonusDice / saveBonusDice can be added at most once per turn — shared between the two (Emboldening Bond: "no more than once per turn") */
+  bonusDiceOncePerTurn: z.boolean().optional(),
   /** the holder has disadvantage on attack rolls against anyone EXCEPT the creature that applied
    *  this effect (Armorer Guardian's Thunder Gauntlets) */
   disadvantageUnlessTargetingSource: z.boolean().optional(),

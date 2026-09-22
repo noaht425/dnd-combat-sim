@@ -291,7 +291,7 @@ function rollAttackImpl(
     if (e.mods?.attackAdvantage === "adv") adv = combineAdv(adv, "adv");
     if (e.mods?.attackAdvantage === "dis") adv = combineAdv(adv, "dis");
     if (e.mods?.attackBonusAll) toHit += e.mods.attackBonusAll;
-    if (e.mods?.attackBonusDice) toHit += rollBonusDice(state, e.mods.attackBonusDice);
+    if (e.mods?.attackBonusDice && (!e.mods.bonusDiceOncePerTurn || claimOncePerTurn(state, attacker, `bonus-dice:${e.name}`))) toHit += rollBonusDice(state, e.mods.attackBonusDice);
     // "disadvantage on attack rolls against targets other than you" / "against you" — the
     // effect remembers who applied it (Armorer: Thunder Gauntlets, Infiltrator's glimmer)
     if (e.mods?.disadvantageUnlessTargetingSource && e.sourceId !== target.id) adv = combineAdv(adv, "dis");
@@ -564,7 +564,7 @@ function rollSaveImpl(
   let used = portent ?? state.rng.d20mode(adv).used;
   const floor = Math.max(opts.d20Floor ?? 0, target.effects.reduce((n, e) => Math.max(n, e.mods?.d20Floor ?? 0), 0));
   if (used < floor) used = floor; // Trance of Order, the Dragon constellation on a concentration save
-  for (const e of target.effects) if (e.mods?.saveBonusDice) mod += rollBonusDice(state, e.mods.saveBonusDice);
+  for (const e of target.effects) if (e.mods?.saveBonusDice && (!e.mods.bonusDiceOncePerTurn || claimOncePerTurn(state, target, `bonus-dice:${e.name}`))) mod += rollBonusDice(state, e.mods.saveBonusDice);
   // Unsettling Words (Eloquence): "the target must subtract the number rolled from the next saving throw it makes before the start of your next turn"
   for (const e of [...target.effects]) if (e.mods?.saveMalusDie) { mod -= rollBonusDice(state, e.mods.saveMalusDie); target.effects = target.effects.filter((x) => x !== e); }
   // Supernatural Defense: +1d6 on saves against effects from the creature designated as your prey

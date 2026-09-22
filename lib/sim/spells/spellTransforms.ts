@@ -83,14 +83,16 @@ export function injectFirstDamageBonus(
   return { nodes: walk(nodes), applied };
 }
 
-/** puts `extra` right after the first damage node reachable from `nodes` (in the same list, so it runs for the same target) */
-export function injectAfterFirstDamage(nodes: AutomationNode[], extra: AutomationNode[]): { nodes: AutomationNode[]; applied: boolean } {
+/** puts `extra` right after the first damage node reachable from `nodes` (in the same list, so it runs for the same target) — optionally
+ *  restricted to one or several `damageType`s (Thunderous Strike: only after lightning damage, not every damage node a spell might deal) */
+export function injectAfterFirstDamage(nodes: AutomationNode[], extra: AutomationNode[], damageType?: string | string[]): { nodes: AutomationNode[]; applied: boolean } {
+  const types = damageType === undefined ? undefined : Array.isArray(damageType) ? damageType : [damageType];
   let applied = false;
   const walk = (list: AutomationNode[]): AutomationNode[] => {
     const out: AutomationNode[] = [];
     for (const n of list) {
       if (applied) { out.push(n); continue; }
-      if (n.type === "damage") { applied = true; out.push(n, ...extra); continue; }
+      if (n.type === "damage" && (!types || types.includes(n.damageType))) { applied = true; out.push(n, ...extra); continue; }
       if (n.type === "target") out.push({ ...n, effects: walk(n.effects) });
       else if (n.type === "attack") out.push({ ...n, onHit: walk(n.onHit), onMiss: n.onMiss && walk(n.onMiss) });
       else if (n.type === "save") out.push({ ...n, onFail: walk(n.onFail), onSuccess: n.onSuccess && walk(n.onSuccess) });

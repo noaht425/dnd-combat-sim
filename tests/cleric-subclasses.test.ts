@@ -350,6 +350,15 @@ describe("Forge Domain", () => {
     expect(c.immunities).toContain("fire");
     expect(c.resistances).toEqual(expect.arrayContaining(["bludgeoning", "piercing", "slashing"]));
   });
+
+  it("Blessing of the Forge is one nonmagical object, armor OR a weapon — never both: forge-cleric-weapon takes +1 to attack and damage instead of the +1 AC", () => {
+    expect(makeTemplate("forge-cleric-weapon", 5).ac).toBe(18); // no armor blessing
+    expect(makeTemplate("forge-cleric-weapon", 6).ac).toBe(19); // Soul of the Forge's own +1 still applies
+    const swings = JSON.stringify(makeTemplate("forge-cleric-weapon", 5).actions.find((a) => a.id === "attack")!.automation);
+    expect(swings).toContain('"bonus":6'); // PB 3 + Str 2 + 1
+    expect(swings).toContain('"amount":"1d6+3"'); // Str 2 + 1
+    expect(findClassTemplate("forge cleric (weapon)").match?.templateId).toBe("forge-cleric-weapon");
+  });
 });
 
 describe("Grave Domain", () => {
@@ -558,6 +567,19 @@ describe("Peace Domain", () => {
     expect(before - c.hp).toBe(10);
   });
 
+  it("Emboldening Bond's d4 can be added no more than once a turn — shared between an attack roll and a saving throw", async () => {
+    const { rollSave } = await import("../lib/sim/engine/resolve");
+    const c = cle("peace-cleric", 1); // Wisdom save: +4 (Wisdom) + 2 (proficient, PB) = +6
+    const s = state();
+    s.rng.d20 = () => 10;
+    s.rng.d20mode = () => ({ used: 10, nat: 10 });
+    s.rng.dice = () => 4;
+    put(s, c);
+    cast(s, c, "emboldening-bond"); // "this can include yourself" — bonds the cleric to itself, alone
+    expect(rollSave(s, c, "wis", 18).passed).toBe(true); // 10 + 6 + the d4 (4) = 20
+    expect(rollSave(s, c, "wis", 18).passed).toBe(false); // the d4 was already spent this turn: 10 + 6 = 16
+  });
+
   it("Balm of Peace (2nd Channel Divinity): 2d6 + Wisdom to allies within reach", () => {
     const c = cle("peace-cleric", 5);
     const a = fighter();
@@ -593,6 +615,45 @@ describe("Tempest Domain", () => {
     expect(shatter("cast-shatter-2")).toBe(3);
     expect(shatter("cast-shatter-2-destructive")).toBe(24);
   });
+
+  it("Thunderous Strike (6th): dealing lightning damage to a Large or smaller creature can also push it 10 feet — lightning only, not thunder, and not before 6th", async () => {
+    const { battle, unitAt } = await import("./helpers/battle-state");
+    const { feetBetweenBoxes } = await import("../lib/sim/battle/geometry");
+    const { boxOfUnit } = await import("../lib/sim/battle/state");
+    const gap = (s: ReturnType<typeof battle>, a: CombatantState, b: CombatantState) => feetBetweenBoxes(boxOfUnit(s, a), boxOfUnit(s, b));
+    // Wrath of the Storm's own lightning damage carries the push once the cleric is 6th level
+    const pushed = (level: number) => {
+      const s = battle();
+      const c = unitAt(s, "c", "party", 5, 5, {}, "tempest-cleric", level);
+      const enemy = unitAt(s, "e", "monster", 6, 5, { ac: 8 });
+      runAutomation([{ type: "attack", bonus: 99, onHit: [{ type: "damage", amount: "5", damageType: "bludgeoning" }] } as AutomationNode], { state: s, source: enemy, scope: [c], last: {}, depth: 0 });
+      return gap(s, c, enemy);
+    };
+    expect(pushed(5)).toBe(5); // still adjacent
+    expect(pushed(6)).toBe(15); // 5 + the 10ft push
+    // a Huge creature doesn't get pushed
+    const s = battle();
+    const c = unitAt(s, "c", "party", 5, 5, {}, "tempest-cleric", 6);
+    const huge = unitAt(s, "e", "monster", 6, 5, { ac: 8, size: "huge" });
+    runAutomation([{ type: "attack", bonus: 99, onHit: [{ type: "damage", amount: "5", damageType: "bludgeoning" }] } as AutomationNode], { state: s, source: huge, scope: [c], last: {}, depth: 0 });
+    expect(gap(s, c, huge)).toBe(5);
+  });
+
+  it("Thunderous Strike also rides on the domain's own lightning spell (Call Lightning), not on Shatter (thunder)", () => {
+    const call = JSON.stringify(makeTemplate("tempest-cleric", 6).actions.find((a) => a.id.startsWith("cast-call-lightning") && !a.id.endsWith("destructive"))?.automation);
+    expect(call).toContain('"kind":"push"');
+    const shatter5 = JSON.stringify(makeTemplate("tempest-cleric", 5).actions.find((a) => a.id === "cast-shatter-2")?.automation);
+    const shatter6 = JSON.stringify(makeTemplate("tempest-cleric", 6).actions.find((a) => a.id === "cast-shatter-2")?.automation);
+    expect(shatter5).not.toContain('"kind":"push"');
+    expect(shatter6).not.toContain('"kind":"push"'); // Shatter is thunder, not lightning
+  });
+
+  it("Stormborn (17th): a flying speed equal to the walking speed", async () => {
+    const { canFly } = await import("../lib/sim/battle/state");
+    expect(canFly(cle("tempest-cleric", 16))).toBe(false);
+    expect(canFly(cle("tempest-cleric", 17))).toBe(true);
+    expect(makeTemplate("tempest-cleric", 17).speeds).toEqual({ walk: 30, fly: 30 });
+  });
 });
 
 describe("Trickery Domain", () => {
@@ -615,6 +676,15 @@ describe("Trickery Domain", () => {
     expect(hasCond(c, "invisible")).toBe(true);
     swing(s, c, target);
     expect(hasCond(c, "invisible")).toBe(false);
+  });
+
+  it("...and the AI scorer now sees real value in turning invisible (it used to score exactly zero, since the scorer only credited a condition applied to an ENEMY)", async () => {
+    const { scoreAction } = await import("../lib/sim/engine/score");
+    const c = cle("trickery-cleric", 6);
+    const s = state();
+    put(s, c, foe("f"));
+    const cloak = c.ref.actions.find((a) => a.id === "cloak-of-shadows")!;
+    expect(scoreAction(s, c, cloak).score).toBeGreaterThan(0);
   });
 });
 
@@ -641,6 +711,20 @@ describe("Twilight Domain", () => {
     expect(a.tempHp).toBe(0);
     startOfTurn(s, a);
     expect(a.tempHp).toBe(11);
+  });
+
+  it("Steps of Night (6th): a bonus action for a flying speed equal to the walking speed — proficiency-bonus times a day, not before 6th", async () => {
+    const { canFly } = await import("../lib/sim/battle/state");
+    const c = cle("twilight-cleric", 6);
+    const s = state();
+    put(s, c);
+    expect(canFly(c)).toBe(false);
+    expect(res(c, "steps_of_night")).toBe(3); // proficiency bonus at 6th
+    cast(s, c, "steps-of-night");
+    expect(canFly(c)).toBe(true);
+    expect(res(c, "steps_of_night")).toBe(2);
+    expect(actionAvailable(s, c, action(c, "steps-of-night"))).toBe(false); // already up
+    expect(makeTemplate("twilight-cleric", 5).actions.some((a) => a.id === "steps-of-night")).toBe(false);
   });
 });
 

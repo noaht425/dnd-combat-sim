@@ -120,6 +120,8 @@ export const CLASS_TEMPLATES: ClassAlias[] = [
     aliases: ["death cleric", "death domain cleric", "death domain", "cleric of the death domain", "cleric of death"] },
   { templateId: "forge-cleric", className: "cleric", subclassName: "Forge Domain",
     aliases: ["forge cleric", "forge domain cleric", "forge domain", "cleric of the forge domain", "cleric of forge"] },
+  { templateId: "forge-cleric-weapon", className: "cleric", subclassName: "Forge Domain (Blessing of the Forge: weapon)",
+    aliases: ["forge cleric (weapon)", "forge weapon cleric", "forge domain cleric (blessing of the forge: weapon)"] },
   { templateId: "grave-cleric", className: "cleric", subclassName: "Grave Domain",
     aliases: ["grave cleric", "grave domain cleric", "grave domain", "cleric of the grave domain", "cleric of grave"] },
   { templateId: "knowledge-cleric", className: "cleric", subclassName: "Knowledge Domain",

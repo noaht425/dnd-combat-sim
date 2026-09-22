@@ -144,6 +144,12 @@ export function scoreAction(state: CombatState, actor: CombatantState, action: A
           // probability it lands: fold in the wrapping save if any (handled above via pMul)
           control += pMul * (CONTROL_WEIGHT[n.condition] ?? 8) * (n.durationRounds && n.durationRounds > 0 ? Math.min(3, n.durationRounds) : 2) / 2;
         }
+        // turning invisible yourself (Cloak of Shadows, a Monk's Shadow Step, ...) was worth nothing to the scorer before this:
+        // the block above only credits an ENEMY-targeted condition, so a self-buff fell through and never got chosen
+        if (t === actor && n.condition === "invisible" && !t.conditions.has("invisible")) {
+          damage += pMul * 8; // advantage on my own attacks
+          control += pMul * 6; // attacks against me have disadvantage
+        }
       } else if (n.type === "destroy" || n.type === "banish") {
         // a creature at or under the challenge rating is removed from the fight outright: worth what it has left, and a kill finishes it
         const cr = crValue(t.ref);

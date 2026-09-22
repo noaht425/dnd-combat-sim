@@ -10,15 +10,22 @@
 // most 1/2 (5th level), 1 (8th), 2 (11th), 3 (14th) or 4 (17th).
 //
 // Build assumptions the books leave open: Wisdom 18 (20 from 17th), Strength 14, Constitution 14; armor class 18 (chain mail and a shield for the heavy-armor domains, scale mail
-// and a shield for the rest); a mace, or a longsword where the domain gives martial weapons.
+// and a shield for the rest); a mace, or a longsword where the domain gives martial weapons; Forge's Blessing of the Forge blesses the armor (`forge-cleric`) — `forge-cleric-weapon`
+// takes the weapon (+1 to attack and damage) instead, since the printed feature is one or the other, never both.
 //
-// Not modeled anywhere: Divine Intervention (the DM decides what the god does), the optional Harness Divine Power and Cantrip Versatility, Spell Breaker (Arcana), Blessing of the
-// Forge's weapon option, Artisan's Blessing, Eyes of the Grave, Blessings and Visions of Knowledge, Knowledge of the Ages, Bonus Cantrip: Light, Thunderous Strike and Stormborn,
-// Blessing of the Trickster and Improved Duplicity's extra images, Eyes of Night, Vigilant Blessing and Steps of Night, Master of Nature, Peace's Implement, Order's dropped items,
-// and Emboldening Bond's once-a-turn limit on the d4 (it is added to every attack and save). Known approximations: Blessed Healer also
+// Not modeled anywhere, each verified rather than assumed: Divine Intervention (the DM decides what the god does), the optional Harness Divine Power and Cantrip Versatility, Artisan's
+// Blessing, Eyes of the Grave, Blessings of Knowledge / Knowledge of the Ages / Visions of the Past, Bonus Cantrip: Light, Blessing of the Trickster, Eyes of Night, Implement of Peace
+// (all ability checks, proficiencies or pure flavor — ability checks aren't modeled anywhere in this sim); Improved Duplicity's extra images (checked against the source: they only add
+// more places to stand for advantage that's already unconditional here, nothing new to build); Order's Demand making a charmed creature drop what it holds (the same gap the Battle
+// Master's Disarming Attack already documented: no item/inventory model exists for a monster to be disarmed of or retrieve); Vigilant Blessing (advantage on an ally's next initiative
+// roll — there's no pre-initiative action window in this engine at all, and `initiativeAdvantage` is a static per-creature build flag, not a targetable buff); Spell Breaker (Arcana,
+// "end one spell on the creature you heal, of a level up to the slot spent" — no effect anywhere in this engine is tagged with the spell level that applied it, and even Dispel Magic
+// doesn't reach that precision, so there's nothing to check the level of); Master of Nature (Nature, 17th: command what a charmed beast or plant does on its turn — a Dominate-caliber
+// "direct an enemy's actions" mechanic that doesn't exist even for the actual Dominate spells, which are built as plain `charmed`). Known approximations: Blessed Healer also
 // fires when the cleric heals itself (the printed feature says another creature); Twilight Sanctuary's temporary hit points come as the creature's turn starts, not ends; Read Thoughts is
-// a charm for the fight rather than Suggestion; Invoke Duplicity and Cloak of Shadows are modeled, but the AI's scoring seldom prefers them to a slot spell. The sim treats every attack as magical, so "resistance to nonmagical bludgeoning,
-// piercing and slashing" (Forge 17th, War 17th) is built as resistance to that damage: nearly every monster attack is nonmagical.
+// a charm for the fight rather than Suggestion; Invoke Duplicity and Cloak of Shadows are modeled, but the AI's scoring seldom prefers them to a slot spell; Steps of Night (Twilight, 6th)
+// and Stormborn (Tempest, 17th) grant their flying speed without checking dim light/darkness or being outdoors, which this sim doesn't track. The sim treats every attack as magical, so
+// "resistance to nonmagical bludgeoning, piercing and slashing" (Forge 17th, War 17th) is built as resistance to that damage: nearly every monster attack is nonmagical.
 
 import type { Action, AutomationNode, Combatant, DamageType } from "../schema";
 import { between, pbFor, score } from "../engine/pcBase";
@@ -26,7 +33,7 @@ import { makeCaster } from "./caster";
 import { SPELLS_BY_ID } from "./catalog";
 import { autoPrepare, type CasterFocus } from "./prepare";
 import { maxSlotLevel } from "./slots";
-import { baseSpellId, injectAfterFirstHeal, injectFirstDamageBonus, mapNodes, maximizeDamageOfTypes } from "./spellTransforms";
+import { baseSpellId, injectAfterFirstDamage, injectAfterFirstHeal, injectFirstDamageBonus, mapNodes, maximizeDamageOfTypes } from "./spellTransforms";
 
 const wisMod = (level: number) => (pbFor(level) === 6 ? 5 : 4);
 const STR = 2;
@@ -56,7 +63,11 @@ interface Spec {
   strike?: DamageType;
   /** extra riders on Divine Strike (Order's Wrath) */
   strikeRiders?: AutomationNode[];
+  /** a flat bonus to the weapon attack's to-hit and damage (Blessing of the Forge's weapon option: +1) */
+  weaponBonus?: number;
   ac?: number;
+  /** overrides the default { walk: 30 } (Stormborn: a flying speed) */
+  speeds?: Combatant["speeds"];
   actions?: Action[];
   reactions?: Combatant["reactions"];
   traits?: Combatant["traits"];
@@ -95,9 +106,10 @@ function chassis(spec: Spec): Combatant {
   const divine: AutomationNode[] = spec.strike && level >= 8
     ? [{ type: "damage", amount: strikeDice, damageType: spec.strike, oncePerTurn: "divine-strike" }, ...(spec.strikeRiders ?? [])]
     : [];
+  const wb = spec.weaponBonus ?? 0;
   const swing = (riders: AutomationNode[] = []): AutomationNode => ({
-    type: "attack", bonus: pb + STR,
-    onHit: [{ type: "damage", amount: `${spec.martial ? "1d8" : "1d6"}+${STR}`, damageType: "bludgeoning" }, ...riders, ...divine],
+    type: "attack", bonus: pb + STR + wb,
+    onHit: [{ type: "damage", amount: `${spec.martial ? "1d8" : "1d6"}+${STR + wb}`, damageType: "bludgeoning" }, ...riders, ...divine],
   });
   const weapon: Action[] = [{
     id: "attack", name: spec.martial ? "Longsword" : "Mace", cost: { action: 1 }, recharge: "none",
@@ -134,6 +146,7 @@ function chassis(spec: Spec): Combatant {
   const withVariants = [...actions, ...(spec.variants ? spec.variants(actions.filter(isSpellAction)) : [])];
   return {
     ...built, actions: withVariants, reactions,
+    ...(spec.speeds ? { speeds: spec.speeds } : {}),
     resources: { ...built.resources, ...(cdUses ? { channel_divinity: { max: cdUses, recharge: "shortRest" as const } } : {}), ...(spec.resources ?? {}) },
     specialRules: [...built.specialRules, ...(spec.rules ?? [])],
     resistances: [...built.resistances, ...(spec.resistances ?? [])],
@@ -231,12 +244,15 @@ function death(level: number): Combatant {
 }
 
 // --------------------------------------------------------------------------------------------------------------------------- Forge
-// Bonus Proficiencies: heavy armor. Blessing of the Forge (1st): the armor is blessed (+1 AC). Soul of the Forge (6th): resistance to fire, and +1 AC in heavy armor. Divine Strike
-// (8th, 14th): fire. Saint of Forge and Fire (17th): immunity to fire, and resistance to bludgeoning, piercing and slashing (from nonmagical attacks: see the header).
-function forge(level: number): Combatant {
+// Bonus Proficiencies: heavy armor. Blessing of the Forge (1st, end of a long rest): bless one nonmagical suit of armor OR weapon — +1 AC, or
+// +1 to that weapon's attack and damage rolls (built as two templates: `forge-cleric` takes the armor, `forge-cleric-weapon` the weapon). Soul
+// of the Forge (6th): resistance to fire, and +1 AC in heavy armor (on top of either Blessing choice). Divine Strike (8th, 14th): fire. Saint
+// of Forge and Fire (17th): immunity to fire, and resistance to bludgeoning, piercing and slashing (from nonmagical attacks: see the header).
+function forge(level: number, weapon = false): Combatant {
   return chassis({
-    id: "forge-cleric", level, focus: "balanced", strike: "fire",
-    ac: 18 + 1 + (level >= 6 ? 1 : 0),
+    id: weapon ? "forge-cleric-weapon" : "forge-cleric", level, focus: "balanced", strike: "fire",
+    ac: 18 + (weapon ? 0 : 1) + (level >= 6 ? 1 : 0),
+    weaponBonus: weapon ? 1 : undefined,
     domain: [[1, ["identify", "searing-smite"]], [3, ["heat-metal", "magic-weapon"]], [5, ["elemental-weapon", "protection-from-energy"]], [7, ["fabricate", "wall-of-fire"]], [9, ["animate-objects", "creation"]]],
     resistances: [...(level >= 6 ? ["fire" as const] : []), ...(level >= 17 ? ["bludgeoning" as const, "piercing" as const, "slashing" as const] : [])],
     immunities: level >= 17 ? ["fire"] : [],
@@ -369,7 +385,8 @@ function peace(level: number): Combatant {
       { id: "emboldening-bond", name: "Emboldening Bond", cost: { action: 1 }, recharge: "none", limitedUse: { resource: "emboldening_bond", amount: 1 },
         automation: [{ type: "target", who: { who: "eachAlly", limit: pb }, effects: [{
           type: "applyEffect", name: "emboldening-bond", durationRounds: 100,
-          mods: { attackBonusDice: "1d4", saveBonusDice: "1d4", ...(level >= 6 ? { protectiveBondFt: level >= 17 ? 60 : 30, ...(level >= 17 ? { protectiveBondResists: true } : {}) } : {}) },
+          // "Each creature can add the d4 no more than once per turn"
+          mods: { attackBonusDice: "1d4", saveBonusDice: "1d4", bonusDiceOncePerTurn: true, ...(level >= 6 ? { protectiveBondFt: level >= 17 ? 60 : 30, ...(level >= 17 ? { protectiveBondResists: true } : {}) } : {}) },
         }] }] },
       ...(level >= 2 ? [channel("balm-of-peace", "Balm of Peace", [{ type: "branch", if: "party.missing_hp >= 10", then: [{
         type: "target", who: { who: "eachAlly", withinFt: 5, limit: 2 }, effects: [{ type: "heal", amount: `2d6+${wis}` }],
@@ -381,15 +398,26 @@ function peace(level: number): Combatant {
 
 // -------------------------------------------------------------------------------------------------------------------------- Tempest
 // Bonus Proficiencies: martial weapons and heavy armor. Wrath of the Storm (1st): a reaction when a creature within 5 ft hits you — a Dexterity save or 2d8 lightning damage (half on a save);
-// Wisdom-modifier uses. Destructive Wrath (2nd Channel Divinity): lightning or thunder damage you roll is maximum instead. Divine Strike (8th, 14th): thunder. Thunderous Strike (6th) and
-// Stormborn (17th) aren't modeled.
+// Wisdom-modifier uses. Destructive Wrath (2nd Channel Divinity): lightning or thunder damage you roll is maximum instead. Thunderous Strike (6th): dealing lightning damage to a Large or
+// smaller creature can also push it 10 feet. Divine Strike (8th, 14th): thunder. Stormborn (17th): a flying speed equal to the walking speed (the "not underground or indoors" clause isn't
+// tracked, so it's built as always on).
+const thunderousStrike = (level: number) => (a: Action): Action => {
+  if (level < 6) return a;
+  const push: AutomationNode[] = [{ type: "branch", if: "target.size<=large", then: [{ type: "move", kind: "push", distance: 10 }] }];
+  const { nodes, applied } = injectAfterFirstDamage(a.automation, push, "lightning");
+  return applied ? { ...a, automation: nodes } : a;
+};
 function tempest(level: number): Combatant {
+  const push: AutomationNode[] = level >= 6 ? [{ type: "branch", if: "target.size<=large", then: [{ type: "move", kind: "push", distance: 10 }] }] : [];
   return chassis({
-    id: "tempest-cleric", level, focus: "blaster", martial: true, strike: "thunder",
+    id: "tempest-cleric", level, focus: "blaster", martial: true, strike: "thunder", spells: thunderousStrike(level),
+    speeds: level >= 17 ? { walk: 30, fly: 30 } : undefined,
     domain: [[1, ["fog-cloud", "thunderwave"]], [3, ["gust-of-wind", "shatter"]], [5, ["call-lightning", "sleet-storm"]], [7, ["control-water", "ice-storm"]], [9, ["destructive-wave", "insect-plague"]]],
     resources: { wrath_of_the_storm: wisUses(level) },
     reactions: [reaction("wrath-of-the-storm", "Wrath of the Storm", "a creature within 5 ft hits you", [{
-      type: "target", who: { who: "aiChoice" }, effects: [{ type: "save", ability: "dex", dc: 8 + pbFor(level) + wisMod(level), onFail: [{ type: "damage", amount: "2d8", damageType: "lightning" }], onSuccess: [{ type: "damage", amount: "2d8", damageType: "lightning", half: true }] }],
+      type: "target", who: { who: "aiChoice" }, effects: [
+        { type: "save", ability: "dex", dc: 8 + pbFor(level) + wisMod(level), onFail: [{ type: "damage", amount: "2d8", damageType: "lightning" }, ...push], onSuccess: [{ type: "damage", amount: "2d8", damageType: "lightning", half: true }, ...push] },
+      ],
     }], { resource: "wrath_of_the_storm", amount: 1 })],
     variants: level >= 2 ? (spells) => spells.flatMap((a): Action[] => {
       const maxed = maximizeDamageOfTypes(a.automation, ["lightning", "thunder"]);
@@ -424,21 +452,31 @@ function trickery(level: number): Combatant {
 
 // ------------------------------------------------------------------------------------------------------------------------- Twilight
 // Bonus Proficiencies: martial weapons and heavy armor. Twilight Sanctuary (2nd Channel Divinity): a 30-ft sphere for a minute in which each creature, as its turn ends, gains 1d6 + the cleric's level
-// temporary hit points or is freed of a charm or fear (here as its turn comes round); Twilight Shroud (17th) gives allies in it half cover. Divine Strike (8th, 14th): radiant. Eyes of Night (1st),
-// Vigilant Blessing (1st) and Steps of Night (6th) aren't modeled.
+// temporary hit points or is freed of a charm or fear (here as its turn comes round); Twilight Shroud (17th) gives allies in it half cover. Steps of Night (6th): a bonus action for a flying speed
+// equal to the walking speed for a minute, proficiency-bonus times a long rest (the "in dim light or darkness" clause isn't tracked, so it's built as always available, the same simplification as
+// Tempest's Stormborn). Divine Strike (8th, 14th): radiant. Eyes of Night (1st) and Vigilant Blessing (1st) aren't modeled.
 function twilight(level: number): Combatant {
   return chassis({
     id: "twilight-cleric", level, focus: "support", martial: true, strike: "radiant",
     domain: [[1, ["faerie-fire", "sleep"]], [3, ["moonbeam", "see-invisibility"]], [5, ["aura-of-vitality", "leomunds-tiny-hut"]], [7, ["aura-of-life", "greater-invisibility"]], [9, ["circle-of-power", "mislead"]]],
-    actions: level >= 2 ? [channel("twilight-sanctuary", "Twilight Sanctuary", [{ type: "branch", if: "self.hasnt('twilight-sanctuary')", then: [{
-      type: "target", who: { who: "eachAlly" }, effects: [{
-        type: "applyEffect", name: "twilight-sanctuary", durationRounds: 10, mods: level >= 17 ? { acBonus: 2 } : {},
-        // each creature chooses one: end a charm or fright effect on itself, or take the temporary hit points
-        tick: [{ type: "branch", if: "target.has('frightened')", then: [{ type: "removeEffect", name: "frightened" }], else: [
-          { type: "branch", if: "target.has('charmed')", then: [{ type: "removeEffect", name: "charmed" }], else: [{ type: "tempHp", amount: `1d6+${level}` }] },
+    resources: level >= 6 ? { steps_of_night: { max: pbFor(level), recharge: "longRest" as const } } : undefined,
+    actions: [
+      ...(level >= 2 ? [channel("twilight-sanctuary", "Twilight Sanctuary", [{ type: "branch", if: "self.hasnt('twilight-sanctuary')", then: [{
+        type: "target", who: { who: "eachAlly" }, effects: [{
+          type: "applyEffect", name: "twilight-sanctuary", durationRounds: 10, mods: level >= 17 ? { acBonus: 2 } : {},
+          // each creature chooses one: end a charm or fright effect on itself, or take the temporary hit points
+          tick: [{ type: "branch", if: "target.has('frightened')", then: [{ type: "removeEffect", name: "frightened" }], else: [
+            { type: "branch", if: "target.has('charmed')", then: [{ type: "removeEffect", name: "charmed" }], else: [{ type: "tempHp", amount: `1d6+${level}` }] },
+          ] }],
+        }],
+      }] }])] : []),
+      ...(level >= 6 ? [{
+        id: "steps-of-night", name: "Steps of Night", cost: { bonus: 1 }, recharge: "none" as const, limitedUse: { resource: "steps_of_night", amount: 1 },
+        automation: [{ type: "branch" as const, if: "self.hasnt('steps-of-night')", then: [
+          { type: "target" as const, who: { who: "self" as const }, effects: [{ type: "applyEffect" as const, name: "steps-of-night", durationRounds: 10, mods: { grantsFly: true } }] },
         ] }],
-      }],
-    }] }])] : undefined,
+      }] : []),
+    ],
     opener: level >= 2 ? ["twilight-sanctuary"] : undefined,
   });
 }
@@ -469,6 +507,7 @@ export const CLERIC_BUILDERS: Record<string, (level: number) => Combatant> = {
   "arcana-cleric": arcana,
   "death-cleric": death,
   "forge-cleric": forge,
+  "forge-cleric-weapon": (l) => forge(l, true),
   "grave-cleric": grave,
   "knowledge-cleric": knowledge,
   "light-cleric": light,
